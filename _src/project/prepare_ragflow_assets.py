@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch only platform-neutral RAGFlow assets needed by the portable build.
+"""Fetch and verify the platform-neutral assets used by RAGFlow 0.27.1.
 
-RAGFlow's upstream download_deps.py also downloads Linux DEBs, Linux Chrome,
-Linux native libraries and Linux executables. Those are intentionally excluded
-from this native Windows build.
+Every remote object is pinned by immutable revision, byte size and SHA256.
+Existing files are verified on every run.  Unknown or corrupted content is
+never overwritten or recorded as trusted; remove it explicitly after review.
+When all files are present, the helper performs no network requests, which also
+makes an ordinary second run a useful offline verification pass.
 """
 
 from __future__ import annotations
@@ -13,33 +15,131 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
+import tempfile
+import tomllib
+import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
-
-import nltk
-from huggingface_hub import HfApi, snapshot_download
 
 
 RAGFLOW_VERSION = "0.27.1"
-HF_REPOSITORIES = (
-    "InfiniFlow/deepdoc",
-    "InfiniFlow/text_concat_xgb_v1.0",
-)
-FILES = {
-    "ragflow_deps/cl100k_base.tiktoken": (
-        "https://openaipublic.blob.core.windows.net/encodings/"
-        "cl100k_base.tiktoken"
-    ),
-    "ragflow_deps/tika-server-standard-3.3.0.jar": (
-        "https://repo1.maven.org/maven2/org/apache/tika/"
-        "tika-server-standard/3.3.0/tika-server-standard-3.3.0.jar"
-    ),
+RECORD_SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True)
+class Asset:
+    relative_path: str
+    url: str
+    size: int
+    sha256: str
+
+
+HF_SNAPSHOTS: dict[str, dict[str, object]] = {
+    "InfiniFlow/deepdoc": {
+        "revision": "de0e793dc6d744406c96dabd688ccc969f41b443",
+        "files": {
+            "det.onnx": (
+                4_745_517,
+                "30a86f5731181461d08021402766601e4302a9b9b9666be8aff402696339cdff",
+            ),
+            "layout.laws.onnx": (
+                75_726_930,
+                "de401c03ee30b1c120416dc06f0705237f0c36d3cdb692c9bfefe8a8f98a4b70",
+            ),
+            "layout.manual.onnx": (
+                75_726_930,
+                "de401c03ee30b1c120416dc06f0705237f0c36d3cdb692c9bfefe8a8f98a4b70",
+            ),
+            "layout.onnx": (
+                75_726_930,
+                "de401c03ee30b1c120416dc06f0705237f0c36d3cdb692c9bfefe8a8f98a4b70",
+            ),
+            "layout.paper.onnx": (
+                75_726_930,
+                "de401c03ee30b1c120416dc06f0705237f0c36d3cdb692c9bfefe8a8f98a4b70",
+            ),
+            "ocr.res": (
+                26_249,
+                "28b2362ad4ab2dc38769aa72feb535e3a9ddb3fd2a7585a05920e6393b1dc7f7",
+            ),
+            "rec.onnx": (
+                10_826_336,
+                "1c7cf60de2afd728d512f4190cf37455092b45f06175365c6fc58d8cd7e2a68b",
+            ),
+            "tsr.onnx": (
+                12_243_033,
+                "1585f88015c60209f16a079a26d944afca790ab7022fe7d0574113ccb9a6f9b4",
+            ),
+        },
+    },
+    "InfiniFlow/text_concat_xgb_v1.0": {
+        "revision": "722ed09a54f23f14fe0279ce6b74ce18e1960f54",
+        "files": {
+            "updown_concat_xgb.model": (
+                5_906_150,
+                "50516159cd0aab5f3499e1edccffdf1d6141f5ae513fdba003a18cbefa823f62",
+            ),
+        },
+    },
 }
 
+STANDALONE_ASSETS = (
+    Asset(
+        "ragflow_deps/cl100k_base.tiktoken",
+        "https://openaipublic.blob.core.windows.net/encodings/"
+        "cl100k_base.tiktoken",
+        1_681_126,
+        "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7",
+    ),
+    Asset(
+        "tika-server-standard-3.3.0.jar",
+        "https://repo1.maven.org/maven2/org/apache/tika/tika-server-standard/"
+        "3.3.0/tika-server-standard-3.3.0.jar",
+        81_853_424,
+        "2aca63d25f84774d759de6e132ae7f5723e3ee2adf1d51f585658baba1335e9b",
+    ),
+    Asset(
+        "tika-server-standard-3.3.0.jar.md5",
+        "https://repo1.maven.org/maven2/org/apache/tika/tika-server-standard/"
+        "3.3.0/tika-server-standard-3.3.0.jar.md5",
+        32,
+        "50ffd4f04d703c55875fe56a758b4c2928d5bf063c7c45ecc0ee5702be1975e9",
+    ),
+)
 
-def sha256(path: Path) -> str:
+NLTK_REPOSITORY = "nltk/nltk_data"
+NLTK_REVISION = "550b6625bcef1f2abff2ff770a5a0d272c9c6b2a"
+NLTK_ASSETS = (
+    Asset(
+        "corpora/wordnet.zip",
+        f"https://raw.githubusercontent.com/{NLTK_REPOSITORY}/{NLTK_REVISION}/"
+        "packages/corpora/wordnet.zip",
+        10_775_600,
+        "cbda5ea6eef7f36a97a43d4a75f85e07fccbb4f23657d27b4ccbc93e2646ab59",
+    ),
+    Asset(
+        "tokenizers/punkt.zip",
+        f"https://raw.githubusercontent.com/{NLTK_REPOSITORY}/{NLTK_REVISION}/"
+        "packages/tokenizers/punkt.zip",
+        13_905_355,
+        "51c3078994aeaf650bfc8e028be4fb42b4a0d177d41c012b6a983979653660ec",
+    ),
+    Asset(
+        "tokenizers/punkt_tab.zip",
+        f"https://raw.githubusercontent.com/{NLTK_REPOSITORY}/{NLTK_REVISION}/"
+        "packages/tokenizers/punkt_tab.zip",
+        4_319_076,
+        "e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106",
+    ),
+)
+
+TIKA_MD5 = b"532cafa9ad4253aac0750183ebd076fa"
+
+
+def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -47,25 +147,178 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download(url: str, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and destination.stat().st_size:
-        print(f"[SKIP] {destination.name}", flush=True)
-        return
+def md5_file(path: Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    temporary = destination.with_name(destination.name + ".part")
-    temporary.unlink(missing_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "local_llm/1"})
-    print(f"[GET ] {url}", flush=True)
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_mode: int | None = None
+    if path.exists():
+        old_mode = stat.S_IMODE(path.stat().st_mode)
+
+    temporary_name: str | None = None
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            with temporary.open("wb") as output:
-                shutil.copyfileobj(response, output, length=1024 * 1024)
-        if not temporary.stat().st_size:
-            raise RuntimeError(f"Downloaded an empty file: {url}")
-        temporary.replace(destination)
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+            delete=False,
+        ) as output:
+            temporary_name = output.name
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary = Path(temporary_name)
+        if old_mode is not None:
+            os.chmod(temporary, old_mode)
+        os.replace(temporary, path)
+        temporary_name = None
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
+def inspect_asset(path: Path, asset: Asset) -> bool:
+    """Return False only for a cleanly missing asset; corruption is fatal."""
+
+    if path.is_symlink():
+        raise RuntimeError(
+            f"Portable asset must not be a symlink: {path}. Remove it and rerun."
+        )
+    if not path.exists():
+        return False
+    if not path.is_file():
+        raise RuntimeError(f"Asset path is not a regular file: {path}")
+
+    size = path.stat().st_size
+    digest = sha256_file(path)
+    if size != asset.size or digest != asset.sha256:
+        raise RuntimeError(
+            f"Integrity check failed for {path}: expected {asset.size} bytes / "
+            f"SHA256 {asset.sha256}, found {size} bytes / SHA256 {digest}. "
+            "Remove the untrusted file explicitly and rerun."
+        )
+    print(f"[OK  ] {path.name}: {size} bytes / {digest[:12]}...", flush=True)
+    return True
+
+
+def verify_temporary(path: Path, asset: Asset) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"Download did not create a regular file: {path}")
+    size = path.stat().st_size
+    digest = sha256_file(path)
+    if size != asset.size or digest != asset.sha256:
+        raise RuntimeError(
+            f"Downloaded content failed integrity verification for {asset.url}: "
+            f"expected {asset.size} bytes / SHA256 {asset.sha256}, found "
+            f"{size} bytes / SHA256 {digest}"
+        )
+
+
+def install_temporary(temporary: Path, destination: Path) -> None:
+    os.replace(temporary, destination)
+
+
+def download_asset(asset: Asset, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{destination.name}.", suffix=".part",
+            dir=destination.parent, delete=False,
+        ) as output:
+            temporary_name = output.name
+            request = urllib.request.Request(
+                asset.url,
+                headers={"User-Agent": "local_llm-ragflow-assets/2"},
+            )
+            print(f"[GET ] {asset.url}", flush=True)
+            with urllib.request.urlopen(request, timeout=120) as response:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary = Path(temporary_name)
+        verify_temporary(temporary, asset)
+        install_temporary(temporary, destination)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
+def copy_identical_asset(source: Path, asset: Asset, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{destination.name}.", suffix=".part",
+            dir=destination.parent, delete=False,
+        ) as output:
+            temporary_name = output.name
+            with source.open("rb") as input_stream:
+                shutil.copyfileobj(input_stream, output, length=1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary = Path(temporary_name)
+        verify_temporary(temporary, asset)
+        install_temporary(temporary, destination)
+        temporary_name = None
+        print(f"[COPY] {source.name} -> {destination.name}", flush=True)
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
+def ensure_assets(
+    root: Path, assets: list[Asset], verify_only: bool
+) -> None:
+    valid_by_content: dict[tuple[int, str], Path] = {}
+    missing: list[tuple[Asset, Path]] = []
+
+    for asset in assets:
+        destination = root / Path(asset.relative_path)
+        if inspect_asset(destination, asset):
+            valid_by_content.setdefault((asset.size, asset.sha256), destination)
+        else:
+            missing.append((asset, destination))
+
+    if missing and verify_only:
+        paths = ", ".join(str(path) for _, path in missing)
+        raise RuntimeError(f"Required assets are missing in verify-only mode: {paths}")
+
+    for asset, destination in missing:
+        content_key = (asset.size, asset.sha256)
+        source = valid_by_content.get(content_key)
+        if source is not None:
+            copy_identical_asset(source, asset, destination)
+        else:
+            download_asset(asset, destination)
+        if not inspect_asset(destination, asset):  # pragma: no cover - defensive
+            raise RuntimeError(f"Asset disappeared after installation: {destination}")
+        valid_by_content.setdefault(content_key, destination)
+
+
+def make_huggingface_assets() -> list[Asset]:
+    assets: list[Asset] = []
+    for repository, snapshot in HF_SNAPSHOTS.items():
+        revision = str(snapshot["revision"])
+        files = snapshot["files"]
+        if not isinstance(files, dict):  # pragma: no cover - constant invariant
+            raise RuntimeError(f"Invalid embedded HF manifest for {repository}")
+        for filename, details in files.items():
+            size, digest = details
+            quoted = urllib.parse.quote(str(filename), safe="")
+            url = (
+                f"https://huggingface.co/{repository}/resolve/{revision}/"
+                f"{quoted}?download=true"
+            )
+            assets.append(
+                Asset(str(filename), url, int(size), str(digest))
+            )
+    return assets
 
 
 def verify_ragflow(ragflow_dir: Path) -> None:
@@ -73,74 +326,182 @@ def verify_ragflow(ragflow_dir: Path) -> None:
     if not pyproject.is_file():
         raise RuntimeError(f"RAGFlow pyproject.toml is missing: {pyproject}")
     try:
-        import tomllib
-
         version = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
             "version"
         ]
-    except Exception as exc:  # pragma: no cover - diagnostic path
-        raise RuntimeError(f"Cannot read RAGFlow version: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Cannot read RAGFlow version from {pyproject}: {exc}") from exc
     if version != RAGFLOW_VERSION:
         raise RuntimeError(
-            f"Expected RAGFlow {RAGFLOW_VERSION}, found {version} in {pyproject}"
+            f"Expected RAGFlow {RAGFLOW_VERSION}, found {version!r} in {pyproject}"
         )
 
 
+def verify_nltk_layout(nltk_dir: Path) -> None:
+    try:
+        # NLTK 3.10's path-security layer snapshots trusted data roots while
+        # importing the package.  Advertise this portable root before import;
+        # passing it only to nltk.data.find() is intentionally not sufficient.
+        existing_nltk_data = os.environ.get("NLTK_DATA", "")
+        roots = [str(nltk_dir)]
+        if existing_nltk_data:
+            roots.append(existing_nltk_data)
+        os.environ["NLTK_DATA"] = os.pathsep.join(roots)
+        import nltk
+
+        resources = (
+            "corpora/wordnet/",
+            "tokenizers/punkt/",
+            "tokenizers/punkt_tab/",
+        )
+        for resource in resources:
+            nltk.data.find(resource, paths=[str(nltk_dir)])
+    except Exception as exc:
+        raise RuntimeError(
+            f"Pinned NLTK ZIP files are not usable from {nltk_dir}: {exc}"
+        ) from exc
+    print("[OK  ] NLTK WordNet, Punkt and Punkt Tab are available offline", flush=True)
+
+
+def verify_tika_pair(ragflow_dir: Path) -> None:
+    # Match the upstream Docker layout.  At runtime TIKA_SERVER_JAR must be a
+    # file:/// URI for this root-level JAR; tika finds the adjacent .md5 file.
+    jar = ragflow_dir / "tika-server-standard-3.3.0.jar"
+    sidecar = jar.with_name(jar.name + ".md5")
+    actual_md5 = md5_file(jar).encode("ascii")
+    sidecar_bytes = sidecar.read_bytes()
+    if actual_md5 != TIKA_MD5 or sidecar_bytes != TIKA_MD5:
+        raise RuntimeError(
+            "Tika JAR/MD5 pair is inconsistent: expected the canonical 32-byte "
+            f"digest {TIKA_MD5.decode('ascii')}, got JAR={actual_md5!r}, "
+            f"sidecar={sidecar_bytes!r}"
+        )
+    print("[OK  ] Tika JAR and canonical .jar.md5 sidecar match", flush=True)
+
+
+def expected_record() -> dict[str, object]:
+    huggingface: dict[str, object] = {}
+    for repository, snapshot in HF_SNAPSHOTS.items():
+        files = snapshot["files"]
+        assert isinstance(files, dict)
+        huggingface[repository] = {
+            "revision": snapshot["revision"],
+            "files": {
+                str(name): {"bytes": int(details[0]), "sha256": str(details[1])}
+                for name, details in files.items()
+            },
+        }
+    return {
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "helper": "prepare_ragflow_assets.py",
+        "ragflow_version": RAGFLOW_VERSION,
+        "huggingface": huggingface,
+        "standalone": {
+            asset.relative_path: {
+                "url": asset.url,
+                "bytes": asset.size,
+                "sha256": asset.sha256,
+            }
+            for asset in STANDALONE_ASSETS
+        },
+        "nltk": {
+            "repository": NLTK_REPOSITORY,
+            "revision": NLTK_REVISION,
+            "files": {
+                asset.relative_path: {
+                    "url": asset.url,
+                    "bytes": asset.size,
+                    "sha256": asset.sha256,
+                }
+                for asset in NLTK_ASSETS
+            },
+        },
+        "runtime_configuration": {
+            "TIKA_SERVER_JAR": (
+                "file:///<RAGFLOW_ROOT>/tika-server-standard-3.3.0.jar"
+            ),
+        },
+    }
+
+
+def canonical_record() -> bytes:
+    return json.dumps(
+        expected_record(), ensure_ascii=False, indent=2, sort_keys=True
+    ).encode("utf-8") + b"\n"
+
+
+def preflight_record(path: Path, verify_only: bool) -> bool:
+    if path.is_symlink():
+        raise RuntimeError(f"Asset record must not be a symlink: {path}")
+    if not path.exists():
+        if verify_only:
+            raise RuntimeError(f"Asset record is missing in verify-only mode: {path}")
+        return False
+    if not path.is_file():
+        raise RuntimeError(f"Asset record is not a regular file: {path}")
+    if path.read_bytes() != canonical_record():
+        raise RuntimeError(
+            f"Asset record is stale or modified: {path}. Remove it only after "
+            "reviewing the changed provenance, then rerun preparation."
+        )
+    print(f"[OK  ] Asset record provenance verified: {path}", flush=True)
+    return True
+
+
+def write_record(path: Path, already_present: bool) -> None:
+    expected = canonical_record()
+    if already_present:
+        if path.read_bytes() != expected:
+            raise RuntimeError(f"Asset record changed during verification: {path}")
+        print(f"[OK  ] Asset record unchanged: {path}", flush=True)
+        return
+    atomic_write(path, expected)
+    if path.read_bytes() != expected:
+        raise RuntimeError(f"Asset record verification failed after writing: {path}")
+    print(f"[OK  ] Asset record written: {path}", flush=True)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Prepare or verify pinned platform-neutral RAGFlow assets"
+    )
     parser.add_argument("--ragflow-dir", required=True, type=Path)
     parser.add_argument("--nltk-dir", required=True, type=Path)
     parser.add_argument("--record", required=True, type=Path)
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="perform no downloads and require the deterministic record to exist",
+    )
     args = parser.parse_args()
 
     ragflow_dir = args.ragflow_dir.resolve()
     nltk_dir = args.nltk_dir.resolve()
+    record_path = args.record.resolve()
+
+    print(f"[STEP] Verify RAGFlow {RAGFLOW_VERSION} source", flush=True)
     verify_ragflow(ragflow_dir)
+    record_present = preflight_record(record_path, args.verify_only)
 
-    model_dir = ragflow_dir / "rag" / "res" / "deepdoc"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    api = HfApi()
-    revisions: dict[str, str] = {}
-    for repository in HF_REPOSITORIES:
-        revision = api.model_info(repository).sha
-        if not revision:
-            raise RuntimeError(f"Could not resolve a commit for {repository}")
-        print(f"[HF  ] {repository}@{revision}", flush=True)
-        snapshot_download(
-            repo_id=repository,
-            revision=revision,
-            local_dir=model_dir,
-        )
-        revisions[repository] = revision
+    print("[STEP] Verify pinned Hugging Face runtime models", flush=True)
+    model_dir = ragflow_dir / "rag/res/deepdoc"
+    ensure_assets(model_dir, make_huggingface_assets(), args.verify_only)
 
-    nltk_dir.mkdir(parents=True, exist_ok=True)
-    for package in ("wordnet", "punkt", "punkt_tab"):
-        print(f"[NLTK] {package}", flush=True)
-        if not nltk.download(package, download_dir=str(nltk_dir), quiet=False):
-            raise RuntimeError(f"NLTK download failed: {package}")
-
-    file_records: dict[str, dict[str, object]] = {}
-    for relative, url in FILES.items():
-        destination = ragflow_dir / Path(relative)
-        download(url, destination)
-        file_records[relative] = {
-            "url": url,
-            "bytes": destination.stat().st_size,
-            "sha256": sha256(destination),
-        }
-
-    args.record.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "created_utc": datetime.now(timezone.utc).isoformat(),
-        "ragflow_version": RAGFLOW_VERSION,
-        "huggingface_revisions": revisions,
-        "files": file_records,
-        "nltk_packages": ["wordnet", "punkt", "punkt_tab"],
-    }
-    args.record.write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    print("[STEP] Verify pinned Tiktoken and Tika files", flush=True)
+    ensure_assets(ragflow_dir, list(STANDALONE_ASSETS), args.verify_only)
+    verify_tika_pair(ragflow_dir)
+    print(
+        "[INFO] Runtime must set TIKA_SERVER_JAR to the root-level JAR file:/// URI",
+        flush=True,
     )
-    print(f"[OK  ] Asset record: {args.record}", flush=True)
+
+    print("[STEP] Verify pinned NLTK data", flush=True)
+    ensure_assets(nltk_dir, list(NLTK_ASSETS), args.verify_only)
+    verify_nltk_layout(nltk_dir)
+
+    print("[STEP] Commit deterministic asset provenance", flush=True)
+    write_record(record_path, record_present)
+    print("[OK  ] RAGFlow asset preparation completed", flush=True)
     return 0
 
 
@@ -148,6 +509,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as error:
-        print(f"[ERROR] {error}", file=sys.stderr, flush=True)
-        raise
-
+        print(f"[ERROR] {type(error).__name__}: {error}", file=sys.stderr, flush=True)
+        raise SystemExit(1)
