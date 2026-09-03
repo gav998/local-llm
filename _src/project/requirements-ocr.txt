@@ -1,0 +1,8 @@
+# Direct OCR/gateway requirements resolved on the online Windows x64 computer.
+# PaddlePaddle itself is supplied as the separately verified cu118 wheel.
+# The PaddleX OCR extra is sufficient for PP-StructureV3; doc-parser's optional
+# generative-AI client is deliberately excluded from this local-only runtime.
+paddleocr==3.7.0
+paddlex[ocr,serving]==3.7.2
+python-multipart==0.0.20
+httpx==0.28.1

@@ -1,0 +1,72 @@
+# Portable PP-StructureV3 profile for one 8 GiB Pascal GPU.
+#
+# This is deliberately a high-quality text/layout pipeline. Tables, formulas,
+# charts and seals remain separate passes so the higher-accuracy layout detector
+# and document-resolution OCR can run on one 8 GiB board with batch size 1.
+pipeline_name: PP-StructureV3
+batch_size: 1
+
+use_doc_preprocessor: false
+use_seal_recognition: false
+use_table_recognition: false
+use_formula_recognition: false
+use_chart_recognition: false
+use_region_detection: true
+format_block_content: true
+markdown_ignore_labels:
+  - number
+  - footnote
+  - header
+  - header_image
+  - footer
+  - footer_image
+  - aside_text
+
+SubModules:
+  LayoutDetection:
+    module_name: layout_detection
+    model_name: PP-DocLayout-L
+    model_dir: null
+    batch_size: 1
+    threshold: 0.4
+    layout_nms: true
+    layout_unclip_ratio: [1.0, 1.0]
+    layout_merge_bboxes_mode: union
+
+  RegionDetection:
+    module_name: layout_detection
+    model_name: PP-DocBlockLayout
+    model_dir: null
+    batch_size: 1
+    layout_nms: true
+    layout_merge_bboxes_mode: small
+
+SubPipelines:
+  GeneralOCR:
+    pipeline_name: OCR
+    batch_size: 1
+    text_type: general
+    use_doc_preprocessor: false
+    use_textline_orientation: false
+    SubModules:
+      TextDetection:
+        module_name: text_detection
+        model_name: PP-OCRv6_medium_det
+        model_dir: null
+        # Official PP-StructureV3 GeneralOCR sizing preserves document text by
+        # scaling the short side to 736 while retaining a 4000-pixel hard cap.
+        limit_side_len: 736
+        limit_type: min
+        max_side_limit: 4000
+        thresh: 0.3
+        box_thresh: 0.6
+        unclip_ratio: 1.5
+      TextRecognition:
+        module_name: text_recognition
+        # PP-OCRv6 medium recognition does not support Cyrillic. Keep the v6
+        # detector, but use the official higher-accuracy East Slavic v5 model
+        # for Russian, Belarusian, Ukrainian and English documents.
+        model_name: eslav_PP-OCRv5_mobile_rec
+        model_dir: null
+        batch_size: 1
+        score_thresh: 0.0

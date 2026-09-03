@@ -1,0 +1,75 @@
+name: Build pinned datrie wheel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cp313:
+    runs-on: windows-2022
+    steps:
+      - name: Set up CPython 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: x64
+
+      - name: Install pinned build tools
+        run: >-
+          python -m pip install
+          pip==26.2.1
+          setuptools==84.0.0
+          wheel==0.48.0
+          Cython==3.3.0
+
+      - name: Download and verify datrie source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://files.pythonhosted.org/packages/51/0b/c0f53a14317b304e2e93b29a831b0c83306caae9af7f0e2e037d17c4f63f/datrie-0.8.3.tar.gz"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile datrie-0.8.3.tar.gz
+          $actual = (Get-FileHash datrie-0.8.3.tar.gz -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = "ea021ad4c8a8bf14e08a71c7872a622aa399a510f981296825091c7ca0436e80"
+          if ($actual -ne $expected) { throw "datrie sdist SHA-256 mismatch: $actual" }
+
+      - name: Build wheel with MSVC
+        run: >-
+          python -m pip wheel
+          --no-deps
+          --no-build-isolation
+          --wheel-dir wheelhouse
+          datrie-0.8.3.tar.gz
+
+      - name: Test compiled trie
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wheel = Get-ChildItem wheelhouse\datrie-0.8.3-cp313-cp313-win_amd64.whl -File
+          python -m pip install --no-deps $wheel.FullName
+          @'
+          import string
+          import tempfile
+          from pathlib import Path
+          import datrie
+
+          trie = datrie.Trie(string.printable)
+          trie["portable"] = (7, "ok")
+          assert trie.has_keys_with_prefix("port")
+          with tempfile.TemporaryDirectory() as directory:
+              path = Path(directory, "test.trie")
+              trie.save(str(path))
+              restored = datrie.Trie.load(str(path))
+              assert restored["portable"] == (7, "ok")
+          print("datrie Windows CPython 3.13 wheel: OK")
+          '@ | python -
+          (Get-FileHash $wheel.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v6
+        with:
+          name: datrie-0.8.3-cp313-win-amd64
+          path: wheelhouse/datrie-0.8.3-cp313-cp313-win_amd64.whl
+          if-no-files-found: error
+          retention-days: 30
