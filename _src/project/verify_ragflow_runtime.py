@@ -14,6 +14,7 @@ import os
 import platform
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -36,9 +37,53 @@ EXPECTED_DISTRIBUTIONS = {
     "xgboost": "2.1.4",
     "infinity-sdk": "0.7.3",
     "datrie": "0.8.3",
+    "crawl4ai": "0.9.2",
+    "agentrun-sdk": "0.0.51",
 }
 INFINITY_NUMPY_REQUIREMENT = "numpy>=2,<2.4"
 DATRIE_DIST_INFO = "datrie-0.8.3.dist-info"
+
+
+@dataclass(frozen=True)
+class RemovedRequirementMetadata:
+    distribution: str
+    dist_info: str
+    removed_requirement: bytes
+    patched_size: int
+    patched_sha256: str
+    patched_record_digest: str
+
+    @property
+    def metadata_entry(self) -> str:
+        return f"{self.dist_info}/METADATA"
+
+    @property
+    def record_entry(self) -> str:
+        return f"{self.dist_info}/RECORD"
+
+
+EXCLUDED_REQUIREMENT_METADATA = (
+    RemovedRequirementMetadata(
+        distribution="crawl4ai",
+        dist_info="crawl4ai-0.9.2.dist-info",
+        removed_requirement=b"Requires-Dist: unclecode-litellm==1.81.13\n",
+        patched_size=58_641,
+        patched_sha256=(
+            "013b49b1d5d0d96f45dca3eeef756fdba2c5cb65bdd5f86e74a6344366ecbe5b"
+        ),
+        patched_record_digest="ATtJsdXQ2W9F3KPu73Vv26LFy2W91fhudKY0Q2bsvls",
+    ),
+    RemovedRequirementMetadata(
+        distribution="agentrun-sdk",
+        dist_info="agentrun_sdk-0.0.51.dist-info",
+        removed_requirement=b"Requires-Dist: agentrun-mem0ai>=0.0.10\n",
+        patched_size=11_716,
+        patched_sha256=(
+            "656c78f819c4008bcc76ca06ebdb364844b03017ac24b153d173f79d10326d15"
+        ),
+        patched_record_digest="ZWx4-BnEAIvMdsoG69s2SESwMBesJLFT0XP3nRAybRU",
+    ),
+)
 CL100K_RELATIVE = Path("ragflow_deps/cl100k_base.tiktoken")
 # tiktoken names the cache file with SHA1(URL).  Do not confuse this with
 # 6494e42d..., which is the SHA1 of the table contents.
@@ -106,6 +151,82 @@ def check_ragflow_source(ragflow_dir: Path) -> str:
     return f"RAGFlow {version}; patched task handler {digest[:12]}..."
 
 
+def verify_removed_requirement_metadata(
+    distribution: importlib.metadata.Distribution,
+    repair: RemovedRequirementMetadata,
+) -> None:
+    files = distribution.files
+    if files is None:
+        raise RuntimeError(f"{repair.distribution} has no installed RECORD")
+    metadata_entries = [
+        item
+        for item in files
+        if item.name == "METADATA" and item.parent.name.endswith(".dist-info")
+    ]
+    if len(metadata_entries) != 1:
+        raise RuntimeError(
+            f"Could not uniquely locate {repair.distribution} METADATA through "
+            f"its RECORD; found {len(metadata_entries)} candidates"
+        )
+    metadata_entry = metadata_entries[0].as_posix()
+    if metadata_entry != repair.metadata_entry:
+        raise RuntimeError(
+            f"Unexpected {repair.distribution} METADATA path {metadata_entry!r}; "
+            f"expected {repair.metadata_entry!r}"
+        )
+    metadata_path = Path(distribution.locate_file(metadata_entries[0]))
+    record_path = metadata_path.with_name("RECORD")
+    for description, path in (
+        ("METADATA", metadata_path),
+        ("RECORD", record_path),
+    ):
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{repair.distribution} {description} must not be a symlink: {path}"
+            )
+        if not path.is_file():
+            raise RuntimeError(
+                f"{repair.distribution} {description} is missing: {path}"
+            )
+
+    metadata = metadata_path.read_bytes()
+    digest = hashlib.sha256(metadata).hexdigest()
+    if len(metadata) != repair.patched_size or digest != repair.patched_sha256:
+        raise RuntimeError(
+            f"{repair.distribution} METADATA is not the audited repaired file: "
+            f"expected {repair.patched_size} bytes / SHA256 "
+            f"{repair.patched_sha256}, found {len(metadata)} bytes / SHA256 {digest}"
+        )
+    if repair.removed_requirement in metadata:
+        raise RuntimeError(
+            f"{repair.distribution} retains excluded requirement "
+            f"{repair.removed_requirement.rstrip()!r}"
+        )
+
+    try:
+        rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise RuntimeError(
+            f"Cannot parse {repair.distribution} RECORD: {exc}"
+        ) from exc
+    expected_metadata_row = [
+        repair.metadata_entry,
+        f"sha256={repair.patched_record_digest}",
+        str(repair.patched_size),
+    ]
+    metadata_rows = [row for row in rows if row and row[0] == repair.metadata_entry]
+    if metadata_rows != [expected_metadata_row]:
+        raise RuntimeError(
+            f"Unexpected {repair.distribution} METADATA RECORD rows: "
+            f"{metadata_rows!r}; expected {[expected_metadata_row]!r}"
+        )
+    self_rows = [row for row in rows if row and row[0] == repair.record_entry]
+    if self_rows != [[repair.record_entry, "", ""]]:
+        raise RuntimeError(
+            f"Unexpected {repair.distribution} RECORD self rows: {self_rows!r}"
+        )
+
+
 def check_distributions() -> str:
     found: list[str] = []
     resolved: dict[str, importlib.metadata.Distribution] = {}
@@ -135,6 +256,9 @@ def check_distributions() -> str:
             "infinity-sdk NumPy metadata was not repaired: expected "
             f"{INFINITY_NUMPY_REQUIREMENT!r}, found {numpy_requirements!r}"
         )
+
+    for repair in EXCLUDED_REQUIREMENT_METADATA:
+        verify_removed_requirement_metadata(resolved[repair.distribution], repair)
 
     # Import the two compatibility-sensitive packages, not just their metadata.
     importlib.import_module("infinity")

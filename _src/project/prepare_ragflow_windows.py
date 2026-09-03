@@ -2,8 +2,9 @@
 """Apply the audited native-Windows compatibility fixes for RAGFlow.
 
 This helper is intentionally narrow.  It only accepts the exact RAGFlow
-0.27.1 source file and the exact infinity-sdk 0.7.3 wheel metadata that were
-audited for this portable build.  Unknown input is never patched heuristically.
+0.27.1 source and exact audited wheel metadata for this portable build,
+including infinity-sdk, Crawl4AI, and agentrun-sdk.  Unknown input is never
+patched heuristically.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import tomllib
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -64,6 +66,57 @@ DATRIE_WHEEL_NAME = "datrie-0.8.3-cp313-cp313-win_amd64.whl"
 DATRIE_WHEEL_SHA256 = (
     "76eb11c37919646ccd276a76eed9db2f066fbfb23b577ef32efeacf5387aea0e"
 )
+
+
+@dataclass(frozen=True)
+class RemovedRequirementPatch:
+    distribution: str
+    version: str
+    dist_info: str
+    requirement: bytes
+    original_size: int
+    original_sha256: str
+    patched_size: int
+    patched_sha256: str
+
+    @property
+    def metadata_entry(self) -> str:
+        return f"{self.dist_info}/METADATA"
+
+    @property
+    def record_entry(self) -> str:
+        return f"{self.dist_info}/RECORD"
+
+
+CRAWL4AI_EXCLUSION = RemovedRequirementPatch(
+    distribution="crawl4ai",
+    version="0.9.2",
+    dist_info="crawl4ai-0.9.2.dist-info",
+    requirement=b"Requires-Dist: unclecode-litellm==1.81.13\n",
+    original_size=58_683,
+    original_sha256=(
+        "48a217301d52cf8a5cf9ee399e7d4cd0dd6456967d95fbcd559e5cecbecfbc6f"
+    ),
+    patched_size=58_641,
+    patched_sha256=(
+        "013b49b1d5d0d96f45dca3eeef756fdba2c5cb65bdd5f86e74a6344366ecbe5b"
+    ),
+)
+AGENTRUN_EXCLUSION = RemovedRequirementPatch(
+    distribution="agentrun-sdk",
+    version="0.0.51",
+    dist_info="agentrun_sdk-0.0.51.dist-info",
+    requirement=b"Requires-Dist: agentrun-mem0ai>=0.0.10\n",
+    original_size=11_755,
+    original_sha256=(
+        "13b2276e4e747da0e0aa764254eb7c92c450851d1c96d203c608e87e0389b34c"
+    ),
+    patched_size=11_716,
+    patched_sha256=(
+        "656c78f819c4008bcc76ca06ebdb364844b03017ac24b153d173f79d10326d15"
+    ),
+)
+EXCLUDED_REQUIREMENT_PATCHES = (CRAWL4AI_EXCLUSION, AGENTRUN_EXCLUSION)
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -402,6 +455,176 @@ def locate_dist_info(distribution_name: str, version: str, dirname: str) -> Path
     return metadata_path.parent
 
 
+def removed_requirement_metadata_state(
+    patch: RemovedRequirementPatch, data: bytes
+) -> str:
+    size = len(data)
+    digest = sha256_bytes(data)
+    if size == patch.original_size and digest == patch.original_sha256:
+        if data.count(patch.requirement) != 1:
+            raise RuntimeError(
+                f"Audited {patch.distribution} METADATA does not contain exactly "
+                f"one {patch.requirement.rstrip()!r} line"
+            )
+        return "original"
+    if size == patch.patched_size and digest == patch.patched_sha256:
+        if patch.requirement in data:
+            raise RuntimeError(
+                f"Patched {patch.distribution} METADATA retains the excluded "
+                "requirement"
+            )
+        return "patched"
+    raise RuntimeError(
+        f"Refusing to patch unknown {patch.distribution} METADATA: expected "
+        f"SHA256 {patch.original_sha256} (original) or {patch.patched_sha256} "
+        f"(patched), found {digest} ({size} bytes)"
+    )
+
+
+def inspect_removed_requirement_record(
+    patch: RemovedRequirementPatch, data: bytes, record_path: Path
+) -> tuple[str, list[bytes], int]:
+    lines = data.splitlines(keepends=True)
+    metadata_indices: list[int] = []
+    self_rows = 0
+    state: str | None = None
+    original = [
+        patch.metadata_entry,
+        f"sha256={record_digest(patch.original_sha256)}",
+        str(patch.original_size),
+    ]
+    patched = [
+        patch.metadata_entry,
+        f"sha256={record_digest(patch.patched_sha256)}",
+        str(patch.patched_size),
+    ]
+
+    for index, raw_line in enumerate(lines):
+        row = parse_record_row(raw_line, record_path)
+        if row[0] == patch.metadata_entry:
+            metadata_indices.append(index)
+            if row == original:
+                state = "original"
+            elif row == patched:
+                state = "patched"
+            else:
+                raise RuntimeError(
+                    f"Unexpected {patch.distribution} METADATA row in "
+                    f"{record_path}: {row!r}"
+                )
+        if row[0] == patch.record_entry:
+            self_rows += 1
+            if row[1:] != ["", ""]:
+                raise RuntimeError(
+                    f"Malformed {patch.distribution} RECORD self row in "
+                    f"{record_path}: {row!r}"
+                )
+
+    if len(metadata_indices) != 1 or state is None:
+        raise RuntimeError(
+            f"Expected exactly one {patch.distribution} METADATA row in "
+            f"{record_path}; found {len(metadata_indices)}"
+        )
+    if self_rows != 1:
+        raise RuntimeError(
+            f"Expected exactly one {patch.distribution} RECORD self row in "
+            f"{record_path}; found {self_rows}"
+        )
+    return state, lines, metadata_indices[0]
+
+
+def patch_removed_requirement_record(
+    patch: RemovedRequirementPatch, lines: list[bytes], metadata_index: int
+) -> bytes:
+    current = lines[metadata_index]
+    if current.endswith(b"\r\n"):
+        ending = b"\r\n"
+    elif current.endswith(b"\n"):
+        ending = b"\n"
+    elif current.endswith(b"\r"):
+        ending = b"\r"
+    else:
+        ending = b""
+    replacement = (
+        f"{patch.metadata_entry},"
+        f"sha256={record_digest(patch.patched_sha256)},"
+        f"{patch.patched_size}"
+    ).encode("ascii")
+    lines[metadata_index] = replacement + ending
+    return b"".join(lines)
+
+
+def repair_removed_requirement_metadata(
+    patch: RemovedRequirementPatch,
+) -> tuple[Path, Path]:
+    dist_info = locate_dist_info(
+        patch.distribution, patch.version, patch.dist_info
+    )
+    metadata_path = dist_info / "METADATA"
+    record_path = dist_info / "RECORD"
+    for description, path in (
+        ("METADATA", metadata_path),
+        ("RECORD", record_path),
+    ):
+        if path.is_symlink():
+            raise RuntimeError(
+                f"{patch.distribution} {description} must not be a symlink: {path}"
+            )
+        if not path.is_file():
+            raise RuntimeError(
+                f"{patch.distribution} {description} is missing: {path}"
+            )
+
+    metadata = metadata_path.read_bytes()
+    record = record_path.read_bytes()
+    metadata_status = removed_requirement_metadata_state(patch, metadata)
+    record_status, record_lines, metadata_index = (
+        inspect_removed_requirement_record(patch, record, record_path)
+    )
+
+    # Complete either audited mixed state left by interruption. Unknown bytes or
+    # RECORD rows have already failed without changing the installation.
+    if metadata_status == "original":
+        replacement = metadata.replace(patch.requirement, b"", 1)
+        if (
+            len(replacement) != patch.patched_size
+            or sha256_bytes(replacement) != patch.patched_sha256
+        ):
+            raise RuntimeError(
+                f"Internal {patch.distribution} METADATA patch verification failed"
+            )
+        atomic_write(metadata_path, replacement)
+    if record_status == "original":
+        atomic_write(
+            record_path,
+            patch_removed_requirement_record(patch, record_lines, metadata_index),
+        )
+
+    if removed_requirement_metadata_state(
+        patch, metadata_path.read_bytes()
+    ) != "patched":
+        raise RuntimeError(
+            f"{patch.distribution} METADATA did not reach the patched state"
+        )
+    final_record_status, _, _ = inspect_removed_requirement_record(
+        patch, record_path.read_bytes(), record_path
+    )
+    if final_record_status != "patched":
+        raise RuntimeError(
+            f"{patch.distribution} RECORD did not reach the patched state"
+        )
+    print(
+        f"[OK  ] Removed excluded {patch.requirement.rstrip().decode('ascii')} "
+        f"from {patch.distribution} {patch.version} metadata"
+    )
+    return metadata_path, record_path
+
+
+def repair_excluded_dependency_metadata() -> None:
+    for patch in EXCLUDED_REQUIREMENT_PATCHES:
+        repair_removed_requirement_metadata(patch)
+
+
 def validate_datrie_direct_url(data: bytes, path: Path) -> None:
     try:
         value = json.loads(data.decode("utf-8"))
@@ -499,7 +722,7 @@ def remove_datrie_direct_url() -> tuple[Path, Path]:
 
 def expected_record() -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "helper": "prepare_ragflow_windows.py",
         "ragflow": {
             "version": RAGFLOW_VERSION,
@@ -526,6 +749,22 @@ def expected_record() -> dict[str, object]:
             "wheel_sha256": DATRIE_WHEEL_SHA256,
             "removed": f"{DATRIE_DIST_INFO}/direct_url.json",
             "reason": "remove the absolute online-build wheel path",
+        },
+        "excluded_dependency_metadata": {
+            patch.distribution: {
+                "version": patch.version,
+                "metadata_path": patch.metadata_entry,
+                "metadata_original_sha256": patch.original_sha256,
+                "metadata_patched_sha256": patch.patched_sha256,
+                "removed_requirement": patch.requirement.decode("ascii").rstrip(),
+                "record_entry": (
+                    f"{patch.metadata_entry},"
+                    f"sha256={record_digest(patch.patched_sha256)},"
+                    f"{patch.patched_size}"
+                ),
+                "reason": "dependency is intentionally excluded from this profile",
+            }
+            for patch in EXCLUDED_REQUIREMENT_PATCHES
         },
     }
 
@@ -568,6 +807,8 @@ def main() -> int:
     patch_task_handler(ragflow_dir)
     print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
     patch_infinity_metadata()
+    print("[STEP] Repair metadata for intentionally excluded dependencies")
+    repair_excluded_dependency_metadata()
     print("[STEP] Remove build-bound datrie wheel provenance")
     remove_datrie_direct_url()
     print("[STEP] Write deterministic compatibility provenance")
