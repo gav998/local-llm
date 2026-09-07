@@ -1,137 +1,163 @@
 # Архитектура portable local_llm
 
-## Граница этапа 1
+## Два этапа и trust boundary
 
-`1.PREPARE-ONLINE.bat` превращает Windows-компьютер с интернетом в одноразовую сборочную машину. Он не запускает постоянный stack и не создаёт конфигурацию конкретной offline-машины. Его единственный конечный продукт — проверенное дерево `app` и компактный `_src\prepared`, из которого следующий этап сможет установить stack без сети, package manager и компилятора.
+`1.PREPARE-ONLINE.bat` превращает Windows-компьютер с интернетом в одноразовую сборочную машину. Он разрешает dependency graph, собирает frontend, проверяет native imports/assets и выпускает закрытый набор `_src\prepared`.
 
 ```text
 23 вручную полученных vendor artifacts в _src
                     |
                     v
-     SHA-256 -> staging extract -> key/version checks
+ SHA-256 -> staging extract -> version/key checks
                     |
                     v
-    online resolve/build (uv, PyPI, npm, pinned assets)
+ online resolve/build -> smoke/audit -> final tree seals
                     |
                     v
-  готовые Python runtimes + web dist + services + OCR models
+    9 solid 7z -> isolated rehydrate -> SHA256SUMS
                     |
                     v
-       smoke/audit -> 9 solid 7z -> isolated rehydrate
-                    |
-                    v
-             atomic _src\prepared
+     atomic _src\prepared + LOCAL-LLM.bat + README
 ```
 
-Wheelhouse как основной способ переноса сознательно отвергнут. Для огромного RAGFlow-графа это оставило бы разрешение платформенных проблем offline installer-у. Здесь разрешение, установка, native import и model smoke происходят online; на offline-компьютер переезжают уже готовые файлы. Временный OCR wheelhouse также удаляется после установки.
+`LOCAL-LLM.bat install` работает уже без сети. До запуска любого payload executable он проверяет fail-closed manifest через системный Windows PowerShell и требует, чтобы запущенный launcher побайтно совпадал с launcher этого prepared-набора. Затем bootstrap `7zr.exe` раскрывает полный `7za.exe`; все архивы отдельно тестируются и распаковываются в случайный staging. Готовое `app` публикуется одним `move`. Частичный staging не смешивается с рабочей установкой и при ошибке сохраняется для диагностики.
 
-Проверенный `7zr.exe` лежит в `_src\prepared` отдельно: он раскрывает первый `00-bootstrap-tools.7z`, после чего остальные archives обрабатывает полный `7za.exe` из этого bundle. Это устраняет bootstrap-зависимость «extractor находится внутри архива, который ещё нечем открыть».
+Установка считается завершённой только после static/import проверок, реального CUDA/OCR/table E2E без CPU fallback и инициализации MySQL. Последним записывается `app\data\control\install.ok.json`; `start` без корректного marker запрещён.
+
+Wheelhouse как переносимый формат сознательно отвергнут: он перенёс бы platform resolution на offline-машину. В архивы попадают уже установленные и проверенные runtime trees. GGUF переносятся отдельно.
 
 ## Portable boundary
 
-Корень всегда вычисляется относительно BAT. До первого PowerShell-вызова создаются и назначаются локальные `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, PowerShell/.NET roots. До Python/Node дополнительно назначаются XDG, Hugging Face, pip, uv, npm, Paddle, NLTK, tiktoken, CUDA и bytecode cache roots. Внешние `PYTHONPATH`, virtualenv/conda, Node, pip/uv/npm и Java option-переменные очищаются.
+Корень вычисляется от `%~dp0`. До запуска дочерних процессов BAT/controller назначают локальные `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, XDG, Hugging Face, Paddle, Python bytecode, CUDA cache, NLTK и tiktoken roots. Дочерние сервисы получают новый whitelist environment, а не весь профиль пользователя.
 
 Принципиально отсутствуют:
 
 - `setx`, registry writes и изменение системного `PATH`;
 - MSI/EXE installation и Windows Service registration;
 - Docker/WSL;
-- запись runtime в профиль текущего пользователя;
+- запись Python/Node/package-manager runtime в профиль пользователя;
 - path-bound Python launchers из `Scripts`;
 - `node_modules` и online build tools в offline bundles.
 
-Microsoft VC Redistributable не запускается: из проверенного официального EXE извлекаются разрешённые app-local DLL, включая `vcomp140.dll`, нужный XGBoost. Python берётся из [python-build-standalone](https://github.com/astral-sh/python-build-standalone), который публикует redistributable standalone distributions.
+Microsoft VC Redistributable не запускается: из проверенного официального EXE извлекаются app-local DLL, включая `vcomp140.dll` для XGBoost. Системными зависимостями остаются Windows DLL, NVIDIA driver и Vulkan loader.
 
-Граница остаётся application-level sandbox, а не виртуальной машиной. Системный NVIDIA driver, Vulkan loader, Windows DLL и Known Folders существуют снаружи. Поэтому финальная приёмка включает Process Monitor trace под новой учётной записью.
+Path-sensitive файлы находятся в `app\config\runtime` и атомарно регенерируются перед каждой командой. Поэтому перенос всего каталога или смена буквы диска не требует reinstall. Secrets генерируются один раз и не перезаписываются.
 
 ## Почему два Python
 
-[RAGFlow 0.27.1](https://github.com/infiniflow/ragflow/releases/tag/v0.27.1) задаёт `requires-python = ">=3.13,<3.14"`, поэтому backend получает CPython 3.13.15. Windows GPU-wheel Paddle 3.3.1/cu118 выбран в ABI `cp311`, поэтому OCR получает CPython 3.11.16. Оба — `install_only` standalone archives одной датированной поставки `20260901`.
+RAGFlow 0.27.1 требует CPython `>=3.13,<3.14`; Windows GPU-wheel Paddle 3.3.1/cu118 выбран в ABI `cp311`. Поэтому RAGFlow получает standalone CPython 3.13.15, OCR — standalone CPython 3.11.16. Оба runtime изолированы и связаны loopback HTTP.
 
-Conda/Miniconda не используется: environment relocation и смена буквы диска требуют prefix-rewriting, которое здесь не даёт пользы. Два обычных автономных interpreter-а связаны только loopback HTTP.
+Conda не используется: prefix relocation и повторная запись абсолютных путей не дают преимуществ для этого профиля.
 
 ## RAGFlow на native Windows
 
-Upstream lock сначала экспортируется через `uv export --frozen`. Затем для реальной Windows CPython 3.13 собирается hash-locked граф с минимальными явными отклонениями:
+Upstream lock экспортируется через `uv export --frozen`, затем для Windows CPython 3.13 компилируется hash-locked граф с ограниченными отклонениями:
 
-- `numpy==2.3.5`: upstream `1.26.4` не имеет Windows wheel для CPython 3.13;
-- `xgboost==2.1.4`: upstream `1.6.0` несовместим с NumPy 2;
-- `datrie==0.8.3`: проектный MSVC/cp313 wheel построен из pinned sdist отдельным GitHub Actions workflow, функционально проверен и опубликован с SHA-256;
-- `infinity-sdk==0.7.3`: только его metadata constraint `numpy<2` меняется на проверенный `numpy>=2,<2.4`, а RECORD пересчитывается;
-- полный `graspologic` исключён, но `graspologic-native==1.2.5` добавлен напрямую. Audited-адаптер преобразует NetworkX-рёбра в native tuples для hierarchical Leiden и выбирает largest connected component средствами NetworkX; GraphRAG включён;
+- `numpy==2.3.5`, потому что upstream 1.26.4 не имеет нужного cp313 Windows wheel;
+- `xgboost==2.1.4`, совместимый с NumPy 2;
+- `datrie==0.8.3` как закреплённый MSVC/cp313 wheel;
+- metadata constraint `infinity-sdk==0.7.3` меняется на проверенный `numpy>=2,<2.4` с пересчётом RECORD;
+- полный `graspologic` исключён из-за `numpy<2`, но GraphRAG включён через `graspologic-native==1.2.5` и audited adapter;
 - `infinity-emb` исключён: embeddings обслуживает отдельный llama.cpp server.
 
-Патчер применим только к точным исходным SHA-256 RAGFlow 0.27.1, Leiden-модуля, audited-адаптера и точным metadata bytes. Неизвестная версия аварийно останавливает сборку. Verifier импортирует task executor с lazy GraphRAG, затем полный GraphRAG entrypoint, выполняет hierarchical Leiden реальным Rust backend, запускает русский tokenizer, materializes `cl100k` без сети и выполняет prediction pinned XGBoost model.
+Patch применим только к известным SHA-256 исходникам RAGFlow. Verifier импортирует task executor и полный GraphRAG entrypoint, выполняет hierarchical Leiden, русский tokenizer, offline cl100k и prediction закреплённой XGBoost-модели.
 
-MinGit 2.55.0.5 всё равно входит в online build tools и добавляется в `PATH` только текущего BAT-процесса. Полный fork `graspologic` требует `numpy<2`, поэтому он не устанавливается. Его активный в RAGFlow GraphRAG код использует hierarchical Leiden из компактного Rust-пакета `graspologic-native`; Windows x64 wheel `cp38-abi3` работает с CPython 3.13 и не зависит от NumPy 1.x. Неиспользуемый GraphRAG node2vec helper, которому нужен полный `graspologic`, в этот профиль не входит.
+RAGFlow tree sealed целиком, кроме двух заранее объявленных runtime-путей:
 
-Нейтральные RAGFlow assets тоже имеют неизменяемые revision/hash/size: DeepDoc ONNX, text-concat XGBoost, NLTK ZIP, cl100k и Tika 3.3.0. Tika JAR и canonical `.jar.md5` лежат в корне RAGFlow; будущий launcher задаст `TIKA_SERVER_JAR=file:///.../ragflow/tika-server-standard-3.3.0.jar` и использует JDK из Elasticsearch.
+```text
+conf/local.service_conf.yaml    location/secrets/endpoints текущей машины
+logs/                           штатные rotating logs RAGFlow
+```
 
-Upstream `ragflow_deps\download_deps.py` намеренно не запускается: это helper для Linux/Docker dependency layer, который в том числе получает Ubuntu `.deb`. Его нельзя считать универсальным Python dependency installer для native Windows. Проектный `prepare_ragflow_assets.py` переносит только действительно нужные platform-neutral assets и проверяет каждый из них по закреплённым revision, размеру и SHA-256.
+Исключения понимаются fingerprint-функцией как точный файл и точный directory prefix; произвольные соседние файлы всё ещё меняют seal. Это устраняет ложное падение integrity после первого запуска, не превращая backend в непроверяемый mutable tree.
 
-## OCR: PP-StructureV3 для 8 ГБ Pascal
+Нейтральные DeepDoc, XGBoost, NLTK, cl100k и Tika assets имеют фиксированные revision/hash/size. `TIKA_SERVER_JAR` указывает на app-local JAR, Java берётся из Elasticsearch.
 
-RAGFlow 0.27.1 ожидает асинхронный контракт `/api/v2/ocr/jobs`; это видно в его [штатном PaddleOCR parser](https://github.com/infiniflow/ragflow/blob/v0.27.1/deepdoc/parser/paddleocr_parser.py). Basic PaddleX endpoint имеет другой контракт. Поэтому `ocr_job_gateway.py` не патчит RAGFlow, а адаптирует именно jobs API к одной локальной `PPStructureV3` pipeline на `127.0.0.1`.
+## OCR: PP-StructureV3 на 8 ГБ Pascal
 
-Профиль одной GTX 1080:
+RAGFlow ожидает асинхронный `/api/v2/ocr/jobs`, а PaddleX basic serving предоставляет другой протокол. `ocr_job_gateway.py` адаптирует контракт к одной strict-GPU `PPStructureV3` pipeline на `127.0.0.1`.
 
-- `PP-DocLayout-L` — более сильный layout detector;
-- `PP-DocBlockLayout` — regions/reading order;
-- `PP-OCRv6_medium_det` — актуальный medium text detector;
-- `eslav_PP-OCRv5_mobile_rec` — официальный recognizer для русского/белорусского/украинского/английского текста;
-- `SLANet_plus` — компактное восстановление HTML/cell structure для найденных table-регионов;
-- short side `736`, hard max `4000`, batch `1`;
-- `use_table_recognition` всегда включён; таблицы обрабатываются последовательно с batch 1 и переиспользуют общий OCR result;
-- formulas, charts, seals, document preprocessing и orientation branches выключены.
+Профиль включает:
 
-PP-OCRv6 medium recognition хорош, но его unified language set не включает кириллицу, поэтому detector v6 сочетается с East Slavic v5 recognizer. Для таблиц выбран поддерживаемый компактный `table_recognition` subpipeline с одной `SLANet_plus`, а не `table_recognition_v2`, который инициализирует классификатор, две structure-модели и два RT-DETR cell detector. Так сохраняется структура строк/столбцов при существенно меньшем VRAM-риске. Штатный parser RAGFlow 0.27.1 пока возвращает table HTML как table-labelled section, а отдельный список `tables` оставляет пустым; GraphRAG получает структурированный HTML в содержимом секции.
+- PP-DocLayout-L;
+- PP-DocBlockLayout;
+- PP-OCRv6 medium detector;
+- East Slavic PP-OCRv5 recognizer для русского/белорусского/украинского/английского;
+- SLANet_plus для HTML/cell structure таблиц;
+- batch 1, short side 736, hard max 4000;
+- выключенные formulas/charts/seals/orientation/preprocessing branches.
 
-Strict gate проверяет не только `paddle.is_compiled_with_cuda()`. Он требует CUDA 11.8, видимый GPU, capability не ниже 6.1, наличие соответствующей архитектуры в `paddle.version.cuda_archs()`, выполняет матричное вычисление, загружает pipeline из пяти локальных каталогов и прогоняет image+PDF с размеченной таблицей через штатный RAGFlow parser. Тест обязан получить table-labelled section и связанные значения двух ячеек. Любая ошибка завершает этап; CPU fallback отсутствует.
+Табличный pipeline переиспользует общий OCR result и не создаёт второй OCR внутри каждой таблицы. Strict gate требует CUDA 11.8, видимый GPU, capability `>=6.1`, наличие `sm_61` в wheel, реальную CUDA-матрицу, загрузку пяти локальных моделей, image+PDF OCR и table-labelled section через штатный parser RAGFlow.
 
-Важно: современная [Windows installation matrix Paddle](https://www.paddlepaddle.org.cn/documentation/docs/install/pip/windows-pip_en.html) формально ориентирована на более новые GPU, хотя выбранный wheel содержит `sm_61`. Поэтому только target E2E, а не статический анализ wheel, подтверждает конкретные GTX 1080/driver.
+Gateway bind разрешён только на loopback, использует bearer token и сохраняет jobs в `app\data\ocr-jobs`. `PADDLE_PDX_DISABLE_DEVICE_FALLBACK=1`; ошибка GPU не переключает inference на CPU.
 
-## Frontend и сервисы
+## Data services и generated configs
 
-Node 24.20.0 LTS существует только в `app\build`: `npm ci` использует upstream `package-lock.json`, затем создаёт production `dist`; `node_modules` и исходный `dist` удаляются. В offline bundles попадает только статический `app\web`.
+Controller генерирует:
 
-Сервисы остаются переносимыми binaries:
+- `mysql.ini`: app-local basedir/datadir, loopback, `mysqlx=OFF`, ограниченный pool;
+- отдельный `ES_PATH_CONF`: single-node, loopback, security/network download выключены, heap фиксирован;
+- `valkey.conf`: loopback, protected mode, пароль, AOF в app-local data;
+- Caddyfile: loopback SPA + reverse proxy `/v1/*` и `/api/*`;
+- `local.service_conf.yaml`: MySQL, Silo/MinIO, Elasticsearch, Valkey, local llama endpoints и PaddleOCR;
+- `local-llm.ini`: единственный пользовательский файл портов, моделей, GPU placement и memory limits.
 
-- MySQL 8.0.40 и Elasticsearch 8.11.3 — консервативные pins для RAGFlow; Elasticsearch приносит собственный JDK;
-- [Silo 2026-08-06](https://github.com/pgsty/silo/releases/tag/RELEASE.2026-08-06T00-00-00Z) сохраняет MinIO wire/config/on-disk compatibility и имеет Windows archive;
-- Valkey 8.1.6 берётся из community Windows build. Это не официально поддерживаемая Valkey платформа, поэтому будущий этап обязан проверить реальные queue semantics;
-- Caddy 2.11.4 позже будет обслуживать SPA и proxy, не требуя Node в runtime.
+MySQL впервые запускается с `--initialize-insecure`, сразу получает случайный пароль и `rag_flow` database, затем штатно останавливается. Elasticsearch, Silo и Valkey создают данные при первом start. Все данные вынесены из sealed vendor trees в `app\data`.
 
-На этапе 1 binaries только запускаются с безопасными version/probe arguments. Инициализация базы, S3 bucket, schema migration и постоянные процессы относятся к offline install/start, а не к preparation.
+Silo сохраняет MinIO API/config compatibility. Valkey — community Windows build; launcher проверяет реальный authenticated `PING`, а целевая приёмка должна дополнительно прогнать RAGFlow queue semantics.
 
-## Проверка целостности
+## Процессы, PID identity и остановка
 
-Trust chain выглядит так:
+Каждый сервис запускается отдельным `local_llm_supervisor.py` в скрытой Windows console/process group. Metadata содержит supervisor PID, child PID, token и Windows process creation identity. PID считается принадлежащим сервису только при совпадении identity; переиспользованный Windows PID не будет завершён как старый процесс.
 
-1. все 23 вручную положенных файла имеют обязательный SHA-256 в `artifacts.sha256`;
-2. распаковка идёт во временный каталог, archive layout/key проверяется до atomic replacement;
-3. dependency graph сохраняется в compiled/freeze records; npm использует lock integrity;
-4. каждый скачиваемый RAGFlow asset проверяется по byte size и SHA-256, provenance хранится в JSON;
-5. Python local-wheel `direct_url.json` удаляются вместе с RECORD-строками;
-6. native imports, tokenizer, XGBoost, OCR API contract и portable executables проходят smoke;
-7. audit отклоняет symlink/junction/reparse point и точный абсолютный build-root в launch/config/source/PE файлах;
-8. девять solid-архивов тестируются, распаковываются вместе в изолированную копию и повторно проверяются без доступа к исходным runtime/cache;
-9. только после этого пишется `prepared.ok`, рассчитываются SHA-256 bundles и новый набор атомарно заменяет старый.
+Readiness:
 
-## GPU и планируемые GGUF
+| Сервис | Проверка |
+|---|---|
+| MySQL | authenticated `mysqladmin ping` (при bootstrap также без пароля) |
+| Elasticsearch | HTTP root/info |
+| Silo | `/minio/health/ready` |
+| Valkey | authenticated `PING` |
+| llama embedding/chat | `/health` |
+| PaddleOCR | `/health` после загрузки GPU pipeline |
+| RAGFlow | `/api/v1/system/healthz` со всеми data dependencies |
+| Caddy | SPA root через frontend port |
+| task executor | live PID identity; очередь контролируется RAGFlow/Valkey |
 
-`Vikhr-Nemo-12B Q4_K_M` и `Qwen3-Embedding-8B-Q4_K_M.gguf` не скачиваются автоматически: требуется выбрать точные repository/revision/file и зафиксировать отдельные SHA-256. GGUF переносятся без повторного 7z-сжатия.
+При `stop` supervisor сначала вызывает штатные shutdown-команды MySQL, Valkey и Caddy. Остальным отправляется `CTRL_BREAK_EVENT` в их отдельную process group. Только после timeout выполняется `taskkill /PID <точный child> /T /F`. Если supervisor аварийно исчез, controller распознаёт child как orphan по паре PID/creation identity и может завершить именно это дерево. Поиск по имени процесса или title не используется.
 
-Две карты по 8 ГБ не дают одному процессу 16 ГБ contiguous VRAM. Практический режимный план:
+Запуск профиля транзакционен относительно новых процессов: если readiness одного компонента не достигнут, сервисы, поднятые этой попыткой, останавливаются в обратном порядке; ранее работавший core сохраняется.
 
-1. ingestion: chat остановлен; OCR работает на выбранной карте, затем embedding обрабатывает очередь;
-2. chat: OCR pipeline выгружен; Vikhr-Nemo распределяется Vulkan backend по двум картам; embedding запускается ограниченно/последовательно;
-3. maintenance: только CPU/data services.
+## GPU scheduler
 
-Одновременный resident OCR + 12B chat + 8B embedding почти наверняка упрётся в VRAM. Будущий launcher должен управлять состояниями, а не просто запускать всё сразу. Конкретные layer split, context и KV-cache будут зафиксированы после измерений на целевом ПК.
+Профили не запускают всё одновременно:
 
-## Следующие отдельные этапы
+```text
+core       data services + RAGFlow API + web
+ingestion  core + embedding(GPU 1) + OCR(CUDA GPU 0) + worker
+chat       core + embedding(GPU 0) + Vikhr(split GPU 0/1 = 0.20/0.80)
+```
 
-1. `2.INSTALL-OFFLINE.bat`: проверка bundle SHA-256, staging extraction, atomic install, path-sensitive конфигурации, target GPU gate, DB/S3/Valkey/Elasticsearch integration tests.
-2. `3.START.bat`: PID/lock files, режимы ingestion/chat, безопасный порядок старта и readiness endpoints.
-3. `4.STOP.bat` и `5.STATUS.bat`: graceful shutdown и health, а не `taskkill` по title.
-4. End-to-end ingestion: PDF → PP-StructureV3 layout/text → RAGFlow chunking → Qwen3 embedding → Elasticsearch retrieval → Vikhr answer.
+Переход между ingestion/chat сначала проверяет наличие требуемых GGUF, затем останавливает конфликтующие worker/OCR/chat и перезапускает embedding с placement нового режима. Defaults `0.20,0.80`, embedding context/batch `2048/512` и chat `4096/256` уменьшают риск выхода за 8 ГБ, но остаются отправной точкой, а не аппаратной гарантией. Нумерация Vulkan сверяется через `llama-server --list-devices`.
+
+## Integrity chain
+
+1. 23 vendor artifacts проверяются по SHA-256.
+2. Распаковка каждого идёт через staging с key/version/tree marker.
+3. Python/npm dependency graph фиксируется в compiled/freeze/lock records.
+4. RAGFlow assets проверяются по revision, byte size и SHA-256.
+5. Python metadata очищается от build-path.
+6. Native imports, GraphRAG, tokenizer, XGBoost и OCR contract проходят smoke.
+7. Audit отклоняет reparse points и absolute build-path leaks.
+8. Runtime trees получают final seals с минимальными известными exclusions.
+9. Девять архивов rehydrate в изолированное дерево и повторно проверяются.
+10. Prepared payload, launcher и README входят в `SHA256SUMS.txt`.
+11. Offline installer повторно проверяет manifest, launcher и каждый 7z до atomic publish; при каждой команде BAT также сверяет версию controller.
+12. `install.ok` появляется только после target GPU E2E и MySQL initialization.
+
+## Оставшиеся границы
+
+- Реальные BAT/native/GPU тесты выполняются на Windows 11 x64 с двумя GTX 1080; Linux CI даёт source/static/unit coverage.
+- После первого запуска нужна end-to-end приёмка пользовательского PDF: upload → OCR/table → embedding → Elasticsearch retrieval → Vikhr answer.
+- Process Monitor под чистой учётной записью остаётся финальной проверкой неизвестных обращений native DLL к Windows Known Folders.
+- Общий data root поддерживает последовательную, но не одновременную работу разных пользователей.

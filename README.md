@@ -1,147 +1,194 @@
 # local_llm
 
-Первый этап новой portable-сборки для Windows: [1.PREPARE-ONLINE.bat](./1.PREPARE-ONLINE.bat) собирает на компьютере с интернетом полностью готовые runtime-компоненты RAGFlow, PaddleOCR и локальных сервисов, проверяет их и упаковывает в девять solid-архивов. Docker, права администратора, installer, Windows Service, запись в registry и изменение системного `PATH` не используются.
+Portable offline-стек для Windows 11 x64: RAGFlow 0.27.1, локальный `llama.cpp`, PaddleOCR / PP-StructureV3, MySQL, Elasticsearch, Silo, Valkey и Caddy. Не нужны Docker, WSL, права администратора, installer, Windows Service, запись в registry или изменение системного `PATH`.
 
-Это пока только этап **online preparation**. Offline installer и launcher будут отдельными BAT-файлами; данный скрипт их функции в себя не смешивает.
+Проект состоит из двух этапов:
 
-## Назначение и исходные ограничения
+1. [1.PREPARE-ONLINE.bat](./1.PREPARE-ONLINE.bat) один раз собирает и проверяет runtime на Windows-компьютере с интернетом.
+2. [LOCAL-LLM.bat](./LOCAL-LLM.bat) устанавливает готовые архивы на целевом компьютере без интернета и управляет стеком через меню или команды.
 
-Это проект сборки **RAGFlow + локальный llama.cpp + локальный PaddleOCR / PP-StructureV3** для полностью офлайн-работы с нейросетями, агентами и локальной файловой системой. Основная нагрузка — Word- и PDF-документы, включая OCR русскоязычных сканов. Для русского chat/LLM задан `Vikhr-Nemo-12B Q4_K_M`; рабочее решение для embeddings — `Qwen3-Embedding-8B-Q4_K_M.gguf` через отдельный локальный llama.cpp server.
+Целевое железо: Intel Core i3-8350K, 32 ГБ RAM и две NVIDIA GTX 1080 по 8 ГБ. Все приложения, данные, модели, логи, временные файлы, профили и кэши размещаются внутри каталога проекта на внешнем HDD. Одну общую установку могут последовательно использовать разные Windows-пользователи; одновременный запуск несколькими пользователями не поддерживается.
 
-Целевая машина:
+## Быстрый сценарий
 
-- Windows 11 x64;
-- Intel Core i3-8350K, 32 ГБ RAM;
-- две NVIDIA GTX 1080 по 8 ГБ (Pascal, compute capability `sm_61`);
-- почти заполненный системный SSD 250 ГБ;
-- внешний HDD для всего проекта, моделей, пользовательских данных, временных файлов и кэшей;
-- нет прав администратора;
-- 40–50 пользователей могут работать с общей переносимой установкой **последовательно**, но не одновременно.
+### 1. Подготовка на Windows с интернетом
 
-Системный `%APPDATA%` и `%LOCALAPPDATA%` не должны использоваться даже для кэша загрузки моделей. BAT перенаправляет profile/cache/temp-каталоги внутрь `app` до запуска дочерних инструментов, ничего не записывает через `setx` и добавляет portable-инструменты только во временный `PATH` текущего процесса. GPU используется там, где это быстрее CPU; CPU остаётся для баз данных, распаковки, PDF-растеризации, post-processing и другой ненейросетевой работы.
-
-## Главные решения
-
-| Компонент | Зафиксировано | Зачем именно так |
-|---|---|---|
-| RAGFlow | `0.27.1` | актуальный стабильный релиз от 28.08.2026; требует Python `>=3.13,<3.14` |
-| RAGFlow Python | CPython `3.13.15` standalone | переносимый `install_only` runtime без registry и привязки conda-prefix |
-| OCR Python | CPython `3.11.16` standalone | отдельный ABI для Windows GPU-wheel Paddle |
-| PaddlePaddle | GPU `3.3.1`, CUDA 11.8, `cp311` | wheel содержит `sm_61`; это необходимый код для GTX 1080 |
-| PaddleOCR / PaddleX | `3.7.0` / `3.7.2` | актуальная стабильная ветка с PP-OCRv6 и PP-StructureV3 |
-| OCR-модели | `PP-DocLayout-L` + `PP-DocBlockLayout` + `PP-OCRv6_medium_det` + `eslav_PP-OCRv5_mobile_rec` + `SLANet_plus` | качественный layout/кириллический OCR и обязательное восстановление структуры таблиц |
-| Node | `24.20.0 LTS` | только online production build frontend; в offline runtime Node не попадает |
-| Portable Git | MinGit `2.55.0.5` | распаковывается в `app\build\git` и попадает только в `PATH` процесса BAT; системная установка не нужна |
-| llama.cpp | `b10786`, официальный Windows Vulkan build | GPU-инференс на Pascal без зависимости от готовых CUDA 12/13 builds |
-| Сервисы | MySQL `8.0.40`, Elasticsearch `8.11.3`, Silo `2026-08-06`, Valkey `8.1.6`, Caddy `2.11.4` | совместимые переносимые Windows binaries; Node/Java отдельно ставить не требуется |
-
-RAGFlow и Paddle нельзя разумно поместить в один Python: текущий RAGFlow требует 3.13, а выбранный и проверяемый Windows GPU-wheel Paddle имеет ABI 3.11. Miniconda здесь не даёт преимущества и добавляет риск абсолютных prefix-путей при смене буквы внешнего диска.
-
-Основные официальные источники: [RAGFlow v0.27.1](https://github.com/infiniflow/ragflow/releases/tag/v0.27.1), [RAGFlow pyproject](https://github.com/infiniflow/ragflow/blob/v0.27.1/pyproject.toml), [PaddleOCR v3.7.0](https://github.com/PaddlePaddle/PaddleOCR/releases/tag/v3.7.0), [PP-StructureV3](https://www.paddleocr.ai/main/en/version3.x/algorithm/PP-StructureV3/PP-StructureV3.html), [python-build-standalone 20260901](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901), [MinGit 2.55.0.5](https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5) и [llama.cpp b10786](https://github.com/ggml-org/llama.cpp/releases/tag/b10786).
-
-## Структура
-
-```text
-local_llm\
-  1.PREPARE-ONLINE.bat
-  _src\
-    <23 vendor artifacts>    файлы, которые пользователь кладёт сюда вручную
-    project\                 versioned requirements/config/helpers
-    logs\                    подробные журналы online-сборки
-    prepared\                атомарно опубликованный offline-набор
-  _work\                     только временные staging-каталоги
-  app\
-    build\                   uv, Node, MinGit и временные online-материалы
-    cache\paddlex\...        пять явно подготовленных OCR/table-моделей
-    config\                  locks, freeze и provenance/smoke records
-    data\                    локальные profile/cache/data roots
-    models\llm               будущие chat GGUF
-    models\embed             будущие embedding GGUF
-    ragflow                  backend и проверенные нейтральные assets
-    runtime                  два Python runtime, VC DLL и llama.cpp
-    services                 MySQL, Elasticsearch+JDK, Silo, Valkey, Caddy, OCR gateway
-    web                      готовый production frontend
-```
-
-Скрипт определяет корень только через `%~dp0`: буква диска и имя папки нигде не зашиты. Все известные `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, temp и cache-переменные перенаправляются внутрь `app` до первого запуска PowerShell/Python/Node.
-
-## Запуск
-
-1. Поместите проект в короткий локальный путь на внешнем диске, например `X:\local_llm`. Файловая система должна поддерживать файлы больше 4 ГБ; NTFS или exFAT подходят. Не используйте пробелы, `#` или CMD-метасимволы `! & ( ) % ; ^ < > |`.
-2. NVIDIA driver и Vulkan runtime должны уже работать в Windows. Проект их не устанавливает и не может сделать это без администратора.
-3. Запустите:
-
-   ```bat
-   1.PREPARE-ONLINE.bat artifacts-only
-   ```
-
-   Для каждого отсутствующего vendor-файла BAT печатает на английском имя, фиксированный URL и точный путь `_src\...`, затем ждёт `pause` и проверяет снова. Сам BAT эти 23 файла не скачивает. Полный перечень и SHA-256 находится в [_src/project/artifacts.sha256](./_src/project/artifacts.sha256).
-
-4. После подготовки всех vendor-файлов запустите обычную online-сборку:
-
-   ```bat
-   1.PREPARE-ONLINE.bat
-   ```
-
-   Здесь интернет уже используется для транзитивных PyPI/npm-зависимостей и строго зафиксированных RAGFlow assets. Результат устанавливается в переносимые runtime-каталоги, а не оставляется россыпью wheelhouse-файлов.
-
-5. На целевом Windows-компьютере с GTX 1080 обязательно выполните:
-
-   ```bat
-   1.PREPARE-ONLINE.bat gpu-test
-   ```
-
-   Режим проверяет CUDA 11.8, наличие `sm_61` в wheel, выбранную карту, реальную CUDA-матрицу, загрузку пяти моделей, OCR изображения и PDF, распознавание табличной структуры и получение table-блока через **штатный** parser RAGFlow. CPU fallback отсутствует. В `build-info.txt` успешный результат записывается как `target_gpu_e2e=passed`.
-
-Обычный запуск полезен для сборки на любой Windows x64 машине, но не делает непроверенную GTX 1080 «подтверждённо совместимой». Будущий offline installer также должен отказать в `install.ok`, пока target GPU E2E не пройдёт.
-
-## Четырёхаргументная функция
-
-Требуемый общий механизм находится под меткой `:EnsureArtifact`:
+Поместите репозиторий в короткий путь на NTFS/exFAT, например `X:\local_llm`. Online builder намеренно отклоняет пробелы и CMD/URI-метасимволы в build path. Сначала соберите вручную загружаемые vendor-файлы:
 
 ```bat
-call :EnsureArtifact "file-name" "destination-under-app" "key-file" "fixed-url"
+1.PREPARE-ONLINE.bat artifacts-only
 ```
 
-Он принимает ровно четыре аргумента и выполняет нужный цикл: ждёт файл непосредственно в `_src`, сверяет fail-closed SHA-256, создаёт destination, проверяет key, распаковывает или копирует через staging, повторно проверяет key и при автоматической ошибке ждёт ручной обработки.
+BAT печатает фиксированный URL и ожидаемый путь для каждого отсутствующего файла. Все 23 файла проверяются по [_src/project/artifacts.sha256](./_src/project/artifacts.sha256); файл с неверным SHA-256 не используется.
 
-Есть одно намеренное усиление исходного требования: одного старого key-файла недостаточно для пропуска. Рядом должен быть marker с именем и SHA-256 именно текущего source artifact; для обычного файла дополнительно выполняется бинарное сравнение. Поэтому случайно оставшийся или подменённый каталог не считается готовым.
+Затем выполните полную online-сборку:
 
-## Offline-набор
+```bat
+1.PREPARE-ONLINE.bat
+```
 
-После полного успеха `_src\prepared` содержит:
+Если сборка выполняется непосредственно на целевой GTX 1080, можно сразу провести аппаратный тест:
+
+```bat
+1.PREPARE-ONLINE.bat gpu-test
+```
+
+Результат появится в `_src\prepared`. В набор входят девять архивов, offline launcher `LOCAL-LLM.bat`, README, bootstrap `7zr.exe`, манифесты SHA-256, audit и `prepared.ok`.
+
+### 2. Перенос на компьютер без интернета
+
+Скопируйте **весь** каталог `_src\prepared` на внешний HDD целевого компьютера. Путь может содержать пробелы и кириллицу, но из-за синтаксиса CMD не должен содержать `! % & ^ < > |`; launcher проверяет это до работы с файлами. GGUF переносятся отдельно, потому что уже квантованные модели почти не сжимаются. Сначала установите runtime, затем положите модели в созданные каталоги:
 
 ```text
-7zr.exe
-00-bootstrap-tools.7z
-10-python-rag-runtime.7z
-20-python-ocr-gpu-runtime.7z
-21-paddle-models.7z
-30-ragflow-backend.7z
-31-ragflow-web-dist.7z
-40-services.7z
-41-config-seed.7z
-50-llama-vulkan-runtime.7z
-PORTABILITY-AUDIT.json
-SHA256SUMS.txt
-SOURCE-SHA256SUMS.txt
-build-info.txt
-prepared.ok
+<каталог с LOCAL-LLM.bat>\
+  LOCAL-LLM.bat
+  SHA256SUMS.txt
+  00-bootstrap-tools.7z ... 50-llama-vulkan-runtime.7z
 ```
 
-Перед публикацией все девять архивов тестируются, распаковываются вместе в новый временный каталог и повторно проходят runtime/import/OCR-contract/RAGFlow/portability проверки в окружении, которое не видит исходное `app`. Старый корректный `_src\prepared` заменяется только атомарным `move`; при ошибке он сохраняется.
+После `install`:
 
-GGUF в архивы не включаются: уже квантованные файлы почти не сжимаются и только зря замедлят HDD. `Vikhr-Nemo-12B Q4_K_M` и `Qwen3-Embedding-8B-Q4_K_M.gguf` нужно переносить отдельно вместе с их SHA-256.
+```text
+app\models\embed\Qwen3-Embedding-8B-Q4_K_M.gguf
+app\models\llm\Vikhr-Nemo-12B-Q4_K_M.gguf
+```
 
-## Ограничения, которые важно принять заранее
+Если имена отличаются, отредактируйте пути через пункт 8 меню.
 
-- Native Windows без Docker не является штатным deployment target RAGFlow. Скрипт фиксирует точные совместимые отклонения: NumPy `2.3.5`, XGBoost `2.1.4`, собственный проверенный MSVC wheel `datrie 0.8.3`, app-local VC runtime. Полный fork `graspologic` по-прежнему исключён из-за требования `numpy<2`, но GraphRAG включён через закреплённый `graspologic-native 1.2.5` и audited-адаптер: hierarchical Leiden выполняет тот же Rust backend, а largest connected component — NetworkX. Сборка проверяет импорт полного GraphRAG entrypoint и реальное разбиение тестового графа.
-- Upstream `ragflow_deps\download_deps.py` предназначен для Linux/Docker-слоя и среди прочего загружает Ubuntu `.deb`. BAT не запускает его на Windows. Нужные платформенно-нейтральные RAGFlow assets загружаются отдельным проектным helper-скриптом с закреплёнными revision, размером и SHA-256; это не означает пропуск нужных runtime-зависимостей.
-- `PP-StructureV3` всегда запускается с `use_table_recognition: true`: layout сначала выделяет table-регионы, затем `SLANet_plus` с batch 1 восстанавливает ячейки/строки/столбцы, переиспользуя общий кириллический OCR. Отключить таблицы через API нельзя. Тяжёлый `table_recognition_v2` с пятью дополнительными моделями, а также formulas, charts, seals и preprocessing выключены ради одной карты 8 ГБ. Реальный `gpu-test` остаётся обязательным memory/compatibility gate.
-- Две GTX 1080 по 8 ГБ не образуют общую 16-ГБ память. Для ваших моделей нужен режимный scheduler: ingestion (`OCR → embedding`) и chat не должны одновременно пытаться занять обе карты. Точный Vulkan tensor split и context/KV cache определяются замером на целевом ПК.
-- Строго GPU относится к нейросетевому inference. Растеризация PDF, декодирование, post-processing, JSON, chunking и работа базы всё равно выполняются CPU.
-- Текущий Paddle wheel действительно содержит `sm_61`, но актуальная общая документация Paddle формально ориентируется на более новые GPU. Поэтому реальный `gpu-test` на GTX 1080 — обязательный compatibility gate, а не обещание на основании имени wheel.
-- Переносимое хранилище рассчитано на последовательную работу разных пользователей. Одновременный запуск общей MySQL/Elasticsearch базы несколькими аккаунтами и отключение HDD во время работы опасны для данных. ACL диска должны давать запись всем нужным пользователям.
-- Переменные известных библиотек изолированы, а payload сканируется на абсолютный build-path и reparse points. Но только Process Monitor на чистой Windows-учётной записи может доказать, что неизвестная native DLL ни разу не обратилась к Known Folders.
+### 3. Установка и запуск
 
-Подробности реализации и границы следующих этапов: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+Двойной щелчок по `LOCAL-LLM.bat` открывает меню. Первый запуск — пункт `1`.
+
+```bat
+LOCAL-LLM.bat install
+```
+
+Установщик:
+
+- находит архивы рядом с BAT или в `_src\prepared`;
+- проверяет полный `SHA256SUMS.txt` **до** запуска `7zr.exe`;
+- тестирует каждый архив и распаковывает всё в новый staging-каталог;
+- публикует `app` одним `move`, не смешивая частичную установку с рабочей;
+- создаёт уникальные локальные пароли и конфигурацию всех путей/портов;
+- проверяет оба Python runtime, RAGFlow assets, OCR API contract и GraphRAG;
+- обязательно запускает реальный CUDA 11.8 / `sm_61` OCR+table E2E без CPU fallback;
+- инициализирует и защищает portable MySQL;
+- пишет `app\data\control\install.ok.json` только после полного успеха.
+
+GPU-проверка может занять несколько минут. Если она не прошла, файлы и логи сохраняются, но запуск блокируется; после исправления причины достаточно повторить `install`.
+
+После установки доступны три профиля:
+
+| Команда | Что запускается | Назначение |
+|---|---|---|
+| `LOCAL-LLM.bat start core` | MySQL, Elasticsearch, Silo, Valkey, RAGFlow API, Caddy | UI и обслуживание данных без нейросетевой нагрузки |
+| `LOCAL-LLM.bat start ingestion` | core + embeddings + PaddleOCR + task executor | загрузка, OCR, таблицы, chunking и индексация |
+| `LOCAL-LLM.bat start chat` | core + embeddings + Vikhr chat | поиск и ответы; OCR/worker останавливаются для освобождения VRAM |
+
+Откройте адрес, напечатанный BAT (по умолчанию `http://127.0.0.1:9388`). Все сервисы слушают только loopback.
+
+## Меню и команды
+
+```bat
+LOCAL-LLM.bat                         rem интерактивное меню
+LOCAL-LLM.bat install                 rem установка/повторная строгая проверка
+LOCAL-LLM.bat start core
+LOCAL-LLM.bat start ingestion
+LOCAL-LLM.bat start chat
+LOCAL-LLM.bat status
+LOCAL-LLM.bat stop
+LOCAL-LLM.bat verify
+LOCAL-LLM.bat verify --gpu
+LOCAL-LLM.bat config show
+LOCAL-LLM.bat config edit
+LOCAL-LLM.bat devices                 rem Vulkan-устройства llama.cpp
+```
+
+`status` сверяет не только PID: supervisor PID и child PID привязаны к identity процесса, а сетевые сервисы проверяются через реальные readiness/health endpoints. Осиротевший child показывается отдельно и безопасно завершается командой `stop` после повторной проверки identity. `stop` сначала использует штатное завершение MySQL, Valkey и Caddy, затем посылает отдельной process group сигнал завершения; принудительно завершается только конкретное дерево PID и только после timeout.
+
+При ошибке запуска новые процессы текущей попытки откатываются. Процессы никогда не ищутся и не завершаются по имени или заголовку окна.
+
+## Перенос установки и настройка путей
+
+Корень всегда вычисляется от `%~dp0`; буква диска и имя каталога не зашиты. После переноса всего каталога на другой диск просто запустите `LOCAL-LLM.bat`: перед каждой командой он заново генерирует path-sensitive MySQL, Elasticsearch, Caddy и RAGFlow configs для текущего расположения.
+
+Настройки находятся в:
+
+```text
+app\config\runtime\local-llm.ini
+```
+
+Пункт `8` открывает этот файл в Notepad и после закрытия проверяет значения. Перед редактированием стек должен быть остановлен. Можно менять:
+
+- порты;
+- относительные пути к обоим GGUF внутри `app` (выход за portable-корень блокируется);
+- CUDA index PaddleOCR;
+- размещение llama.cpp по Vulkan GPU и `tensor-split`;
+- context/batch;
+- лимиты памяти MySQL, Elasticsearch и Valkey;
+- startup/shutdown timeout.
+
+Секреты хранятся отдельно в `app\config\runtime\secrets.json`, повторно не генерируются и не должны публиковаться. После переноса `install` повторять не требуется; повторный `install` той же версии заново создаёт path-sensitive configs и выполняет полную проверку, не перезаписывая данные. Launcher и controller разных версий намеренно несовместимы: нельзя смешивать файлы из разных prepared-наборов, а upgrade существующих данных следует делать в отдельной копии.
+
+## GPU-профили и модели
+
+Две GTX 1080 по 8 ГБ не являются одной картой с 16 ГБ. Конфигурация по умолчанию рассчитана на раздельные режимы:
+
+- ingestion: OCR на CUDA GPU 0, embedding на llama/Vulkan GPU 1;
+- chat: embedding на GPU 0, Vikhr распределяется `0.20,0.80` с основной GPU 1;
+- `core`: нейросетевые процессы не запущены.
+
+Нумерация CUDA и Vulkan обычно совпадает, но это не гарантируется. Сначала выполните `LOCAL-LLM.bat devices`, затем при необходимости исправьте `[gpu]` в `local-llm.ini`. Defaults для 8 ГБ — embedding context/batch `2048/512`, chat `4096/256`; конкретные context/batch/tensor split всё равно следует подтвердить на целевых GGUF и документах.
+
+RAGFlow получает локальные OpenAI-compatible endpoints:
+
+- embeddings: `http://127.0.0.1:6380/v1`;
+- chat: `http://127.0.0.1:6381/v1`;
+- PaddleOCR: `http://127.0.0.1:9399`, алгоритм `PP-StructureV3`.
+
+Defaults записываются в локальный `service_conf`. После создания первого пользователя проверьте в UI, что для dataset выбран локальный embedding provider, а для сканов — layout recognizer `PaddleOCR` / `PP-StructureV3`. RAGFlow хранит выбор модели конкретного пользователя/dataset в MySQL, поэтому launcher не перезаписывает его при каждом старте.
+
+## Состав и версии
+
+| Компонент | Версия / профиль |
+|---|---|
+| RAGFlow | `0.27.1`, native Windows compatibility patch |
+| RAGFlow Python | CPython `3.13.15` standalone |
+| OCR Python | CPython `3.11.16` standalone |
+| PaddlePaddle | GPU `3.3.1`, CUDA 11.8, Windows `cp311`, проверка `sm_61` |
+| PaddleOCR / PaddleX | `3.7.0` / `3.7.2` |
+| OCR models | PP-DocLayout-L, PP-DocBlockLayout, PP-OCRv6 medium det, East Slavic PP-OCRv5 rec, SLANet_plus |
+| llama.cpp | `b10786`, Windows Vulkan |
+| Data services | MySQL `8.0.40`, Elasticsearch `8.11.3`, Silo `2026-08-06`, Valkey `8.1.6` |
+| Web proxy | Caddy `2.11.4` |
+| Online-only tools | Node `24.20.0`, MinGit `2.55.0.5`, uv `0.12.9` |
+
+RAGFlow требует Python `>=3.13,<3.14`, а выбранный Windows GPU-wheel Paddle имеет ABI `cp311`, поэтому два автономных Python runtime являются намеренным решением.
+
+## Где искать состояние и ошибки
+
+```text
+app\logs\                         логи каждого runtime-сервиса и проверок
+app\data\control\                PID/identity metadata, профиль, install.ok
+app\config\runtime\              пользовательский INI, secrets, generated configs
+app\data\mysql\                  MySQL data
+app\data\elasticsearch\          Elasticsearch indices
+app\data\silo\                   S3 objects
+app\data\valkey\                 queue/cache persistence
+app\data\ocr-jobs\               локальные OCR jobs/results
+_work\offline-install-...\        сохранённый staging при ошибке распаковки
+```
+
+При сбое сначала выполните `LOCAL-LLM.bat status`, затем приложите полный лог соответствующего сервиса. Нельзя отключать диск или завершать процессы вручную во время записи MySQL/Elasticsearch/Silo; используйте `LOCAL-LLM.bat stop`.
+
+Если окно было принудительно закрыто именно во время распаковки, следующий `install` fail-closed остановится на `_work\offline-install.lock`. Удалять этот каталог можно только после проверки, что другой `LOCAL-LLM.bat install` не выполняется; сохранённый `_work\offline-install-*` пригоден для диагностики, но не считается установленным приложением.
+
+## Границы проверки
+
+- Native Windows не является официальным deployment target RAGFlow; совместимые отклонения точно закреплены и проверяются в online build.
+- Valkey Windows — community build, поэтому его реальная queue-семантика должна быть подтверждена на целевой машине.
+- NVIDIA driver и Vulkan runtime должны быть заранее установлены администратором системы; проект их не меняет.
+- Linux-сервер этого репозитория используется только для source/unit/static-проверок. Реальный BAT, Windows executables, две GTX 1080 и OCR E2E проверяются на целевом Windows ПК.
+- Application-level portability не заменяет ProcMon-приёмку под чистой Windows-учётной записью.
+
+Подробное устройство trust chain, native RAGFlow patch, OCR gateway и управления процессами: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).

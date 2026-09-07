@@ -78,6 +78,13 @@ def main() -> int:
         )
         try:
             with TestClient(create_app(manager, "local")) as client:
+                health = client.get("/health")
+                health.raise_for_status()
+                assert health.json() == {
+                    "status": "ready",
+                    "strict_gpu": "fake-contract-test",
+                }
+
                 unauth = client.post(
                     "/api/v2/ocr/jobs",
                     data={"model": "PP-StructureV3", "optionalPayload": "{}"},
@@ -90,9 +97,7 @@ def main() -> int:
                     headers={"Authorization": "Bearer local"},
                     data={
                         "model": "PP-StructureV3",
-                        "optionalPayload": json.dumps(
-                            {"useTableRecognition": False}
-                        ),
+                        "optionalPayload": json.dumps({"useTableRecognition": False}),
                     },
                     files={"file": ("document.png", b"\x89PNG\r\n\x1a\nDATA")},
                 )
@@ -136,9 +141,7 @@ def main() -> int:
                     "/api/v2/ocr/jobs",
                     headers={"Authorization": "Bearer local"},
                     data={"model": "PP-StructureV3", "optionalPayload": "{}"},
-                    files={
-                        "file": ("document.pdf", b"\x89PNG\r\n\x1a\nFAIL")
-                    },
+                    files={"file": ("document.pdf", b"\x89PNG\r\n\x1a\nFAIL")},
                 )
                 failed.raise_for_status()
                 failed_id = failed.json()["data"]["jobId"]

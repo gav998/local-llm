@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.07.2"
+set "PROJECT_VERSION=2026.09.07.3"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -341,7 +341,7 @@ endlocal & exit /b 0
 setlocal
 set "VALIDATE_PREPARED_DIR=%~1"
 if not exist "%~1\." (endlocal & exit /b 1)
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $payload=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe'); $metadata=@('PORTABILITY-AUDIT.json','SHA256SUMS.txt','SOURCE-SHA256SUMS.txt','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $payload+$metadata){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $allowed.Count){throw 'Prepared file count mismatch'}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $lines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SHA256SUMS.txt')); if($lines.Count -ne $payload.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed payload hash: '+$line)}; $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $key=$name.ToLowerInvariant(); if($seen.ContainsKey($key) -or -not ($payload -contains $name)){throw ('Unexpected or duplicate payload hash: '+$name)}; $seen[$key]=$true; $path=Join-Path $root.FullName $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw ('Payload SHA256 mismatch: '+$name)}}; if($seen.Count -ne $payload.Count){throw 'Incomplete payload hash set'}; $sourceLines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SOURCE-SHA256SUMS.txt')); if($sourceLines.Count -ne 23){throw 'Source hash count mismatch'}; $sourceSeen=@{}; foreach($line in $sourceLines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed source hash: '+$line)}; $name=$matches[2].ToLowerInvariant(); if($sourceSeen.ContainsKey($name)){throw ('Duplicate source hash: '+$name)}; $sourceSeen[$name]=$true}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $payload=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md'); $metadata=@('PORTABILITY-AUDIT.json','SHA256SUMS.txt','SOURCE-SHA256SUMS.txt','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $payload+$metadata){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $allowed.Count){throw 'Prepared file count mismatch'}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $lines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SHA256SUMS.txt')); if($lines.Count -ne $payload.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed payload hash: '+$line)}; $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $key=$name.ToLowerInvariant(); if($seen.ContainsKey($key) -or -not ($payload -contains $name)){throw ('Unexpected or duplicate payload hash: '+$name)}; $seen[$key]=$true; $path=Join-Path $root.FullName $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw ('Payload SHA256 mismatch: '+$name)}}; if($seen.Count -ne $payload.Count){throw 'Incomplete payload hash set'}; $sourceLines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SOURCE-SHA256SUMS.txt')); if($sourceLines.Count -ne 23){throw 'Source hash count mismatch'}; $sourceSeen=@{}; foreach($line in $sourceLines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed source hash: '+$line)}; $name=$matches[2].ToLowerInvariant(); if($sourceSeen.ContainsKey($name)){throw ('Duplicate source hash: '+$name)}; $sourceSeen[$name]=$true}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
 set "VALIDATE_RC=%ERRORLEVEL%"
 endlocal & exit /b %VALIDATE_RC%
 
@@ -472,6 +472,7 @@ set "RAGFLOW_TREE_MARKER=%APP%\config\ragflow-tree.ok"
 set "RAG_PY_TREE_FINGERPRINT=tree-schema=1;project=%PROJECT_VERSION%;component=python-rag"
 set "OCR_PY_TREE_FINGERPRINT=tree-schema=1;project=%PROJECT_VERSION%;component=python-ocr"
 set "RAGFLOW_TREE_FINGERPRINT=tree-schema=1;project=%PROJECT_VERSION%;component=ragflow"
+set "RAGFLOW_TREE_EXCLUDES=conf/local.service_conf.yaml;logs/"
 set "PATH=%SHARED_DLL_DIR%;%NODE_DIR%;%PORTABLE_GIT_DIR%\cmd;%PORTABLE_GIT_DIR%\mingw64\bin;%PATH%"
 exit /b 0
 
@@ -507,6 +508,8 @@ for %%F in (
     "test_ocr_job_gateway_contract.py"
     "ocr_ragflow_e2e.py"
     "audit_portability.py"
+    "local_llm_ctl.py"
+    "local_llm_supervisor.py"
 ) do (
     if not exist "%PROJECT%\%%~F" (
         echo [ERROR] Project input is missing: %PROJECT%\%%~F
@@ -541,7 +544,7 @@ if errorlevel 1 (
     if errorlevel 1 exit /b 1
     set "RAG_RUNTIME_RESET=1"
 )
-call :MutableTreeMatches "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%"
+call :MutableTreeMatches "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%"
 if errorlevel 1 (
     if exist "%RAGFLOW_DIR%\." echo [WARN] RAGFlow source tree is unsealed or changed; restoring its clean base.
     call :RemoveTreeChecked "%RAGFLOW_DIR%"
@@ -577,7 +580,7 @@ exit /b 0
 if not exist "%~1\." exit /b 1
 call :MarkerMatches "%~2" "%~3"
 if errorlevel 1 exit /b 1
-call :TreeMatchesMarker "%~1" "%~2" ""
+call :TreeMatchesMarker "%~1" "%~2" "%~4"
 exit /b %ERRORLEVEL%
 
 REM ============================================================================
@@ -1085,7 +1088,7 @@ set "TREE_FILE_COUNT_VALUE="
 if not exist "%~1\." (
     endlocal & exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:TREE_ROOT -Force; if(-not $root.PSIsContainer){throw 'Tree root is not a directory'}; if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Tree root is a reparse point'}; $rootPath=$root.FullName.TrimEnd([char[]]'\/'); $exclude=[string]$env:TREE_EXCLUDE_REL; $exclude=$exclude.Replace('\','/'); $rows=New-Object 'System.Collections.Generic.List[string]'; foreach($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAction Stop){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw ('Reparse point in sealed tree: '+$item.FullName)}; if($item.PSIsContainer){continue}; $rel=$item.FullName.Substring($rootPath.Length).TrimStart([char[]]'\/').Replace('\','/'); if($exclude -and [StringComparer]::OrdinalIgnoreCase.Equals($rel,$exclude)){continue}; $fileHash=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [void]$rows.Add($rel+"`0"+$item.Length+"`0"+$fileHash)}; [string[]]$ordered=$rows.ToArray(); [Array]::Sort($ordered,[StringComparer]::Ordinal); $body=[String]::Join("`n",$ordered); if($ordered.Length -gt 0){$body+="`n"}; $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($body); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=$sha.ComputeHash($bytes)}finally{$sha.Dispose()}; $hex=-join($digest | ForEach-Object {$_.ToString('x2')}); @('TREE_SHA256='+$hex,'TREE_FILE_COUNT='+$ordered.Length) | Set-Content -LiteralPath $env:TREE_OUTPUT -Encoding ascii" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:TREE_ROOT -Force; if(-not $root.PSIsContainer){throw 'Tree root is not a directory'}; if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Tree root is a reparse point'}; $rootPath=$root.FullName.TrimEnd([char[]]'\/'); $excludes=@([string]$env:TREE_EXCLUDE_REL -split ';' | ForEach-Object {$_.Replace('\','/').TrimStart('/') } | Where-Object {$_}); $rows=New-Object 'System.Collections.Generic.List[string]'; foreach($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAction Stop){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw ('Reparse point in sealed tree: '+$item.FullName)}; if($item.PSIsContainer){continue}; $rel=$item.FullName.Substring($rootPath.Length).TrimStart([char[]]'\/').Replace('\','/'); $skip=$false; foreach($exclude in $excludes){if($exclude.EndsWith('/')){if($rel.StartsWith($exclude,[StringComparison]::OrdinalIgnoreCase)){$skip=$true;break}}elseif([StringComparer]::OrdinalIgnoreCase.Equals($rel,$exclude)){$skip=$true;break}}; if($skip){continue}; $fileHash=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [void]$rows.Add($rel+"`0"+$item.Length+"`0"+$fileHash)}; [string[]]$ordered=$rows.ToArray(); [Array]::Sort($ordered,[StringComparer]::Ordinal); $body=[String]::Join("`n",$ordered); if($ordered.Length -gt 0){$body+="`n"}; $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($body); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=$sha.ComputeHash($bytes)}finally{$sha.Dispose()}; $hex=-join($digest | ForEach-Object {$_.ToString('x2')}); @('TREE_SHA256='+$hex,'TREE_FILE_COUNT='+$ordered.Length) | Set-Content -LiteralPath $env:TREE_OUTPUT -Encoding ascii" >nul 2>&1
 if errorlevel 1 (
     if exist "%TREE_OUTPUT%" del /f /q "%TREE_OUTPUT%" >nul 2>&1
     endlocal & exit /b 1
@@ -1695,18 +1698,18 @@ call :SealOneTree "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRIN
 if errorlevel 1 exit /b 1
 call :SealOneTree "%OCR_PY_DIR%" "%OCR_PY_TREE_MARKER%" "%OCR_PY_TREE_FINGERPRINT%"
 if errorlevel 1 exit /b 1
-call :SealOneTree "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%"
+call :SealOneTree "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%"
 if errorlevel 1 exit /b 1
 exit /b 0
 
 :SealOneTree
 set "FINAL_TREE_SHA256="
 set "FINAL_TREE_FILE_COUNT="
-call :ComputeTreeFingerprint "%~1" "" FINAL_TREE_SHA256 FINAL_TREE_FILE_COUNT
+call :ComputeTreeFingerprint "%~1" "%~4" FINAL_TREE_SHA256 FINAL_TREE_FILE_COUNT
 if errorlevel 1 exit /b 1
 call :WriteSealedFingerprintMarker "%~2" "%~3" "%FINAL_TREE_SHA256%" "%FINAL_TREE_FILE_COUNT%"
 if errorlevel 1 exit /b 1
-call :MutableTreeMatches "%~1" "%~2" "%~3"
+call :MutableTreeMatches "%~1" "%~2" "%~3" "%~4"
 exit /b %ERRORLEVEL%
 
 :PackagePreparedOutput
@@ -1723,6 +1726,10 @@ if errorlevel 1 exit /b 1
 copy /y "%SEVEN_ZIP_BOOTSTRAP%" "%PACKAGE_STAGE%\7zr.exe" >nul 2>&1
 if errorlevel 1 exit /b 1
 fc /b "%SEVEN_ZIP_BOOTSTRAP%" "%PACKAGE_STAGE%\7zr.exe" >nul 2>&1
+if errorlevel 1 exit /b 1
+copy /y "%ROOT%\LOCAL-LLM.bat" "%PACKAGE_STAGE%\LOCAL-LLM.bat" >nul 2>&1
+if errorlevel 1 exit /b 1
+copy /y "%ROOT%\README.md" "%PACKAGE_STAGE%\README.md" >nul 2>&1
 if errorlevel 1 exit /b 1
 
 call :WriteBundleList "00-bootstrap-tools.lst" "app\tools\7zip-bootstrap"
@@ -1885,6 +1892,8 @@ for %%K in (
     "services\ocr\ocr_job_gateway.py"
     "services\ocr\font\ttf\DejaVuSans.ttf"
     "config\project\audit_portability.py"
+    "config\project\local_llm_ctl.py"
+    "config\project\local_llm_supervisor.py"
     "config\pp-structure-v3-8gb.yaml"
     "runtime\llama\llama-server.exe"
 ) do if not exist "%REHYDRATE_APP%\%%~K" (
@@ -1947,7 +1956,7 @@ if errorlevel 1 (
     echo [ERROR] Rehydrated OCR Python tree does not match its final seal.
     exit /b 1
 )
-call :MutableTreeMatches "%REHYDRATE_APP%\ragflow" "%REHYDRATE_APP%\config\ragflow-tree.ok" "%RAGFLOW_TREE_FINGERPRINT%"
+call :MutableTreeMatches "%REHYDRATE_APP%\ragflow" "%REHYDRATE_APP%\config\ragflow-tree.ok" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%"
 if errorlevel 1 (
     echo [ERROR] Rehydrated RAGFlow source tree does not match its final seal.
     exit /b 1
@@ -2078,11 +2087,12 @@ set "HASH_OUTPUT_FILE=%SOURCE_HASH_RECORD%"
 "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $rows=@(); foreach($line in Get-Content -LiteralPath $env:HASH_MANIFEST) { if($line -match '^([0-9a-fA-F]{64})\s{2}(.+)$') { $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $path=Join-Path $env:SRC $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing source artifact: '+$name)}; $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); if($actual -ne $expected){throw ('Source hash changed: '+$name)}; $rows+=($actual+'  '+$name) } }; if($rows.Count -ne 23){throw ('Expected 23 source artifacts, found '+$rows.Count)}; $rows | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\source-hashes.log" 2>&1
 if errorlevel 1 exit /b 1
 set "HASH_OUTPUT_FILE=%BUNDLE_HASH_RECORD%"
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $files=@(Get-ChildItem -LiteralPath $env:BUNDLE_TARGET_DIR -Filter '*.7z' -File); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR '7zr.exe'); $files=@($files | Sort-Object Name); if($files.Count -ne 10){throw ('Expected 9 bundles plus 7zr.exe, found '+$files.Count)}; $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\bundle-hashes.log" 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $files=@(Get-ChildItem -LiteralPath $env:BUNDLE_TARGET_DIR -Filter '*.7z' -File); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR '7zr.exe'); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR 'LOCAL-LLM.bat'); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR 'README.md'); $files=@($files | Sort-Object Name); if($files.Count -ne 12){throw ('Expected 9 bundles, 7zr.exe, launcher and README; found '+$files.Count)}; $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\bundle-hashes.log" 2>&1
 if errorlevel 1 exit /b 1
 
 >"%BUNDLE_TARGET_DIR%\build-info.txt" (
     echo local_llm_prepare_version=%PROJECT_VERSION%
+    echo local_llm_control_version=%PROJECT_VERSION%
     echo prepared_date=%DATE%
     echo prepared_time=%TIME%
     echo target=windows-x86_64-portable

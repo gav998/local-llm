@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Static contracts shared by the online packager and offline BAT launcher."""
+
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+PREPARE = ROOT / "1.PREPARE-ONLINE.bat"
+LAUNCHER = ROOT / "LOCAL-LLM.bat"
+
+PAYLOAD = {
+    "00-bootstrap-tools.7z",
+    "10-python-rag-runtime.7z",
+    "20-python-ocr-gpu-runtime.7z",
+    "21-paddle-models.7z",
+    "30-ragflow-backend.7z",
+    "31-ragflow-web-dist.7z",
+    "40-services.7z",
+    "41-config-seed.7z",
+    "50-llama-vulkan-runtime.7z",
+    "7zr.exe",
+    "LOCAL-LLM.bat",
+    "README.md",
+}
+
+
+class LauncherContractTest(unittest.TestCase):
+    def test_versions_and_payload_manifest_stay_synchronized(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        prepare_version = re.search(r'set "PROJECT_VERSION=([^"\r\n]+)', prepare)
+        control_version = re.search(r'set "CONTROL_VERSION=([^"\r\n]+)', launcher)
+        self.assertIsNotNone(prepare_version)
+        self.assertIsNotNone(control_version)
+        self.assertEqual(prepare_version.group(1), control_version.group(1))
+        controller = (ROOT / "_src" / "project" / "local_llm_ctl.py").read_text(
+            encoding="utf-8"
+        )
+        python_version = re.search(r'CONTROL_VERSION = "([^"\r\n]+)', controller)
+        self.assertIsNotNone(python_version)
+        self.assertEqual(control_version.group(1), python_version.group(1))
+        for name in PAYLOAD:
+            self.assertIn(name, prepare)
+            self.assertIn(name, launcher)
+
+    def test_all_literal_batch_targets_exist(self) -> None:
+        for path in (PREPARE, LAUNCHER):
+            text = path.read_text(encoding="utf-8")
+            labels = {
+                match.group(1).lower()
+                for match in re.finditer(r"(?im)^:([a-z0-9_.-]+)\s*$", text)
+            }
+            references = {
+                match.group(1).lower()
+                for match in re.finditer(r"(?i)\b(?:call|goto)\s+:([a-z0-9_.-]+)", text)
+            }
+            self.assertEqual(set(), references - labels, path.name)
+
+    def test_portable_policy_has_no_machine_mutations(self) -> None:
+        combined = (
+            PREPARE.read_text(encoding="utf-8") + LAUNCHER.read_text(encoding="utf-8")
+        ).lower()
+        for forbidden in (
+            "setx ",
+            "reg add",
+            "sc.exe create",
+            "new-service",
+            "docker ",
+            "wsl ",
+        ):
+            self.assertNotIn(forbidden, combined)
+
+
+if __name__ == "__main__":
+    unittest.main()
