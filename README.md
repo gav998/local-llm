@@ -19,7 +19,7 @@ Portable offline-стек для Windows 11 x64: RAGFlow 0.27.1, локальн�
 1.PREPARE-ONLINE.bat artifacts-only
 ```
 
-BAT печатает фиксированный URL и ожидаемый путь для каждого отсутствующего файла. Все 23 файла проверяются по [_src/project/artifacts.sha256](./_src/project/artifacts.sha256); файл с неверным SHA-256 не используется.
+BAT печатает фиксированный URL и ожидаемый путь для каждого отсутствующего файла. Для всех 23 vendor-файлов проверяется наличие ожидаемого имени; контрольные суммы не вычисляются.
 
 Затем выполните полную online-сборку:
 
@@ -33,7 +33,7 @@ BAT печатает фиксированный URL и ожидаемый пут
 1.PREPARE-ONLINE.bat gpu-test
 ```
 
-Результат появится в `_src\prepared`. В набор входят девять архивов, offline launcher `LOCAL-LLM.bat`, README, bootstrap `7zr.exe`, манифесты SHA-256, audit и `prepared.ok`.
+Результат появится в `_src\prepared`. В набор входят девять архивов, offline launcher `LOCAL-LLM.bat`, README, bootstrap `7zr.exe`, audit и `prepared.ok`.
 
 ### 2. Перенос на компьютер без интернета
 
@@ -42,7 +42,6 @@ BAT печатает фиксированный URL и ожидаемый пут
 ```text
 <каталог с LOCAL-LLM.bat>\
   LOCAL-LLM.bat
-  SHA256SUMS.txt
   00-bootstrap-tools.7z ... 50-llama-vulkan-runtime.7z
 ```
 
@@ -66,7 +65,7 @@ LOCAL-LLM.bat install
 Установщик:
 
 - находит архивы рядом с BAT или в `_src\prepared`;
-- проверяет полный `SHA256SUMS.txt` **до** запуска `7zr.exe`;
+- проверяет наличие всех обязательных файлов набора до запуска `7zr.exe`;
 - тестирует каждый архив и распаковывает всё в новый staging-каталог;
 - публикует `app` одним `move`, не смешивая частичную установку с рабочей;
 - создаёт уникальные локальные пароли и конфигурацию всех путей/портов;

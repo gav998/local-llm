@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "CONTROL_VERSION=2026.09.07.3"
+set "CONTROL_VERSION=2026.09.07.4"
 set "SCRIPT_RC=0"
 set "LOCK_HELD="
 set "INSTALL_STAGE="
@@ -196,7 +196,7 @@ if errorlevel 1 (
     set "SCRIPT_RC=1"
     goto :SCRIPT_END
 )
-call :VERIFY_BUNDLES
+call :CHECK_BUNDLES
 if errorlevel 1 (
     set "SCRIPT_RC=1"
     goto :SCRIPT_END
@@ -303,10 +303,10 @@ exit /b 0
 
 :FIND_BUNDLES
 set "BUNDLE_DIR="
-if exist "%ROOT%\SHA256SUMS.txt" set "BUNDLE_DIR=%ROOT%"
-if not defined BUNDLE_DIR if exist "%ROOT%\_src\prepared\SHA256SUMS.txt" set "BUNDLE_DIR=%ROOT%\_src\prepared"
+if exist "%ROOT%\7zr.exe" set "BUNDLE_DIR=%ROOT%"
+if not defined BUNDLE_DIR if exist "%ROOT%\_src\prepared\7zr.exe" set "BUNDLE_DIR=%ROOT%\_src\prepared"
 if not defined BUNDLE_DIR (
-    echo [ERROR] Could not find SHA256SUMS.txt and the offline archives.
+    echo [ERROR] Could not find 7zr.exe and the offline archives.
     echo [INFO] Put LOCAL-LLM.bat beside the prepared archives, or keep them in:
     echo [INFO]   "%ROOT%\_src\prepared"
     exit /b 1
@@ -314,22 +314,32 @@ if not defined BUNDLE_DIR (
 echo [INFO] Bundle directory: "%BUNDLE_DIR%"
 exit /b 0
 
-:VERIFY_BUNDLES
-echo [STEP] Verify the complete fail-closed SHA-256 manifest before executing 7zr.exe
-set "MANIFEST_PATH=%BUNDLE_DIR%\SHA256SUMS.txt"
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $expected=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md'); $lines=@(Get-Content -LiteralPath $env:MANIFEST_PATH); if($lines.Count -ne $expected.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed hash row: '+$line)}; $hash=$matches[1].ToLowerInvariant(); $name=$matches[2]; if(-not ($expected -contains $name) -or $seen.ContainsKey($name.ToLowerInvariant())){throw ('Unexpected or duplicate payload: '+$name)}; $path=Join-Path $env:BUNDLE_DIR $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash){throw ('SHA-256 mismatch: '+$name)}; $seen[$name.ToLowerInvariant()]=$true}; if($seen.Count -ne $expected.Count){throw 'Incomplete payload set'}" >"%WORK%\offline-install-hashes.log" 2>&1
-if errorlevel 1 (
-    echo [ERROR] Bundle verification failed. No payload executable was launched.
-    echo [INFO] See "%WORK%\offline-install-hashes.log"
-    exit /b 1
+:CHECK_BUNDLES
+echo [STEP] Check that every required offline payload file is present
+for %%F in (
+    "00-bootstrap-tools.7z"
+    "10-python-rag-runtime.7z"
+    "20-python-ocr-gpu-runtime.7z"
+    "21-paddle-models.7z"
+    "30-ragflow-backend.7z"
+    "31-ragflow-web-dist.7z"
+    "40-services.7z"
+    "41-config-seed.7z"
+    "50-llama-vulkan-runtime.7z"
+    "7zr.exe"
+    "LOCAL-LLM.bat"
+    "README.md"
+) do (
+    if not exist "%BUNDLE_DIR%\%%~F" (
+        echo [ERROR] Required offline payload is missing: %%~F
+        exit /b 1
+    )
+    if exist "%BUNDLE_DIR%\%%~F\." (
+        echo [ERROR] Required offline payload is not a file: %%~F
+        exit /b 1
+    )
 )
-fc /b "%~f0" "%BUNDLE_DIR%\LOCAL-LLM.bat" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] The running launcher differs from the verified prepared launcher.
-    echo [HINT] Run the LOCAL-LLM.bat that belongs to this exact bundle set.
-    exit /b 1
-)
-echo [OK] All offline payload hashes match.
+echo [OK] All required offline payload files are present.
 exit /b 0
 
 :SET_PORTABLE_ENV

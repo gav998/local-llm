@@ -8,19 +8,19 @@
 23 вручную полученных vendor artifacts в _src
                     |
                     v
- SHA-256 -> staging extract -> version/key checks
+ file presence -> staging extract -> version/key checks
                     |
                     v
  online resolve/build -> smoke/audit -> final tree seals
                     |
                     v
-    9 solid 7z -> isolated rehydrate -> SHA256SUMS
+    9 solid 7z -> isolated rehydrate -> required file set
                     |
                     v
      atomic _src\prepared + LOCAL-LLM.bat + README
 ```
 
-`LOCAL-LLM.bat install` работает уже без сети. До запуска любого payload executable он проверяет fail-closed manifest через системный Windows PowerShell и требует, чтобы запущенный launcher побайтно совпадал с launcher этого prepared-набора. Затем bootstrap `7zr.exe` раскрывает полный `7za.exe`; все архивы отдельно тестируются и распаковываются в случайный staging. Готовое `app` публикуется одним `move`. Частичный staging не смешивается с рабочей установкой и при ошибке сохраняется для диагностики.
+`LOCAL-LLM.bat install` работает уже без сети. До запуска payload executable он проверяет наличие всех обязательных файлов prepared-набора. Затем bootstrap `7zr.exe` раскрывает полный `7za.exe`; все архивы отдельно тестируются и распаковываются в случайный staging. Готовое `app` публикуется одним `move`. Частичный staging не смешивается с рабочей установкой и при ошибке сохраняется для диагностики.
 
 Установка считается завершённой только после static/import проверок, реального CUDA/OCR/table E2E без CPU fallback и инициализации MySQL. Последним записывается `app\data\control\install.ok.json`; `start` без корректного marker запрещён.
 
@@ -142,8 +142,8 @@ chat       core + embedding(GPU 0) + Vikhr(split GPU 0/1 = 0.20/0.80)
 
 ## Integrity chain
 
-1. 23 vendor artifacts проверяются по SHA-256.
-2. Распаковка каждого идёт через staging с key/version/tree marker.
+1. Для 23 vendor artifacts проверяются ожидаемые имена и наличие файлов.
+2. Распаковка каждого идёт через staging с key/version marker.
 3. Python/npm dependency graph фиксируется в compiled/freeze/lock records.
 4. RAGFlow assets проверяются по revision, byte size и SHA-256.
 5. Python metadata очищается от build-path.
@@ -151,8 +151,8 @@ chat       core + embedding(GPU 0) + Vikhr(split GPU 0/1 = 0.20/0.80)
 7. Audit отклоняет reparse points и absolute build-path leaks.
 8. Runtime trees получают final seals с минимальными известными exclusions.
 9. Девять архивов rehydrate в изолированное дерево и повторно проверяются.
-10. Prepared payload, launcher и README входят в `SHA256SUMS.txt`.
-11. Offline installer повторно проверяет manifest, launcher и каждый 7z до atomic publish; при каждой команде BAT также сверяет версию controller.
+10. Prepared payload, launcher и README проверяются как полный обязательный набор файлов.
+11. Offline installer проверяет наличие всех файлов и тестирует каждый 7z до atomic publish; при каждой команде BAT также сверяет версию controller.
 12. `install.ok` появляется только после target GPU E2E и MySQL initialization.
 
 ## Оставшиеся границы

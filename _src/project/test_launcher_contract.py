@@ -60,6 +60,20 @@ class LauncherContractTest(unittest.TestCase):
             }
             self.assertEqual(set(), references - labels, path.name)
 
+    def test_external_payloads_are_presence_checked_without_hash_manifests(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        combined = prepare + launcher
+        for removed_contract in (
+            "artifacts.sha256",
+            "SHA256SUMS.txt",
+            "SOURCE-SHA256SUMS.txt",
+            ":VerifyArtifactHash",
+        ):
+            self.assertNotIn(removed_contract, combined)
+        self.assertIn("Source file is present: !ART_NAME!", prepare)
+        self.assertIn("All required offline payload files are present.", launcher)
+
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (
             PREPARE.read_text(encoding="utf-8") + LAUNCHER.read_text(encoding="utf-8")

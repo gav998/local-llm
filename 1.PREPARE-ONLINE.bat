@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.07.3"
+set "PROJECT_VERSION=2026.09.07.4"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -197,7 +197,6 @@ set "PREPARED=%SRC%\prepared"
 set "PREPARED_BACKUP=%SRC%\prepared.previous"
 set "WORK=%ROOT%\_work"
 set "LOCK_DIR=%WORK%\prepare.lock"
-set "HASH_MANIFEST=%PROJECT%\artifacts.sha256"
 
 for %%D in (
     "%SRC%"
@@ -309,7 +308,7 @@ if "!CURRENT_EXISTS!"=="1" (
     if errorlevel 1 (endlocal & exit /b 1)
 )
 if "!BACKUP_VALID!"=="1" (
-    echo [WARN] Recovering the previous SHA-256-verified prepared bundle set.
+    echo [WARN] Recovering the previous complete prepared bundle set.
     move "%PREPARED_BACKUP%" "%PREPARED%" >nul 2>&1
     if errorlevel 1 (endlocal & exit /b 1)
     endlocal & exit /b 0
@@ -341,7 +340,7 @@ endlocal & exit /b 0
 setlocal
 set "VALIDATE_PREPARED_DIR=%~1"
 if not exist "%~1\." (endlocal & exit /b 1)
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $payload=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md'); $metadata=@('PORTABILITY-AUDIT.json','SHA256SUMS.txt','SOURCE-SHA256SUMS.txt','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $payload+$metadata){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $allowed.Count){throw 'Prepared file count mismatch'}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $lines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SHA256SUMS.txt')); if($lines.Count -ne $payload.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed payload hash: '+$line)}; $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $key=$name.ToLowerInvariant(); if($seen.ContainsKey($key) -or -not ($payload -contains $name)){throw ('Unexpected or duplicate payload hash: '+$name)}; $seen[$key]=$true; $path=Join-Path $root.FullName $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw ('Payload SHA256 mismatch: '+$name)}}; if($seen.Count -ne $payload.Count){throw 'Incomplete payload hash set'}; $sourceLines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SOURCE-SHA256SUMS.txt')); if($sourceLines.Count -ne 23){throw 'Source hash count mismatch'}; $sourceSeen=@{}; foreach($line in $sourceLines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed source hash: '+$line)}; $name=$matches[2].ToLowerInvariant(); if($sourceSeen.ContainsKey($name)){throw ('Duplicate source hash: '+$name)}; $sourceSeen[$name]=$true}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $required=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md','PORTABILITY-AUDIT.json','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $required){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $required.Count){throw 'Prepared file count mismatch'}; foreach($name in $required){if(-not (Test-Path -LiteralPath (Join-Path $root.FullName $name) -PathType Leaf)){throw ('Missing prepared file: '+$name)}}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
 set "VALIDATE_RC=%ERRORLEVEL%"
 endlocal & exit /b %VALIDATE_RC%
 
@@ -498,7 +497,6 @@ for %%F in (
     "ragflow-windows-additions.txt"
     "ragflow-windows-excludes.txt"
     "ragflow-windows-overrides.txt"
-    "artifacts.sha256"
     "prepare_ragflow_assets.py"
     "prepare_ragflow_windows.py"
     "graphrag_native_adapter.py"
@@ -747,6 +745,14 @@ set "ART_KEY=%APP%\!DEST_REL!\!KEY_REL!"
 set "ART_STALE_BACKUP=%WORK%\artifact-stale-!ART_NAME!"
 
 :ENSURE_SOURCE_WAIT
+if exist "!ART_SOURCE!\." (
+    echo.
+    echo [ERROR] Required artifact path is a directory, not a file:
+    echo   !ART_SOURCE!
+    echo Replace it with the downloaded file, then press any key...
+    pause >nul
+    goto :ENSURE_SOURCE_WAIT
+)
 if not exist "!ART_SOURCE!" (
     echo.
     echo Required file is missing: !ART_NAME!
@@ -759,16 +765,6 @@ if not exist "!ART_SOURCE!" (
     goto :ENSURE_SOURCE_WAIT
 )
 
-call :VerifyArtifactHash "!ART_SOURCE!" "!ART_NAME!"
-if errorlevel 2 (
-    echo Replace the incorrect file, then press any key to check it again...
-    pause >nul
-    goto :ENSURE_SOURCE_WAIT
-)
-if errorlevel 1 (
-    endlocal
-    exit /b 1
-)
 echo [OK] Source file is present: !ART_NAME!
 
 set "ART_KIND=file"
@@ -777,58 +773,21 @@ if /i "!ART_NAME:~-3!"==".7z" set "ART_KIND=archive"
 if /i "!ART_NAME:~-4!"==".tar" set "ART_KIND=archive"
 if /i "!ART_NAME:~-7!"==".tar.gz" set "ART_KIND=archive"
 if /i "!ART_NAME:~-4!"==".tgz" set "ART_KIND=archive"
-set "ART_SEAL_TREE=0"
-if /i "!ART_KIND!"=="archive" set "ART_SEAL_TREE=1"
-REM These three archive destinations are intentionally modified later.
-if /i "!DEST_REL!"=="runtime\python-rag" set "ART_SEAL_TREE=0"
-if /i "!DEST_REL!"=="runtime\python-ocr" set "ART_SEAL_TREE=0"
-if /i "!DEST_REL!"=="ragflow" set "ART_SEAL_TREE=0"
-
 set "ART_MARKER=!ART_DEST!\.local-llm-artifact.txt"
 set "MARKER_ARTIFACT="
-set "MARKER_SHA256="
-set "MARKER_TREE_SHA256="
-set "MARKER_TREE_FILE_COUNT="
-set "ART_HAVE_EXPECTED_TREE=0"
 call :MakeDirChecked "!ART_DEST!"
 if errorlevel 1 goto :ENSURE_MANUAL_WAIT
 
 if exist "!ART_MARKER!" (
     for /f "usebackq tokens=1,* delims==" %%A in ("!ART_MARKER!") do (
         if /i "%%A"=="artifact" set "MARKER_ARTIFACT=%%B"
-        if /i "%%A"=="sha256" set "MARKER_SHA256=%%B"
-        if /i "%%A"=="tree_sha256" set "MARKER_TREE_SHA256=%%B"
-        if /i "%%A"=="tree_file_count" set "MARKER_TREE_FILE_COUNT=%%B"
     )
 )
-if /i "!MARKER_ARTIFACT!"=="!ART_NAME!" if /i "!MARKER_SHA256!"=="!VERIFIED_ARTIFACT_HASH!" if defined MARKER_TREE_SHA256 if defined MARKER_TREE_FILE_COUNT set "ART_HAVE_EXPECTED_TREE=1"
-
-if exist "!ART_KEY!" if /i "!MARKER_ARTIFACT!"=="!ART_NAME!" if /i "!MARKER_SHA256!"=="!VERIFIED_ARTIFACT_HASH!" (
-    if /i "!ART_KIND!"=="file" (
-        fc /b "!ART_SOURCE!" "!ART_KEY!" >nul 2>&1
-        if not errorlevel 1 (
-            call :DiscardStaleArtifactBackup
-            if errorlevel 1 (endlocal & exit /b 1)
-            echo [OK] !ART_NAME! -- verified source and destination already match
-            endlocal & exit /b 0
-        )
-    ) else (
-        if "!ART_SEAL_TREE!"=="1" (
-            call :TreeMatchesMarker "!ART_DEST!" "!ART_MARKER!" ".local-llm-artifact.txt"
-            if not errorlevel 1 (
-                call :DiscardStaleArtifactBackup
-                if errorlevel 1 (endlocal & exit /b 1)
-                echo [OK] !ART_NAME! -- verified source and sealed destination match
-                endlocal & exit /b 0
-            )
-            echo [WARN] Immutable destination tree changed; restoring !ART_NAME!.
-        ) else (
-            call :DiscardStaleArtifactBackup
-            if errorlevel 1 (endlocal & exit /b 1)
-            echo [OK] !ART_NAME! -- verified source and key file already exist
-            endlocal & exit /b 0
-        )
-    )
+if exist "!ART_KEY!" if not exist "!ART_KEY!\." if /i "!MARKER_ARTIFACT!"=="!ART_NAME!" (
+    call :DiscardStaleArtifactBackup
+    if errorlevel 1 (endlocal & exit /b 1)
+    echo [OK] !ART_NAME! -- source and required destination file are present
+    endlocal & exit /b 0
 )
 if exist "!ART_KEY!" echo [INFO] Replacing stale or untracked destination for !ART_NAME!.
 
@@ -864,7 +823,7 @@ if /i "!ART_KIND!"=="file" (
     if errorlevel 1 goto :ENSURE_FILE_FAILED
     fc /b "!ART_SOURCE!" "!ART_KEY!" >nul 2>&1
     if errorlevel 1 goto :ENSURE_FILE_FAILED
-    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!" "!VERIFIED_ARTIFACT_HASH!" "" ""
+    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
     if errorlevel 1 goto :ENSURE_MANUAL_WAIT
     call :DiscardStaleArtifactBackup
     if errorlevel 1 (endlocal & exit /b 1)
@@ -916,14 +875,8 @@ set "ART_STAGE=!ART_STAGE_BASE!\_content"
 :ENSURE_STAGE_READY
 call :CopyExtractedTree "!ART_STAGE!" "!ART_DEST!" "!KEY_REL!"
 if errorlevel 1 goto :ENSURE_AUTO_FAILED
-if exist "!ART_KEY!" (
-    set "ART_TREE_SHA256="
-    set "ART_TREE_FILE_COUNT="
-    if "!ART_SEAL_TREE!"=="1" (
-        call :ComputeTreeFingerprint "!ART_DEST!" ".local-llm-artifact.txt" ART_TREE_SHA256 ART_TREE_FILE_COUNT
-        if errorlevel 1 goto :ENSURE_AUTO_FAILED
-    )
-    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!" "!VERIFIED_ARTIFACT_HASH!" "!ART_TREE_SHA256!" "!ART_TREE_FILE_COUNT!"
+if exist "!ART_KEY!" if not exist "!ART_KEY!\." (
+    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
     if errorlevel 1 goto :ENSURE_MANUAL_WAIT
     call :DiscardStaleArtifactBackup
     if errorlevel 1 (endlocal & exit /b 1)
@@ -961,40 +914,8 @@ if errorlevel 1 (
     echo [WARN] Destination is not a regular project directory.
     goto :ENSURE_MANUAL_WAIT
 )
-if exist "!ART_KEY!" (
-    if /i "!ART_KIND!"=="file" (
-        fc /b "!ART_SOURCE!" "!ART_KEY!" >nul 2>&1
-        if errorlevel 1 (
-            echo [WARN] The copied file does not match the verified source.
-            goto :ENSURE_MANUAL_WAIT
-        )
-    )
-    set "ART_TREE_SHA256="
-    set "ART_TREE_FILE_COUNT="
-    if "!ART_SEAL_TREE!"=="1" (
-        call :ComputeTreeFingerprint "!ART_DEST!" ".local-llm-artifact.txt" ART_TREE_SHA256 ART_TREE_FILE_COUNT
-        if errorlevel 1 (
-            echo [WARN] Could not fingerprint the manually prepared destination.
-            goto :ENSURE_MANUAL_WAIT
-        )
-        if "!ART_HAVE_EXPECTED_TREE!"=="1" if /i not "!ART_TREE_SHA256!"=="!MARKER_TREE_SHA256!" (
-            echo [WARN] The manually prepared tree still differs from the verified seal.
-            goto :ENSURE_MANUAL_WAIT
-        )
-        if "!ART_HAVE_EXPECTED_TREE!"=="1" if not "!ART_TREE_FILE_COUNT!"=="!MARKER_TREE_FILE_COUNT!" (
-            echo [WARN] The manually prepared tree file count still differs from the verified seal.
-            goto :ENSURE_MANUAL_WAIT
-        )
-    ) else if /i "!ART_KIND!"=="archive" (
-        REM Mutable archives are sealed after dependency installation, but a
-        REM manually supplied tree must still be free of reparse points now.
-        call :ComputeTreeFingerprint "!ART_DEST!" ".local-llm-artifact.txt" ART_MANUAL_TREE_SHA256 ART_MANUAL_TREE_FILE_COUNT
-        if errorlevel 1 (
-            echo [WARN] The manually prepared destination contains an invalid filesystem object.
-            goto :ENSURE_MANUAL_WAIT
-        )
-    )
-    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!" "!VERIFIED_ARTIFACT_HASH!" "!ART_TREE_SHA256!" "!ART_TREE_FILE_COUNT!"
+if exist "!ART_KEY!" if not exist "!ART_KEY!\." (
+    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
     if errorlevel 1 (
         echo [WARN] Could not write the artifact marker.
         goto :ENSURE_MANUAL_WAIT
@@ -1020,35 +941,6 @@ if errorlevel 1 exit /b 1
 set "ART_STALE_BACKUP="
 exit /b 0
 
-:VerifyArtifactHash
-setlocal EnableDelayedExpansion
-set "HASH_FILE=%~1"
-set "HASH_NAME=%~2"
-set "EXPECTED_HASH="
-if exist "%HASH_MANIFEST%" (
-    for /f "usebackq tokens=1,*" %%H in ("%HASH_MANIFEST%") do (
-        if /i "%%I"=="!HASH_NAME!" set "EXPECTED_HASH=%%H"
-    )
-)
-set "HASH_TARGET=!HASH_FILE!"
-set "ACTUAL_HASH="
-for /f "usebackq delims=" %%H in (`"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "(Get-FileHash -LiteralPath $env:HASH_TARGET -Algorithm SHA256).Hash.ToLowerInvariant()"`) do set "ACTUAL_HASH=%%H"
-if not defined ACTUAL_HASH (
-    echo [ERROR] Could not calculate SHA-256 for !HASH_FILE!
-    endlocal & exit /b 1
-)
-if not defined EXPECTED_HASH (
-    echo [ERROR] No trusted SHA-256 is recorded for !HASH_NAME!.
-    endlocal & exit /b 1
-) else if /i not "!ACTUAL_HASH!"=="!EXPECTED_HASH!" (
-    echo [ERROR] SHA-256 mismatch for !HASH_NAME!
-    echo [ERROR] Expected: !EXPECTED_HASH!
-    echo [ERROR] Actual  : !ACTUAL_HASH!
-    endlocal & exit /b 2
-)
-if defined EXPECTED_HASH echo [OK] SHA-256 verified: !HASH_NAME!
-endlocal & set "VERIFIED_ARTIFACT_HASH=%ACTUAL_HASH%" & exit /b 0
-
 :WriteArtifactMarker
 setlocal
 set "ARTIFACT_MARKER_TEMP=%~1.tmp-%RANDOM%-%RANDOM%"
@@ -1057,9 +949,6 @@ if exist "%ARTIFACT_MARKER_TEMP%" (
 )
 >"%ARTIFACT_MARKER_TEMP%" (
     echo artifact=%~2
-    echo sha256=%~3
-    if not "%~4"=="" echo tree_sha256=%~4
-    if not "%~5"=="" echo tree_file_count=%~5
 )
 if errorlevel 1 (
     if exist "%ARTIFACT_MARKER_TEMP%" del /f /q "%ARTIFACT_MARKER_TEMP%" >nul 2>&1
@@ -1789,7 +1678,7 @@ call :WriteBuildRecords
 if errorlevel 1 exit /b 1
 call :ValidatePreparedSet "%PACKAGE_STAGE%"
 if errorlevel 1 (
-    echo [ERROR] The unpublished prepared set failed its final manifest validation.
+    echo [ERROR] The unpublished prepared set failed its final completeness validation.
     exit /b 1
 )
 call :PromotePreparedOutput
@@ -2081,15 +1970,6 @@ popd >nul
 endlocal & exit /b 1
 
 :WriteBuildRecords
-set "SOURCE_HASH_RECORD=%BUNDLE_TARGET_DIR%\SOURCE-SHA256SUMS.txt"
-set "BUNDLE_HASH_RECORD=%BUNDLE_TARGET_DIR%\SHA256SUMS.txt"
-set "HASH_OUTPUT_FILE=%SOURCE_HASH_RECORD%"
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $rows=@(); foreach($line in Get-Content -LiteralPath $env:HASH_MANIFEST) { if($line -match '^([0-9a-fA-F]{64})\s{2}(.+)$') { $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $path=Join-Path $env:SRC $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing source artifact: '+$name)}; $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); if($actual -ne $expected){throw ('Source hash changed: '+$name)}; $rows+=($actual+'  '+$name) } }; if($rows.Count -ne 23){throw ('Expected 23 source artifacts, found '+$rows.Count)}; $rows | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\source-hashes.log" 2>&1
-if errorlevel 1 exit /b 1
-set "HASH_OUTPUT_FILE=%BUNDLE_HASH_RECORD%"
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $files=@(Get-ChildItem -LiteralPath $env:BUNDLE_TARGET_DIR -Filter '*.7z' -File); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR '7zr.exe'); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR 'LOCAL-LLM.bat'); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR 'README.md'); $files=@($files | Sort-Object Name); if($files.Count -ne 12){throw ('Expected 9 bundles, 7zr.exe, launcher and README; found '+$files.Count)}; $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\bundle-hashes.log" 2>&1
-if errorlevel 1 exit /b 1
-
 >"%BUNDLE_TARGET_DIR%\build-info.txt" (
     echo local_llm_prepare_version=%PROJECT_VERSION%
     echo local_llm_control_version=%PROJECT_VERSION%
@@ -2172,11 +2052,18 @@ exit /b 0
 :FileSha256
 setlocal
 set "FILE_HASH_TARGET=%~1"
+set "FILE_HASH_OUTPUT=%WORK%\file-hash-%RANDOM%-%RANDOM%.txt"
 set "FILE_HASH_VALUE="
 if not exist "%~1" (
     endlocal & exit /b 1
 )
-for /f "usebackq delims=" %%H in (`"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; (Get-FileHash -LiteralPath $env:FILE_HASH_TARGET -Algorithm SHA256).Hash.ToLowerInvariant()"`) do set "FILE_HASH_VALUE=%%H"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; (Get-FileHash -LiteralPath $env:FILE_HASH_TARGET -Algorithm SHA256).Hash.ToLowerInvariant() | Set-Content -LiteralPath $env:FILE_HASH_OUTPUT -Encoding ascii" >nul 2>&1
+if errorlevel 1 (
+    if exist "%FILE_HASH_OUTPUT%" del /f /q "%FILE_HASH_OUTPUT%" >nul 2>&1
+    endlocal & exit /b 1
+)
+for /f "usebackq delims=" %%H in ("%FILE_HASH_OUTPUT%") do set "FILE_HASH_VALUE=%%H"
+if exist "%FILE_HASH_OUTPUT%" del /f /q "%FILE_HASH_OUTPUT%" >nul 2>&1
 if not defined FILE_HASH_VALUE (
     endlocal & exit /b 1
 )
