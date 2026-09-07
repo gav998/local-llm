@@ -160,9 +160,10 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     if os.environ.get("PADDLE_PDX_DISABLE_DEVICE_FALLBACK") != "1":
         raise RuntimeError("PADDLE_PDX_DISABLE_DEVICE_FALLBACK must be 1")
     for name in MODEL_NAMES:
-        key = model_root / name / "inference.json"
-        if not key.is_file():
-            raise RuntimeError(f"Prepared model is incomplete: {key}")
+        for filename in ("inference.json", "inference.yml", "inference.pdiparams"):
+            key = model_root / name / filename
+            if key.is_symlink() or not key.is_file():
+                raise RuntimeError(f"Prepared model is incomplete: {key}")
 
     import paddle
     import yaml

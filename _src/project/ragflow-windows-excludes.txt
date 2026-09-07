@@ -1,0 +1,16 @@
+# Native Windows CPython 3.13 compatibility exclusions for RAGFlow 0.27.1.
+# datrie is installed immediately after the resolved graph from our verified
+# MSVC-built wheel.
+datrie
+
+# The pinned GraphRAG fork requires NumPy <2 and is made lazy by
+# prepare_ragflow_windows.py. GraphRAG is unavailable in this portable profile.
+graspologic
+
+# Local Python embeddings are unnecessary: embeddings are served by llama.cpp.
+infinity-emb
+
+# These two upstream exclusions are repeated here because the BAT disables all
+# ambient uv configuration discovery, including machine/user uv.toml files.
+unclecode-litellm
+agentrun-mem0ai

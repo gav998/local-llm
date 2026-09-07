@@ -1,0 +1,11 @@
+# RAGFlow 0.27.1 pins NumPy 1.26.4, which has no CPython 3.13 Windows wheel.
+numpy==2.3.5 \
+    --hash=sha256:00dc4e846108a382c5869e77c6ed514394bdeb3403461d25a829711041217d5b
+
+# RAGFlow's XGBoost 1.6.0 uses NumPy aliases removed in NumPy 2.x.
+xgboost==2.1.4 \
+    --hash=sha256:8bbfe4fedc151b83a52edbf0de945fd94358b09a81998f2945ad330fd5f20cd6
+
+# This reproduces RAGFlow's own tool.uv override while external/user uv
+# configuration discovery is disabled for a deterministic portable build.
+attrs>=23.2.0

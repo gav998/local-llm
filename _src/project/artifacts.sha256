@@ -1,18 +1,25 @@
 # SHA-256  filename
 #
-# A missing entry is not treated as trusted. The prepare script still records
-# the actual digest in _src/prepared/SOURCE-SHA256SUMS.txt. GitHub-generated
-# source archives and vendor archives without an official SHA-256 are validated
-# by their internal version/key files and then frozen by that generated record.
+# Every manually supplied artifact is fail-closed: a missing manifest entry or
+# a mismatch aborts preparation. Keep this list in sync with AcquireCoreArtifacts.
 56b8cc9f4971cef253644fafe54063ed7fdca551d4dee0f8c6baa81b855acd72  7zr.exe
 081df9e9311dfd9c9e0e98c1c80180b99bb51e4cb24156b5f3057fe3c259d70a  7z2602-extra.7z
 ddbfcee1ac615a0499f6aa97b5ec8ebdf3ee4a7714a48055ec2ba0030e3cf810  uv-x86_64-pc-windows-msvc.zip
 9bcc038a0bf180612ed56dec93d4977d035e80b8d9320ef51a38c287baf134b7  cpython-3.13.15+20260901-x86_64-pc-windows-msvc-install_only.tar.gz
 6be524fa6752af802146a4adc7d098565425b0b1c166e19a5a7a4c8cccb86bf6  cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz
-1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97  node-v22.23.2-win-x64.zip
+6cac9ffbca8f6a47091e4b5c772e0606049c3871cb67d900c0cedde630e545ba  node-v24.20.0-win-x64.zip
 56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e  MinGit-2.55.0.5-64-bit.zip
+245b27e9f1c3273638dd307813daa98313f10a176a5a78d863678efeecfda910  ragflow-0.27.1.zip
+76eb11c37919646ccd276a76eed9db2f066fbfb23b577ef32efeacf5387aea0e  datrie-0.8.3-cp313-cp313-win_amd64.whl
 584847cfcea12f72053f0c5cb886620b2672bc54a6d027614ca9a7c47ec08a55  paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl
-3f589aa473a5305a626705d94762fcb4ab3e43e6e48983c9b34b011a6c9d0394  PP-DocLayout-S_infer.tar
+e8e2b777a9b4af597f2a7a85da7dc0fab376aa08ab6ee89f17fb289facbe60ce  PP-DocLayout-L_infer.tar
+b31a30c65d289e4a550e46d69edf2d8bbb13263c5331289ab21f9af487205e1f  PP-DocBlockLayout_infer.tar
+144d0621e059566e5086e228829171591c144c2deb07b2dad4962214fbabfcf7  PP-OCRv6_medium_det_infer.tar
+b9f70da0ca2bbc4d4cb7ba406a2d023061178437d6a930f07c8ca18c6c591839  eslav_PP-OCRv5_mobile_rec_infer.tar
+5c6e497a2f36552cb5ffb112c413a6af39c0f3c47653662b90b4fa6499822fd7  dejavu-sans-ttf-2.37.zip
+cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b  VC_redist.x64.exe
+7c3f1c09ba1b4a82df32a8d889533fceaf2692383e386a04ee708a12de66f129  mysql-8.0.40-winx64.zip
+01054f8389e6c65b471b8c370d43d8cfd0e2bd63bd441dd07545aeb9ebee0500  elasticsearch-8.11.3-windows-x86_64.zip
 9b34316ab8ac083e9f7e3d0b8d5cad9e01aee09de6a63186a5b94af478ee298f  silo_20260806000000.0.0_windows_amd64.tar.gz
 7acf942e1cc7b1d060fabbb5d3d1791372ff400f43d7c49185d7df24f4507076  Valkey-8.1.6-Windows-x64-msys2.zip
 1708333f79e274c7697285afe6d592ab39314e0b131e9ec6bea08ad27df62ebf  caddy_2.11.4_windows_amd64.zip

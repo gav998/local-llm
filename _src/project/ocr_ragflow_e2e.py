@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -17,38 +18,53 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 
+DEJAVU_SANS_SHA256 = (
+    "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954"
+)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
-def choose_font(size: int):
-    windir = Path(os.environ.get("WINDIR", r"C:\Windows"))
-    for name in ("arial.ttf", "segoeui.ttf", "calibri.ttf"):
-        candidate = windir / "Fonts" / name
-        if candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
-    try:
-        return ImageFont.load_default(size=size)
-    except TypeError:
-        return ImageFont.load_default()
+def load_fixture_font(path: Path, size: int):
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"Pinned Cyrillic E2E font is missing: {path}")
+    digest = sha256_file(path)
+    if digest != DEJAVU_SANS_SHA256:
+        raise RuntimeError(
+            "Pinned Cyrillic E2E font integrity mismatch: expected "
+            f"{DEJAVU_SANS_SHA256}, found {digest}"
+        )
+    return ImageFont.truetype(str(path), size=size)
 
 
-def create_samples(work_dir: Path) -> tuple[Path, Path]:
+def create_samples(work_dir: Path, font_path: Path) -> tuple[Path, Path]:
     work_dir.mkdir(parents=True, exist_ok=True)
     image_path = work_dir / "ragflow-ocr-e2e.png"
     pdf_path = work_dir / "ragflow-ocr-e2e.pdf"
-    image = Image.new("RGB", (1800, 1000), "white")
+    # A document-sized raster exercises substantially more of the 8 GiB memory
+    # envelope than a tiny warm-up image while staying below the 4000 px cap.
+    image = Image.new("RGB", (3200, 1800), "white")
     draw = ImageDraw.Draw(image)
-    font = choose_font(104)
+    font = load_fixture_font(font_path, 176)
     lines = (
         "ПОРТАТИВНЫЙ ДОКУМЕНТ",
         "ТЕСТ OCR 2026",
         "TOTAL 4425",
     )
     for index, line in enumerate(lines):
-        draw.text((100, 100 + index * 230), line, font=font, fill="black")
+        draw.text((160, 180 + index * 360), line, font=font, fill="black")
     image.save(image_path)
     image.save(pdf_path, "PDF", resolution=150.0)
     return image_path, pdf_path
@@ -88,6 +104,7 @@ def main() -> int:
     parser.add_argument("--gateway-script", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--model-root", required=True, type=Path)
+    parser.add_argument("--font", required=True, type=Path)
     parser.add_argument("--ragflow-dir", required=True, type=Path)
     parser.add_argument("--work-dir", required=True, type=Path)
     parser.add_argument("--record", required=True, type=Path)
@@ -97,7 +114,7 @@ def main() -> int:
     port = free_loopback_port()
     base_url = f"http://127.0.0.1:{port}"
     jobs_root = args.work_dir / "jobs"
-    image_path, pdf_path = create_samples(args.work_dir)
+    image_path, pdf_path = create_samples(args.work_dir, args.font)
     args.log.parent.mkdir(parents=True, exist_ok=True)
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
@@ -151,6 +168,8 @@ def main() -> int:
                 "algorithm": "PP-StructureV3",
                 "detector": "PP-OCRv6_medium_det",
                 "recognizer": "eslav_PP-OCRv5_mobile_rec",
+                "fixture_font_sha256": DEJAVU_SANS_SHA256,
+                "fixture_pixels": [3200, 1800],
                 "image_text": image_text[:1000],
                 "pdf_text": pdf_text[:1000],
                 "health": health,

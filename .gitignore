@@ -7,12 +7,14 @@
 /_src/*.tar
 /_src/*.tar.gz
 /_src/*.whl
+/_src/*.gguf
+/_src/*.part
 /_src/logs/*
 /_src/prepared/*
+/_src/prepared.previous/
 
 # Keep the source-controlled project inputs.
 !/_src/logs/.gitkeep
-!/_src/prepared/.gitkeep
 !/_src/project/**
 
 __pycache__/
