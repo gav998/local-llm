@@ -71,6 +71,9 @@ class LauncherContractTest(unittest.TestCase):
             ":VerifyArtifactHash",
         ):
             self.assertNotIn(removed_contract, combined)
+        self.assertIn('if not exist "!ART_SOURCE!" (', prepare)
+        self.assertNotIn('if exist "!ART_SOURCE!\\." (', prepare)
+        self.assertNotIn("Required artifact path is a directory", prepare)
         self.assertIn("Source file is present: !ART_NAME!", prepare)
         self.assertIn("All required offline payload files are present.", launcher)
 

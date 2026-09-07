@@ -745,14 +745,6 @@ set "ART_KEY=%APP%\!DEST_REL!\!KEY_REL!"
 set "ART_STALE_BACKUP=%WORK%\artifact-stale-!ART_NAME!"
 
 :ENSURE_SOURCE_WAIT
-if exist "!ART_SOURCE!\." (
-    echo.
-    echo [ERROR] Required artifact path is a directory, not a file:
-    echo   !ART_SOURCE!
-    echo Replace it with the downloaded file, then press any key...
-    pause >nul
-    goto :ENSURE_SOURCE_WAIT
-)
 if not exist "!ART_SOURCE!" (
     echo.
     echo Required file is missing: !ART_NAME!
