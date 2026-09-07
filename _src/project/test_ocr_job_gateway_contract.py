@@ -25,7 +25,15 @@ class FakeResult:
                         "block_content": "ПОРТАТИВНЫЙ ДОКУМЕНТ 2026",
                         "block_label": "text",
                         "block_bbox": [10, 20, 500, 100],
-                    }
+                    },
+                    {
+                        "block_content": (
+                            "<table><tr><th>Код</th><th>Связь</th></tr>"
+                            "<tr><td>A-17</td><td>B-42</td></tr></table>"
+                        ),
+                        "block_label": "table",
+                        "block_bbox": [10, 120, 500, 300],
+                    },
                 ],
             }
         }
@@ -36,7 +44,8 @@ class FakePipeline:
         data = Path(path).read_bytes()
         if b"FAIL" in data:
             raise RuntimeError("intentional fake predictor failure")
-        assert options["use_table_recognition"] is False
+        assert options["use_table_recognition"] is True
+        assert options["use_ocr_results_with_table_cells"] is False
         return [FakeResult()]
 
     def close(self):
@@ -76,6 +85,20 @@ def main() -> int:
                 )
                 assert unauth.status_code == 401, unauth.text
 
+                table_disabled = client.post(
+                    "/api/v2/ocr/jobs",
+                    headers={"Authorization": "Bearer local"},
+                    data={
+                        "model": "PP-StructureV3",
+                        "optionalPayload": json.dumps(
+                            {"useTableRecognition": False}
+                        ),
+                    },
+                    files={"file": ("document.png", b"\x89PNG\r\n\x1a\nDATA")},
+                )
+                assert table_disabled.status_code == 400, table_disabled.text
+                assert "cannot be disabled" in table_disabled.text
+
                 submitted = client.post(
                     "/api/v2/ocr/jobs",
                     headers={"Authorization": "Bearer local"},
@@ -105,6 +128,9 @@ def main() -> int:
                 assert "input_path" not in pruned and "page_index" not in pruned
                 block = pruned["parsing_res_list"][0]
                 assert block["block_content"] and len(block["block_bbox"]) == 4
+                table = pruned["parsing_res_list"][1]
+                assert table["block_label"] == "table"
+                assert "<table>" in table["block_content"]
 
                 failed = client.post(
                     "/api/v2/ocr/jobs",

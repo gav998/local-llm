@@ -36,6 +36,31 @@ TASK_HANDLER_PATCHED_SHA256 = (
     "9af7cd2f1dcdb0febe41be85e6c9adf3239057f6453137e37ea7b66f9d04b9f0"
 )
 
+LEIDEN_RELATIVE = Path("rag/graphrag/general/leiden.py")
+LEIDEN_ORIGINAL_SHA256 = (
+    "705ff97a7c6b19408bb93b3aeb6fdfdff789d5a8775a5d438ca940c8e623374f"
+)
+LEIDEN_PATCHED_SHA256 = (
+    "aba607c77cbf496319f3c7c78ec55bb145d481479fecea89b468c1bb4a64f828"
+)
+LEIDEN_IMPORTS = (
+    b"from graspologic.partition import hierarchical_leiden\n"
+    b"from graspologic.utils import largest_connected_component\n"
+)
+LEIDEN_ADAPTER_IMPORT = (
+    b"from rag.graphrag.general.graphrag_native_adapter import (\n"
+    b"    hierarchical_leiden,\n"
+    b"    largest_connected_component,\n"
+    b")\n"
+)
+LEIDEN_ADAPTER_SOURCE = Path(__file__).with_name("graphrag_native_adapter.py")
+LEIDEN_ADAPTER_RELATIVE = Path(
+    "rag/graphrag/general/graphrag_native_adapter.py"
+)
+LEIDEN_ADAPTER_SHA256 = (
+    "b833c729a3329a704d39c09dc06002857a99cf72b84956dba99c762d49e0919b"
+)
+
 GRAPH_IMPORT = b"from rag.graphrag.general.index import run_graphrag_for_kb\n"
 GRAPH_METHOD_HEADER = (
     b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n"
@@ -222,6 +247,70 @@ def patch_task_handler(ragflow_dir: Path) -> Path:
         raise RuntimeError(f"GraphRAG source verification failed after writing {target}")
     print(f"[OK  ] Made the GraphRAG dependency lazy: {TASK_HANDLER_RELATIVE}")
     return target
+
+
+def install_graphrag_native_adapter(ragflow_dir: Path) -> tuple[Path, Path]:
+    """Install the audited adapter and redirect RAGFlow's exact Leiden imports."""
+
+    if LEIDEN_ADAPTER_SOURCE.is_symlink() or not LEIDEN_ADAPTER_SOURCE.is_file():
+        raise RuntimeError(
+            f"GraphRAG adapter source is missing or unsafe: {LEIDEN_ADAPTER_SOURCE}"
+        )
+    adapter = LEIDEN_ADAPTER_SOURCE.read_bytes()
+    adapter_hash = sha256_bytes(adapter)
+    if adapter_hash != LEIDEN_ADAPTER_SHA256:
+        raise RuntimeError(
+            "GraphRAG adapter source does not match its audited SHA256: "
+            f"expected {LEIDEN_ADAPTER_SHA256}, found {adapter_hash}"
+        )
+
+    adapter_target = ragflow_dir / LEIDEN_ADAPTER_RELATIVE
+    if adapter_target.is_symlink():
+        raise RuntimeError(f"GraphRAG adapter target must not be a symlink: {adapter_target}")
+    if adapter_target.exists():
+        if not adapter_target.is_file():
+            raise RuntimeError(f"GraphRAG adapter target is not a file: {adapter_target}")
+        current_hash = sha256_bytes(adapter_target.read_bytes())
+        if current_hash != LEIDEN_ADAPTER_SHA256:
+            raise RuntimeError(
+                f"Refusing to replace unknown GraphRAG adapter {adapter_target}: "
+                f"found SHA256 {current_hash}"
+            )
+    else:
+        atomic_write(adapter_target, adapter)
+    if sha256_bytes(adapter_target.read_bytes()) != LEIDEN_ADAPTER_SHA256:
+        raise RuntimeError(f"GraphRAG adapter verification failed: {adapter_target}")
+
+    leiden_target = ragflow_dir / LEIDEN_RELATIVE
+    if leiden_target.is_symlink() or not leiden_target.is_file():
+        raise RuntimeError(f"RAGFlow Leiden source is missing or unsafe: {leiden_target}")
+    original = leiden_target.read_bytes()
+    current_hash = sha256_bytes(original)
+    if current_hash == LEIDEN_PATCHED_SHA256:
+        if original.count(LEIDEN_ADAPTER_IMPORT) != 1:
+            raise RuntimeError("Patched Leiden adapter import is not unique")
+        print(f"[OK  ] GraphRAG Leiden imports are already adapted: {LEIDEN_RELATIVE}")
+        return leiden_target, adapter_target
+    if current_hash != LEIDEN_ORIGINAL_SHA256:
+        raise RuntimeError(
+            f"Refusing to patch unknown RAGFlow Leiden source: {leiden_target}\n"
+            f"Expected SHA256 {LEIDEN_ORIGINAL_SHA256} (original) or "
+            f"{LEIDEN_PATCHED_SHA256} (patched), found {current_hash}."
+        )
+    if original.count(LEIDEN_IMPORTS) != 1:
+        raise RuntimeError("The audited graspologic Leiden imports are not unique")
+    patched = original.replace(LEIDEN_IMPORTS, LEIDEN_ADAPTER_IMPORT, 1)
+    patched_hash = sha256_bytes(patched)
+    if patched_hash != LEIDEN_PATCHED_SHA256:
+        raise RuntimeError(
+            "Internal Leiden patch result did not match the audited SHA256: "
+            f"expected {LEIDEN_PATCHED_SHA256}, got {patched_hash}"
+        )
+    atomic_write(leiden_target, patched)
+    if sha256_bytes(leiden_target.read_bytes()) != LEIDEN_PATCHED_SHA256:
+        raise RuntimeError(f"GraphRAG Leiden verification failed: {leiden_target}")
+    print(f"[OK  ] Routed GraphRAG Leiden through graspologic-native: {LEIDEN_RELATIVE}")
+    return leiden_target, adapter_target
 
 
 def locate_infinity_metadata() -> tuple[Path, Path, str]:
@@ -722,14 +811,26 @@ def remove_datrie_direct_url() -> tuple[Path, Path]:
 
 def expected_record() -> dict[str, object]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "helper": "prepare_ragflow_windows.py",
         "ragflow": {
             "version": RAGFLOW_VERSION,
             "target": TASK_HANDLER_RELATIVE.as_posix(),
             "original_sha256": TASK_HANDLER_ORIGINAL_SHA256,
             "patched_sha256": TASK_HANDLER_PATCHED_SHA256,
-            "change": "lazy GraphRAG import; GraphRAG is excluded from this profile",
+            "change": "lazy GraphRAG import for normal non-GraphRAG workers",
+        },
+        "graphrag_native_adapter": {
+            "leiden_target": LEIDEN_RELATIVE.as_posix(),
+            "leiden_original_sha256": LEIDEN_ORIGINAL_SHA256,
+            "leiden_patched_sha256": LEIDEN_PATCHED_SHA256,
+            "adapter_target": LEIDEN_ADAPTER_RELATIVE.as_posix(),
+            "adapter_sha256": LEIDEN_ADAPTER_SHA256,
+            "distribution": "graspologic-native==1.2.5",
+            "change": (
+                "hierarchical Leiden uses the upstream Rust backend; largest "
+                "connected component uses NetworkX"
+            ),
         },
         "infinity_sdk": {
             "version": INFINITY_VERSION,
@@ -803,8 +904,10 @@ def main() -> int:
     ragflow_dir = args.ragflow_dir.resolve()
     print(f"[STEP] Verify RAGFlow {RAGFLOW_VERSION} source")
     ragflow_source_version(ragflow_dir)
-    print("[STEP] Make the optional GraphRAG dependency lazy")
+    print("[STEP] Keep GraphRAG lazy for non-GraphRAG workers")
     patch_task_handler(ragflow_dir)
+    print("[STEP] Enable GraphRAG through the audited graspologic-native adapter")
+    install_graphrag_native_adapter(ragflow_dir)
     print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
     patch_infinity_metadata()
     print("[STEP] Repair metadata for intentionally excluded dependencies")

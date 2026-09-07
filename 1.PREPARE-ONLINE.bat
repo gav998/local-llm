@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.07.1"
+set "PROJECT_VERSION=2026.09.07.2"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -34,6 +34,7 @@ set "DEJAVU_SANS_VERSION=2.37"
 set "DATRIE_VERSION=0.8.3"
 set "NUMPY_VERSION=2.3.5"
 set "XGBOOST_VERSION=2.1.4"
+set "GRASPOLOGIC_NATIVE_VERSION=1.2.5"
 set "VC_REDIST_VERSION=14.44.35211"
 set "MYSQL_VERSION=8.0.40"
 set "ELASTIC_VERSION=8.11.3"
@@ -340,7 +341,7 @@ endlocal & exit /b 0
 setlocal
 set "VALIDATE_PREPARED_DIR=%~1"
 if not exist "%~1\." (endlocal & exit /b 1)
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $payload=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe'); $metadata=@('PORTABILITY-AUDIT.json','SHA256SUMS.txt','SOURCE-SHA256SUMS.txt','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $payload+$metadata){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $allowed.Count){throw 'Prepared file count mismatch'}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $lines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SHA256SUMS.txt')); if($lines.Count -ne $payload.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed payload hash: '+$line)}; $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $key=$name.ToLowerInvariant(); if($seen.ContainsKey($key) -or -not ($payload -contains $name)){throw ('Unexpected or duplicate payload hash: '+$name)}; $seen[$key]=$true; $path=Join-Path $root.FullName $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw ('Payload SHA256 mismatch: '+$name)}}; if($seen.Count -ne $payload.Count){throw 'Incomplete payload hash set'}; $sourceLines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SOURCE-SHA256SUMS.txt')); if($sourceLines.Count -ne 22){throw 'Source hash count mismatch'}; $sourceSeen=@{}; foreach($line in $sourceLines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed source hash: '+$line)}; $name=$matches[2].ToLowerInvariant(); if($sourceSeen.ContainsKey($name)){throw ('Duplicate source hash: '+$name)}; $sourceSeen[$name]=$true}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $payload=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe'); $metadata=@('PORTABILITY-AUDIT.json','SHA256SUMS.txt','SOURCE-SHA256SUMS.txt','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $payload+$metadata){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $allowed.Count){throw 'Prepared file count mismatch'}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $lines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SHA256SUMS.txt')); if($lines.Count -ne $payload.Count){throw 'Payload hash count mismatch'}; $seen=@{}; foreach($line in $lines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed payload hash: '+$line)}; $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $key=$name.ToLowerInvariant(); if($seen.ContainsKey($key) -or -not ($payload -contains $name)){throw ('Unexpected or duplicate payload hash: '+$name)}; $seen[$key]=$true; $path=Join-Path $root.FullName $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing payload: '+$name)}; if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected){throw ('Payload SHA256 mismatch: '+$name)}}; if($seen.Count -ne $payload.Count){throw 'Incomplete payload hash set'}; $sourceLines=@(Get-Content -LiteralPath (Join-Path $root.FullName 'SOURCE-SHA256SUMS.txt')); if($sourceLines.Count -ne 23){throw 'Source hash count mismatch'}; $sourceSeen=@{}; foreach($line in $sourceLines){if($line -notmatch '^([0-9a-fA-F]{64})  ([^\\/]+)$'){throw ('Malformed source hash: '+$line)}; $name=$matches[2].ToLowerInvariant(); if($sourceSeen.ContainsKey($name)){throw ('Duplicate source hash: '+$name)}; $sourceSeen[$name]=$true}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
 set "VALIDATE_RC=%ERRORLEVEL%"
 endlocal & exit /b %VALIDATE_RC%
 
@@ -493,11 +494,13 @@ if errorlevel 1 exit /b 1
 for %%F in (
     "pp-structure-v3-8gb.yaml"
     "requirements-ocr.txt"
+    "ragflow-windows-additions.txt"
     "ragflow-windows-excludes.txt"
     "ragflow-windows-overrides.txt"
     "artifacts.sha256"
     "prepare_ragflow_assets.py"
     "prepare_ragflow_windows.py"
+    "graphrag_native_adapter.py"
     "verify_ragflow_runtime.py"
     "sanitize_python_runtime.py"
     "ocr_job_gateway.py"
@@ -558,6 +561,7 @@ if defined RAG_SOURCE_RESET if exist "%RAGFLOW_TREE_MARKER%" del /f /q "%RAGFLOW
 if defined OCR_RUNTIME_RESET if exist "%OCR_PY_TREE_MARKER%" del /f /q "%OCR_PY_TREE_MARKER%" >nul 2>&1
 if defined RAG_RUNTIME_RESET if exist "%APP%\config\ragflow-python.ok" del /f /q "%APP%\config\ragflow-python.ok" >nul 2>&1
 if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-python.ok" del /f /q "%APP%\config\ragflow-python.ok" >nul 2>&1
+if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-windows-compat.json" del /f /q "%APP%\config\ragflow-windows-compat.json" >nul 2>&1
 if defined OCR_RUNTIME_RESET if exist "%APP%\config\ocr-python.ok" del /f /q "%APP%\config\ocr-python.ok" >nul 2>&1
 
 if defined RAG_RUNTIME_RESET if exist "%RAG_PY_TREE_MARKER%" exit /b 1
@@ -565,6 +569,7 @@ if defined RAG_SOURCE_RESET if exist "%RAGFLOW_TREE_MARKER%" exit /b 1
 if defined OCR_RUNTIME_RESET if exist "%OCR_PY_TREE_MARKER%" exit /b 1
 if defined RAG_RUNTIME_RESET if exist "%APP%\config\ragflow-python.ok" exit /b 1
 if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-python.ok" exit /b 1
+if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-windows-compat.json" exit /b 1
 if defined OCR_RUNTIME_RESET if exist "%APP%\config\ocr-python.ok" exit /b 1
 exit /b 0
 
@@ -621,6 +626,8 @@ call :EnsureArtifact "PP-OCRv6_medium_det_infer.tar" "cache\paddlex\official_mod
 if errorlevel 1 exit /b 1
 call :EnsureArtifact "eslav_PP-OCRv5_mobile_rec_infer.tar" "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec" "inference.json" "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/eslav_PP-OCRv5_mobile_rec_infer.tar"
 if errorlevel 1 exit /b 1
+call :EnsureArtifact "SLANet_plus_infer.tar" "cache\paddlex\official_models\SLANet_plus" "inference.json" "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_plus_infer.tar"
+if errorlevel 1 exit /b 1
 call :VerifyPaddleModelFiles
 if errorlevel 1 exit /b 1
 
@@ -651,6 +658,7 @@ for %%M in (
     "PP-DocBlockLayout"
     "PP-OCRv6_medium_det"
     "eslav_PP-OCRv5_mobile_rec"
+    "SLANet_plus"
 ) do for %%F in (inference.json inference.yml inference.pdiparams) do (
     if not exist "%APP%\cache\paddlex\official_models\%%~M\%%F" (
         echo [ERROR] Paddle model %%~M is incomplete: %%F is missing.
@@ -1303,10 +1311,12 @@ REM ============================================================================
 :PrepareRagflowPython
 call :FileSha256 "%PROJECT%\ragflow-windows-overrides.txt" RAG_OVERRIDE_HASH
 if errorlevel 1 exit /b 1
+call :FileSha256 "%PROJECT%\ragflow-windows-additions.txt" RAG_ADDITION_HASH
+if errorlevel 1 exit /b 1
 call :FileSha256 "%PROJECT%\ragflow-windows-excludes.txt" RAG_EXCLUDE_HASH
 if errorlevel 1 exit /b 1
 set "RAG_MARKER=%APP%\config\ragflow-python.ok"
-set "RAG_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;datrie=%DATRIE_VERSION%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
+set "RAG_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
 call :MarkerMatches "%RAG_MARKER%" "%RAG_FINGERPRINT%"
 if errorlevel 1 goto :RAG_BUILD_RUNTIME
 call :FinalizeRagflowRuntime
@@ -1336,7 +1346,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%UV_EXE%" pip compile "%RAGFLOW_DIR%\pyproject.toml" --python "%RAG_PY%" --constraints "%RAG_UPSTREAM_REQUIREMENTS%" --overrides "%PROJECT%\ragflow-windows-overrides.txt" --excludes "%PROJECT%\ragflow-windows-excludes.txt" --generate-hashes --no-header --no-annotate --output-file "%RAG_REQUIREMENTS%" >"%LOGS%\ragflow-compile-windows.log" 2>&1
+"%UV_EXE%" pip compile "%RAGFLOW_DIR%\pyproject.toml" "%PROJECT%\ragflow-windows-additions.txt" --python "%RAG_PY%" --constraints "%RAG_UPSTREAM_REQUIREMENTS%" --overrides "%PROJECT%\ragflow-windows-overrides.txt" --excludes "%PROJECT%\ragflow-windows-excludes.txt" --generate-hashes --no-header --no-annotate --output-file "%RAG_REQUIREMENTS%" >"%LOGS%\ragflow-compile-windows.log" 2>&1
 if errorlevel 1 (
     popd >nul
     echo [ERROR] Could not compile the pinned Windows dependency graph.
@@ -1859,6 +1869,9 @@ for %%K in (
     "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec\inference.json"
     "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec\inference.yml"
     "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec\inference.pdiparams"
+    "cache\paddlex\official_models\SLANet_plus\inference.json"
+    "cache\paddlex\official_models\SLANet_plus\inference.yml"
+    "cache\paddlex\official_models\SLANet_plus\inference.pdiparams"
     "ragflow\api\ragflow_server.py"
     "ragflow\tika-server-standard-3.3.0.jar"
     "ragflow\tika-server-standard-3.3.0.jar.md5"
@@ -1888,6 +1901,7 @@ for %%D in (
     "cache\paddlex\official_models\PP-DocBlockLayout"
     "cache\paddlex\official_models\PP-OCRv6_medium_det"
     "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec"
+    "cache\paddlex\official_models\SLANet_plus"
     "services\ocr\font"
     "services\mysql"
     "services\elasticsearch"
@@ -2061,7 +2075,7 @@ endlocal & exit /b 1
 set "SOURCE_HASH_RECORD=%BUNDLE_TARGET_DIR%\SOURCE-SHA256SUMS.txt"
 set "BUNDLE_HASH_RECORD=%BUNDLE_TARGET_DIR%\SHA256SUMS.txt"
 set "HASH_OUTPUT_FILE=%SOURCE_HASH_RECORD%"
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $rows=@(); foreach($line in Get-Content -LiteralPath $env:HASH_MANIFEST) { if($line -match '^([0-9a-fA-F]{64})\s{2}(.+)$') { $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $path=Join-Path $env:SRC $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing source artifact: '+$name)}; $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); if($actual -ne $expected){throw ('Source hash changed: '+$name)}; $rows+=($actual+'  '+$name) } }; if($rows.Count -ne 22){throw ('Expected 22 source artifacts, found '+$rows.Count)}; $rows | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\source-hashes.log" 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $rows=@(); foreach($line in Get-Content -LiteralPath $env:HASH_MANIFEST) { if($line -match '^([0-9a-fA-F]{64})\s{2}(.+)$') { $expected=$matches[1].ToLowerInvariant(); $name=$matches[2]; $path=Join-Path $env:SRC $name; if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw ('Missing source artifact: '+$name)}; $actual=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant(); if($actual -ne $expected){throw ('Source hash changed: '+$name)}; $rows+=($actual+'  '+$name) } }; if($rows.Count -ne 23){throw ('Expected 23 source artifacts, found '+$rows.Count)}; $rows | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\source-hashes.log" 2>&1
 if errorlevel 1 exit /b 1
 set "HASH_OUTPUT_FILE=%BUNDLE_HASH_RECORD%"
 "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $files=@(Get-ChildItem -LiteralPath $env:BUNDLE_TARGET_DIR -Filter '*.7z' -File); $files+=Get-Item -LiteralPath (Join-Path $env:BUNDLE_TARGET_DIR '7zr.exe'); $files=@($files | Sort-Object Name); if($files.Count -ne 10){throw ('Expected 9 bundles plus 7zr.exe, found '+$files.Count)}; $files | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } | Set-Content -LiteralPath $env:HASH_OUTPUT_FILE -Encoding ascii" >"%LOGS%\bundle-hashes.log" 2>&1
@@ -2081,6 +2095,7 @@ if errorlevel 1 exit /b 1
     echo numpy_windows_override=%NUMPY_VERSION%
     echo xgboost_windows_override=%XGBOOST_VERSION%
     echo datrie_windows_wheel=%DATRIE_VERSION%
+    echo graphrag_backend=graspologic-native-%GRASPOLOGIC_NATIVE_VERSION%-audited-adapter
     echo vc_runtime=%VC_REDIST_VERSION%-app-local
     echo node=%NODE_VERSION%
     echo portable_git=%MINGIT_GIT_VERSION%-process-local-path
@@ -2088,9 +2103,9 @@ if errorlevel 1 exit /b 1
     echo elasticsearch=%ELASTIC_VERSION%
     echo valkey_windows=%VALKEY_VERSION%-community-unsupported
     echo llama_cpp=%LLAMA_BUILD%-vulkan
-    echo ocr_profile=PP-DocLayout-L-PP-OCRv6-medium-det-eslav-PP-OCRv5-rec-gpu-only
+    echo ocr_profile=PP-DocLayout-L-PP-OCRv6-medium-det-eslav-PP-OCRv5-rec-SLANet-plus-table-gpu-only
     echo target_gpu_e2e=%GPU_VALIDATION%
-    echo disabled_feature=GraphRAG-graspologic
+    echo graphrag=enabled
     echo embeddings=external-llama-cpp-server
 )
 if errorlevel 1 exit /b 1

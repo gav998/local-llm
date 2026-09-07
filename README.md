@@ -29,7 +29,7 @@
 | OCR Python | CPython `3.11.16` standalone | отдельный ABI для Windows GPU-wheel Paddle |
 | PaddlePaddle | GPU `3.3.1`, CUDA 11.8, `cp311` | wheel содержит `sm_61`; это необходимый код для GTX 1080 |
 | PaddleOCR / PaddleX | `3.7.0` / `3.7.2` | актуальная стабильная ветка с PP-OCRv6 и PP-StructureV3 |
-| OCR-модели | `PP-DocLayout-L` + `PP-DocBlockLayout` + `PP-OCRv6_medium_det` + `eslav_PP-OCRv5_mobile_rec` | качественный layout и детектор v6; отдельный официальный East Slavic recognizer для кириллицы |
+| OCR-модели | `PP-DocLayout-L` + `PP-DocBlockLayout` + `PP-OCRv6_medium_det` + `eslav_PP-OCRv5_mobile_rec` + `SLANet_plus` | качественный layout/кириллический OCR и обязательное восстановление структуры таблиц |
 | Node | `24.20.0 LTS` | только online production build frontend; в offline runtime Node не попадает |
 | Portable Git | MinGit `2.55.0.5` | распаковывается в `app\build\git` и попадает только в `PATH` процесса BAT; системная установка не нужна |
 | llama.cpp | `b10786`, официальный Windows Vulkan build | GPU-инференс на Pascal без зависимости от готовых CUDA 12/13 builds |
@@ -45,14 +45,14 @@ RAGFlow и Paddle нельзя разумно поместить в один Pyt
 local_llm\
   1.PREPARE-ONLINE.bat
   _src\
-    <22 vendor artifacts>    файлы, которые пользователь кладёт сюда вручную
+    <23 vendor artifacts>    файлы, которые пользователь кладёт сюда вручную
     project\                 versioned requirements/config/helpers
     logs\                    подробные журналы online-сборки
     prepared\                атомарно опубликованный offline-набор
   _work\                     только временные staging-каталоги
   app\
     build\                   uv, Node, MinGit и временные online-материалы
-    cache\paddlex\...        четыре явно подготовленные OCR-модели
+    cache\paddlex\...        пять явно подготовленных OCR/table-моделей
     config\                  locks, freeze и provenance/smoke records
     data\                    локальные profile/cache/data roots
     models\llm               будущие chat GGUF
@@ -75,7 +75,7 @@ local_llm\
    1.PREPARE-ONLINE.bat artifacts-only
    ```
 
-   Для каждого отсутствующего vendor-файла BAT печатает на английском имя, фиксированный URL и точный путь `_src\...`, затем ждёт `pause` и проверяет снова. Сам BAT эти 22 файла не скачивает. Полный перечень и SHA-256 находится в [_src/project/artifacts.sha256](./_src/project/artifacts.sha256).
+   Для каждого отсутствующего vendor-файла BAT печатает на английском имя, фиксированный URL и точный путь `_src\...`, затем ждёт `pause` и проверяет снова. Сам BAT эти 23 файла не скачивает. Полный перечень и SHA-256 находится в [_src/project/artifacts.sha256](./_src/project/artifacts.sha256).
 
 4. После подготовки всех vendor-файлов запустите обычную online-сборку:
 
@@ -91,7 +91,7 @@ local_llm\
    1.PREPARE-ONLINE.bat gpu-test
    ```
 
-   Режим проверяет CUDA 11.8, наличие `sm_61` в wheel, выбранную карту, реальную CUDA-матрицу, загрузку четырёх моделей, OCR изображения и PDF, а затем получение текста через **штатный** parser RAGFlow. CPU fallback отсутствует. В `build-info.txt` успешный результат записывается как `target_gpu_e2e=passed`.
+   Режим проверяет CUDA 11.8, наличие `sm_61` в wheel, выбранную карту, реальную CUDA-матрицу, загрузку пяти моделей, OCR изображения и PDF, распознавание табличной структуры и получение table-блока через **штатный** parser RAGFlow. CPU fallback отсутствует. В `build-info.txt` успешный результат записывается как `target_gpu_e2e=passed`.
 
 Обычный запуск полезен для сборки на любой Windows x64 машине, но не делает непроверенную GTX 1080 «подтверждённо совместимой». Будущий offline installer также должен отказать в `install.ok`, пока target GPU E2E не пройдёт.
 
@@ -135,9 +135,9 @@ GGUF в архивы не включаются: уже квантованные 
 
 ## Ограничения, которые важно принять заранее
 
-- Native Windows без Docker не является штатным deployment target RAGFlow. Скрипт фиксирует точные совместимые отклонения: NumPy `2.3.5`, XGBoost `2.1.4`, собственный проверенный MSVC wheel `datrie 0.8.3`, app-local VC runtime. Portable Git решает ошибку `Git executable not found`, но не вторую несовместимость: fork `graspologic` требует `numpy<2`, для которого нет подходящего Windows wheel под CPython 3.13. Поэтому GraphRAG отключён; обычные ingestion, retrieval, agents и OCR остаются в профиле.
+- Native Windows без Docker не является штатным deployment target RAGFlow. Скрипт фиксирует точные совместимые отклонения: NumPy `2.3.5`, XGBoost `2.1.4`, собственный проверенный MSVC wheel `datrie 0.8.3`, app-local VC runtime. Полный fork `graspologic` по-прежнему исключён из-за требования `numpy<2`, но GraphRAG включён через закреплённый `graspologic-native 1.2.5` и audited-адаптер: hierarchical Leiden выполняет тот же Rust backend, а largest connected component — NetworkX. Сборка проверяет импорт полного GraphRAG entrypoint и реальное разбиение тестового графа.
 - Upstream `ragflow_deps\download_deps.py` предназначен для Linux/Docker-слоя и среди прочего загружает Ubuntu `.deb`. BAT не запускает его на Windows. Нужные платформенно-нейтральные RAGFlow assets загружаются отдельным проектным helper-скриптом с закреплёнными revision, размером и SHA-256; это не означает пропуск нужных runtime-зависимостей.
-- Полный PP-StructureV3 с таблицами, формулами, charts, seals и preprocessing нельзя надёжно обещать на одной карте 8 ГБ. Текущий профиль — максимально сильный основной **text/layout OCR**: `PP-DocLayout-L`, region ordering и кириллический recognizer; тяжёлые дополнительные ветки выключены.
+- `PP-StructureV3` всегда запускается с `use_table_recognition: true`: layout сначала выделяет table-регионы, затем `SLANet_plus` с batch 1 восстанавливает ячейки/строки/столбцы, переиспользуя общий кириллический OCR. Отключить таблицы через API нельзя. Тяжёлый `table_recognition_v2` с пятью дополнительными моделями, а также formulas, charts, seals и preprocessing выключены ради одной карты 8 ГБ. Реальный `gpu-test` остаётся обязательным memory/compatibility gate.
 - Две GTX 1080 по 8 ГБ не образуют общую 16-ГБ память. Для ваших моделей нужен режимный scheduler: ingestion (`OCR → embedding`) и chat не должны одновременно пытаться занять обе карты. Точный Vulkan tensor split и context/KV cache определяются замером на целевом ПК.
 - Строго GPU относится к нейросетевому inference. Растеризация PDF, декодирование, post-processing, JSON, chunking и работа базы всё равно выполняются CPU.
 - Текущий Paddle wheel действительно содержит `sm_61`, но актуальная общая документация Paddle формально ориентируется на более новые GPU. Поэтому реальный `gpu-test` на GTX 1080 — обязательный compatibility gate, а не обещание на основании имени wheel.

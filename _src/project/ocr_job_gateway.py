@@ -30,6 +30,7 @@ MODEL_NAMES = (
     "PP-DocBlockLayout",
     "PP-OCRv6_medium_det",
     "eslav_PP-OCRv5_mobile_rec",
+    "SLANet_plus",
 )
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
 
@@ -60,10 +61,10 @@ DISABLED_FEATURES = {
     "useDocUnwarping",
     "useTextlineOrientation",
     "useSealRecognition",
-    "useTableRecognition",
     "useFormulaRecognition",
     "useChartRecognition",
 }
+REQUIRED_FEATURES = {"useTableRecognition"}
 IGNORED_CLOUD_OPTIONS = {
     "prettifyMarkdown",
     "showFormulaNumber",
@@ -137,17 +138,30 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
             "Features disabled by the 8 GiB profile were requested: "
             + ", ".join(enabled_but_unavailable)
         )
+    disabled_but_required = sorted(
+        key
+        for key in REQUIRED_FEATURES
+        if key in optional_payload and optional_payload[key] is not True
+    )
+    if disabled_but_required:
+        raise ValueError(
+            "Features required by the table-aware profile cannot be disabled: "
+            + ", ".join(disabled_but_required)
+        )
 
     options: dict[str, Any] = {
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
         "use_textline_orientation": False,
         "use_seal_recognition": False,
-        "use_table_recognition": False,
+        "use_table_recognition": True,
         "use_formula_recognition": False,
         "use_chart_recognition": False,
         "use_region_detection": True,
         "format_block_content": True,
+        # Reuse the page-wide East Slavic OCR boxes/text. The table model adds
+        # structure without instantiating a second OCR pipeline per table.
+        "use_ocr_results_with_table_cells": False,
     }
     for api_name, python_name in PREDICT_OPTION_MAP.items():
         value = optional_payload.get(api_name)
@@ -213,6 +227,13 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     checksum = float(paddle.sum(paddle.matmul(left, right)).numpy().item())
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if config.get("use_table_recognition") is not True:
+        raise RuntimeError("PP-StructureV3 table recognition must be enabled")
+    table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
+    if table_config.get("pipeline_name") != "table_recognition":
+        raise RuntimeError("The audited compact table_recognition pipeline is missing")
+    if table_config.get("use_ocr_model") is not False:
+        raise RuntimeError("Table recognition must reuse the page-wide OCR result")
     config["SubModules"]["LayoutDetection"]["model_dir"] = str(
         model_root / "PP-DocLayout-L"
     )
@@ -224,6 +245,9 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     )
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"]["model_dir"] = str(
         model_root / "eslav_PP-OCRv5_mobile_rec"
+    )
+    table_config["SubModules"]["TableStructureRecognition"]["model_dir"] = str(
+        model_root / "SLANet_plus"
     )
 
     from paddleocr import PPStructureV3
@@ -239,6 +263,8 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
         "gpu_capability": ".".join(str(part) for part in capability),
         "compiled_cuda_arches": compiled_arches,
         "cuda_tensor_checksum": checksum,
+        "table_recognition": True,
+        "table_structure_model": "SLANet_plus",
     }
     return pipeline, gpu_info
 

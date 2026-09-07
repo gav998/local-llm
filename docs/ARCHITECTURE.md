@@ -5,7 +5,7 @@
 `1.PREPARE-ONLINE.bat` превращает Windows-компьютер с интернетом в одноразовую сборочную машину. Он не запускает постоянный stack и не создаёт конфигурацию конкретной offline-машины. Его единственный конечный продукт — проверенное дерево `app` и компактный `_src\prepared`, из которого следующий этап сможет установить stack без сети, package manager и компилятора.
 
 ```text
-22 вручную полученных vendor artifacts в _src
+23 вручную полученных vendor artifacts в _src
                     |
                     v
      SHA-256 -> staging extract -> key/version checks
@@ -58,12 +58,12 @@ Upstream lock сначала экспортируется через `uv export 
 - `xgboost==2.1.4`: upstream `1.6.0` несовместим с NumPy 2;
 - `datrie==0.8.3`: проектный MSVC/cp313 wheel построен из pinned sdist отдельным GitHub Actions workflow, функционально проверен и опубликован с SHA-256;
 - `infinity-sdk==0.7.3`: только его metadata constraint `numpy<2` меняется на проверенный `numpy>=2,<2.4`, а RECORD пересчитывается;
-- `graspologic` исключён, а единственный audited top-level GraphRAG import переносится внутрь GraphRAG-метода. Обычный ingestion/task executor проверяется; GraphRAG в этом профиле недоступен;
+- полный `graspologic` исключён, но `graspologic-native==1.2.5` добавлен напрямую. Audited-адаптер преобразует NetworkX-рёбра в native tuples для hierarchical Leiden и выбирает largest connected component средствами NetworkX; GraphRAG включён;
 - `infinity-emb` исключён: embeddings обслуживает отдельный llama.cpp server.
 
-Патчер применим только к точным исходным SHA-256 RAGFlow 0.27.1 и точным metadata bytes. Неизвестная версия аварийно останавливает сборку. Verifier затем импортирует task executor без GraphRAG, запускает русский tokenizer, materializes `cl100k` без сети и выполняет реальный prediction pinned XGBoost model.
+Патчер применим только к точным исходным SHA-256 RAGFlow 0.27.1, Leiden-модуля, audited-адаптера и точным metadata bytes. Неизвестная версия аварийно останавливает сборку. Verifier импортирует task executor с lazy GraphRAG, затем полный GraphRAG entrypoint, выполняет hierarchical Leiden реальным Rust backend, запускает русский tokenizer, materializes `cl100k` без сети и выполняет prediction pinned XGBoost model.
 
-MinGit 2.55.0.5 всё равно входит в online build tools и добавляется в `PATH` только текущего BAT-процесса. Это устраняет зависимость от системной установки Git и позволяет обслуживать другие pinned VCS-зависимости. Само наличие Git не решает GraphRAG: закреплённый fork `graspologic` требует `numpy<2`, а Windows CPython 3.13 требует перехода на NumPy 2; поэтому данный профиль не делает вид, что GraphRAG работоспособен.
+MinGit 2.55.0.5 всё равно входит в online build tools и добавляется в `PATH` только текущего BAT-процесса. Полный fork `graspologic` требует `numpy<2`, поэтому он не устанавливается. Его активный в RAGFlow GraphRAG код использует hierarchical Leiden из компактного Rust-пакета `graspologic-native`; Windows x64 wheel `cp38-abi3` работает с CPython 3.13 и не зависит от NumPy 1.x. Неиспользуемый GraphRAG node2vec helper, которому нужен полный `graspologic`, в этот профиль не входит.
 
 Нейтральные RAGFlow assets тоже имеют неизменяемые revision/hash/size: DeepDoc ONNX, text-concat XGBoost, NLTK ZIP, cl100k и Tika 3.3.0. Tika JAR и canonical `.jar.md5` лежат в корне RAGFlow; будущий launcher задаст `TIKA_SERVER_JAR=file:///.../ragflow/tika-server-standard-3.3.0.jar` и использует JDK из Elasticsearch.
 
@@ -79,12 +79,14 @@ RAGFlow 0.27.1 ожидает асинхронный контракт `/api/v2/o
 - `PP-DocBlockLayout` — regions/reading order;
 - `PP-OCRv6_medium_det` — актуальный medium text detector;
 - `eslav_PP-OCRv5_mobile_rec` — официальный recognizer для русского/белорусского/украинского/английского текста;
+- `SLANet_plus` — компактное восстановление HTML/cell structure для найденных table-регионов;
 - short side `736`, hard max `4000`, batch `1`;
-- tables, formulas, charts, seals, document preprocessing и orientation branches выключены.
+- `use_table_recognition` всегда включён; таблицы обрабатываются последовательно с batch 1 и переиспользуют общий OCR result;
+- formulas, charts, seals, document preprocessing и orientation branches выключены.
 
-PP-OCRv6 medium recognition хорош, но его unified language set не включает кириллицу, поэтому detector v6 сочетается с East Slavic v5 recognizer. Полный PP-StructureV3 профиль не обещается на 8 ГБ: дополнительные table/formula/chart/preprocess модели должны стать отдельными последовательными workers, если понадобятся позже.
+PP-OCRv6 medium recognition хорош, но его unified language set не включает кириллицу, поэтому detector v6 сочетается с East Slavic v5 recognizer. Для таблиц выбран поддерживаемый компактный `table_recognition` subpipeline с одной `SLANet_plus`, а не `table_recognition_v2`, который инициализирует классификатор, две structure-модели и два RT-DETR cell detector. Так сохраняется структура строк/столбцов при существенно меньшем VRAM-риске. Штатный parser RAGFlow 0.27.1 пока возвращает table HTML как table-labelled section, а отдельный список `tables` оставляет пустым; GraphRAG получает структурированный HTML в содержимом секции.
 
-Strict gate проверяет не только `paddle.is_compiled_with_cuda()`. Он требует CUDA 11.8, видимый GPU, capability не ниже 6.1, наличие соответствующей архитектуры в `paddle.version.cuda_archs()`, выполняет матричное вычисление, загружает pipeline из четырёх локальных каталогов и прогоняет image+PDF через штатный RAGFlow parser. Любая ошибка завершает этап; CPU fallback отсутствует.
+Strict gate проверяет не только `paddle.is_compiled_with_cuda()`. Он требует CUDA 11.8, видимый GPU, capability не ниже 6.1, наличие соответствующей архитектуры в `paddle.version.cuda_archs()`, выполняет матричное вычисление, загружает pipeline из пяти локальных каталогов и прогоняет image+PDF с размеченной таблицей через штатный RAGFlow parser. Тест обязан получить table-labelled section и связанные значения двух ячеек. Любая ошибка завершает этап; CPU fallback отсутствует.
 
 Важно: современная [Windows installation matrix Paddle](https://www.paddlepaddle.org.cn/documentation/docs/install/pip/windows-pip_en.html) формально ориентирована на более новые GPU, хотя выбранный wheel содержит `sm_61`. Поэтому только target E2E, а не статический анализ wheel, подтверждает конкретные GTX 1080/driver.
 
@@ -105,7 +107,7 @@ Node 24.20.0 LTS существует только в `app\build`: `npm ci` ис
 
 Trust chain выглядит так:
 
-1. все 22 вручную положенных файла имеют обязательный SHA-256 в `artifacts.sha256`;
+1. все 23 вручную положенных файла имеют обязательный SHA-256 в `artifacts.sha256`;
 2. распаковка идёт во временный каталог, archive layout/key проверяется до atomic replacement;
 3. dependency graph сохраняется в compiled/freeze records; npm использует lock integrity;
 4. каждый скачиваемый RAGFlow asset проверяется по byte size и SHA-256, provenance хранится в JSON;

@@ -1,0 +1,4 @@
+# Direct native-Windows GraphRAG dependency. The full graspologic fork remains
+# excluded because it requires NumPy <2 on RAGFlow's CPython 3.13 runtime.
+graspologic-native==1.2.5 \
+    --hash=sha256:c3ef2172d774083d7e2c8e77daccd218571ddeebeb2c1703cebb1a2cc4c56e07

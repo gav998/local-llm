@@ -1,14 +1,14 @@
 # Portable PP-StructureV3 profile for one 8 GiB Pascal GPU.
 #
-# This is deliberately a high-quality text/layout pipeline. Tables, formulas,
-# charts and seals remain separate passes so the higher-accuracy layout detector
-# and document-resolution OCR can run on one 8 GiB board with batch size 1.
+# This is a high-quality text/layout/table pipeline. Table structure inference
+# runs only for table regions detected by the layout model and stays at batch 1.
+# Formulas, charts and seals remain disabled for the 8 GiB memory envelope.
 pipeline_name: PP-StructureV3
 batch_size: 1
 
 use_doc_preprocessor: false
 use_seal_recognition: false
-use_table_recognition: false
+use_table_recognition: true
 use_formula_recognition: false
 use_chart_recognition: false
 use_region_detection: true
@@ -70,3 +70,17 @@ SubPipelines:
         model_dir: null
         batch_size: 1
         score_thresh: 0.0
+
+  TableRecognition:
+    # The compact v1 table pipeline uses the page-wide Cyrillic OCR results and
+    # adds SLANet_plus cell/row/column structure only for detected table crops.
+    # This avoids the five concurrently initialized models in table_recognition_v2.
+    pipeline_name: table_recognition
+    use_layout_detection: false
+    use_doc_preprocessor: false
+    use_ocr_model: false
+    SubModules:
+      TableStructureRecognition:
+        module_name: table_structure_recognition
+        model_name: SLANet_plus
+        model_dir: null

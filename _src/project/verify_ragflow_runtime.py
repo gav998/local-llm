@@ -27,6 +27,16 @@ TASK_HANDLER_RELATIVE = Path(
 TASK_HANDLER_PATCHED_SHA256 = (
     "9af7cd2f1dcdb0febe41be85e6c9adf3239057f6453137e37ea7b66f9d04b9f0"
 )
+LEIDEN_RELATIVE = Path("rag/graphrag/general/leiden.py")
+LEIDEN_PATCHED_SHA256 = (
+    "aba607c77cbf496319f3c7c78ec55bb145d481479fecea89b468c1bb4a64f828"
+)
+LEIDEN_ADAPTER_RELATIVE = Path(
+    "rag/graphrag/general/graphrag_native_adapter.py"
+)
+LEIDEN_ADAPTER_SHA256 = (
+    "b833c729a3329a704d39c09dc06002857a99cf72b84956dba99c762d49e0919b"
+)
 XGBOOST_MODEL_RELATIVE = Path("rag/res/deepdoc/updown_concat_xgb.model")
 XGBOOST_MODEL_SIZE = 5_906_150
 XGBOOST_MODEL_SHA256 = (
@@ -39,6 +49,7 @@ EXPECTED_DISTRIBUTIONS = {
     "datrie": "0.8.3",
     "crawl4ai": "0.9.2",
     "agentrun-sdk": "0.0.51",
+    "graspologic-native": "1.2.5",
 }
 INFINITY_NUMPY_REQUIREMENT = "numpy>=2,<2.4"
 DATRIE_DIST_INFO = "datrie-0.8.3.dist-info"
@@ -148,7 +159,21 @@ def check_ragflow_source(ragflow_dir: Path) -> str:
             f"RAGFlow task handler is not the audited Windows patch: expected "
             f"SHA256 {TASK_HANDLER_PATCHED_SHA256}, found {digest}"
         )
-    return f"RAGFlow {version}; patched task handler {digest[:12]}..."
+    patched_sources = (
+        (LEIDEN_RELATIVE, LEIDEN_PATCHED_SHA256),
+        (LEIDEN_ADAPTER_RELATIVE, LEIDEN_ADAPTER_SHA256),
+    )
+    for relative, expected_digest in patched_sources:
+        path = ragflow_dir / relative
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"Missing or unsafe audited GraphRAG source: {path}")
+        actual_digest = sha256_file(path)
+        if actual_digest != expected_digest:
+            raise RuntimeError(
+                f"GraphRAG source {relative} is not the audited Windows patch: "
+                f"expected SHA256 {expected_digest}, found {actual_digest}"
+            )
+    return f"RAGFlow {version}; audited task and GraphRAG sources"
 
 
 def verify_removed_requirement_metadata(
@@ -230,6 +255,15 @@ def verify_removed_requirement_metadata(
 def check_distributions() -> str:
     found: list[str] = []
     resolved: dict[str, importlib.metadata.Distribution] = {}
+    try:
+        incompatible_version = importlib.metadata.version("graspologic")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    else:
+        raise RuntimeError(
+            "The incompatible full graspologic distribution must be absent; "
+            f"found version {incompatible_version}"
+        )
     for name, expected in EXPECTED_DISTRIBUTIONS.items():
         try:
             distribution = importlib.metadata.distribution(name)
@@ -348,6 +382,56 @@ def check_task_executor_import(ragflow_dir: Path) -> str:
             "The audited lazy-import patch is ineffective."
         )
     return "task_executor imported without loading optional GraphRAG"
+
+
+def check_graphrag_native(ragflow_dir: Path) -> str:
+    """Import the full GraphRAG entrypoint and execute deterministic Leiden."""
+
+    try:
+        index_module = importlib.import_module("rag.graphrag.general.index")
+        leiden_module = importlib.import_module("rag.graphrag.general.leiden")
+        import networkx as nx
+
+        index_file = getattr(index_module, "__file__", None)
+        if not index_file:
+            raise RuntimeError("GraphRAG index module has no source path")
+        require_inside(Path(index_file), ragflow_dir, "rag.graphrag.general.index")
+        if "graspologic" in sys.modules:
+            raise RuntimeError("The incompatible full graspologic package was imported")
+
+        graph = nx.Graph()
+        graph.add_weighted_edges_from(
+            [
+                ("alpha", "beta", 2.0),
+                ("beta", "gamma", 1.0),
+                ("detached-a", "detached-b", 1.0),
+            ]
+        )
+        largest = leiden_module.stable_largest_connected_component(graph)
+        if set(largest.nodes) != {"ALPHA", "BETA", "GAMMA"}:
+            raise RuntimeError(
+                f"Unexpected stable largest component: {sorted(largest.nodes)!r}"
+            )
+        communities = leiden_module._compute_leiden_communities(
+            largest,
+            max_cluster_size=2,
+            use_lcc=False,
+            seed=0xDEADBEEF,
+        )
+        first_level = communities.get(0, {})
+        if set(first_level) != set(largest.nodes):
+            raise RuntimeError(
+                "Native hierarchical Leiden omitted connected GraphRAG nodes: "
+                f"{first_level!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(
+            f"GraphRAG native adapter smoke failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    return (
+        "full GraphRAG entrypoint imported; native hierarchical Leiden covered "
+        f"{len(first_level)} nodes across {len(communities)} level(s)"
+    )
 
 
 def verify_cl100k_file(path: Path, description: str) -> None:
@@ -487,6 +571,10 @@ def main() -> int:
     run_check(
         "RAGFlow task executor lazy-import smoke",
         lambda: check_task_executor_import(ragflow_dir),
+    )
+    run_check(
+        "RAGFlow GraphRAG graspologic-native smoke",
+        lambda: check_graphrag_native(ragflow_dir),
     )
     run_check(
         "RAGFlow Russian tokenizer smoke",

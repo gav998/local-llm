@@ -6,6 +6,11 @@ numpy==2.3.5 \
 xgboost==2.1.4 \
     --hash=sha256:8bbfe4fedc151b83a52edbf0de945fd94358b09a81998f2945ad330fd5f20cd6
 
+# The full graspologic fork is incompatible with NumPy 2, but its pinned Rust
+# Leiden backend publishes a CPython abi3 Windows x64 wheel through Python 3.13.
+graspologic-native==1.2.5 \
+    --hash=sha256:c3ef2172d774083d7e2c8e77daccd218571ddeebeb2c1703cebb1a2cc4c56e07
+
 # This reproduces RAGFlow's own tool.uv override while external/user uv
 # configuration discovery is disabled for a deterministic portable build.
 attrs>=23.2.0

@@ -3,8 +3,8 @@
 # MSVC-built wheel.
 datrie
 
-# The pinned GraphRAG fork requires NumPy <2 and is made lazy by
-# prepare_ragflow_windows.py. GraphRAG is unavailable in this portable profile.
+# The full fork requires NumPy <2. Its active RAGFlow GraphRAG operations are
+# supplied by the audited graspologic-native adapter instead.
 graspologic
 
 # Local Python embeddings are unnecessary: embeddings are served by llama.cpp.

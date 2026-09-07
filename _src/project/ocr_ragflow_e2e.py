@@ -65,6 +65,26 @@ def create_samples(work_dir: Path, font_path: Path) -> tuple[Path, Path]:
     )
     for index, line in enumerate(lines):
         draw.text((160, 180 + index * 360), line, font=font, fill="black")
+    table_font = load_fixture_font(font_path, 72)
+    columns = (160, 1080, 2020, 3040)
+    rows = (1220, 1380, 1540, 1720)
+    for x in columns:
+        draw.line((x, rows[0], x, rows[-1]), fill="black", width=10)
+    for y in rows:
+        draw.line((columns[0], y, columns[-1], y), fill="black", width=10)
+    cells = (
+        ("КОД", "СВЯЗЬ", "ЗНАЧЕНИЕ"),
+        ("A-17", "B-42", "125"),
+        ("B-42", "C-09", "260"),
+    )
+    for row_index, values in enumerate(cells):
+        for column_index, value in enumerate(values):
+            draw.text(
+                (columns[column_index] + 28, rows[row_index] + 35),
+                value,
+                font=table_font,
+                fill="black",
+            )
     image.save(image_path)
     image.save(pdf_path, "PDF", resolution=150.0)
     return image_path, pdf_path
@@ -155,11 +175,35 @@ def main() -> int:
             )
             image_text = rag_parser.parse_image(str(image_path))
             assert_real_text(image_text, "image")
-            sections, tables = rag_parser.parse_pdf(str(pdf_path))
+            sections, tables = rag_parser.parse_pdf(
+                str(pdf_path), parse_method="pipeline"
+            )
             pdf_text = "\n".join(section[0] for section in sections if section)
             assert_real_text(pdf_text, "PDF")
-            if tables:
-                raise RuntimeError("The text-only 8 GiB profile unexpectedly returned tables")
+            table_sections = [
+                section
+                for section in sections
+                if len(section) >= 2 and section[1] == "table"
+            ]
+            if not table_sections:
+                raise RuntimeError(
+                    "PP-StructureV3 did not return a table-labelled section"
+                )
+            table_text = "\n".join(section[0] for section in table_sections)
+            normalized_table = normalized(table_text)
+            missing_structure_tags = [
+                tag for tag in ("<table", "<tr", "<td") if tag not in table_text.lower()
+            ]
+            if missing_structure_tags:
+                raise RuntimeError(
+                    "Table recognition did not preserve HTML row/cell structure; "
+                    f"missing {missing_structure_tags!r}: {table_text!r}"
+                )
+            if "A-17" not in normalized_table or "B-42" not in normalized_table:
+                raise RuntimeError(
+                    "Table recognition lost the expected cross-linked cell values: "
+                    f"{table_text!r}"
+                )
 
             record = {
                 "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -168,10 +212,14 @@ def main() -> int:
                 "algorithm": "PP-StructureV3",
                 "detector": "PP-OCRv6_medium_det",
                 "recognizer": "eslav_PP-OCRv5_mobile_rec",
+                "table_recognition": True,
+                "table_structure_model": "SLANet_plus",
                 "fixture_font_sha256": DEJAVU_SANS_SHA256,
                 "fixture_pixels": [3200, 1800],
                 "image_text": image_text[:1000],
                 "pdf_text": pdf_text[:1000],
+                "table_text": table_text[:2000],
+                "ragflow_separate_tables": len(tables),
                 "health": health,
                 "passed": True,
             }
