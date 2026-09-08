@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.3"
+set "PROJECT_VERSION=2026.09.08.4"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -1304,13 +1304,27 @@ exit /b 0
 
 :PrepareRagflowAssets
 set "RAG_ASSET_RECORD=%APP%\config\ragflow-assets.json"
+set "RAG_ASSET_LOG=%LOGS%\ragflow-assets.log"
 echo [STEP] Verify pinned RAGFlow models, NLTK, tiktoken and Tika assets
-"%RAG_PY%" "%PROJECT%\prepare_ragflow_assets.py" --ragflow-dir "%RAGFLOW_DIR%" --nltk-dir "%NLTK_DATA%" --record "%RAG_ASSET_RECORD%" >"%LOGS%\ragflow-assets.log" 2>&1
+if exist "%RAG_ASSET_LOG%" del /f /q "%RAG_ASSET_LOG%" >nul 2>&1
+copy /y nul "%RAG_ASSET_LOG%" >nul 2>&1
+call :StartLiveLog "%RAG_ASSET_LOG%" "local_llm RAGFlow asset log"
+"%RAG_PY%" "%PROJECT%\prepare_ragflow_assets.py" --ragflow-dir "%RAGFLOW_DIR%" --nltk-dir "%NLTK_DATA%" --record "%RAG_ASSET_RECORD%" --manual-assets-dir "%SRC%" >>"%RAG_ASSET_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] RAGFlow asset preparation failed. See %LOGS%\ragflow-assets.log
+    echo [ERROR] RAGFlow asset preparation failed. See %RAG_ASSET_LOG%
     exit /b 1
 )
 exit /b 0
+
+:StartLiveLog
+setlocal
+if /i "%LOCAL_LLM_LIVE_LOGS%"=="0" endlocal & exit /b 0
+if /i "%LOCAL_LLM_LIVE_LOGS%"=="off" endlocal & exit /b 0
+if /i "%LOCAL_LLM_LIVE_LOGS%"=="false" endlocal & exit /b 0
+set "LOCAL_LLM_LIVE_LOG=%~1"
+echo [INFO] Live log window: %LOCAL_LLM_LIVE_LOG%
+start "%~2" "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -NoExit -Command "Write-Host ('Watching log: ' + $env:LOCAL_LLM_LIVE_LOG); Get-Content -LiteralPath $env:LOCAL_LLM_LIVE_LOG -Wait -Tail 0"
+endlocal & exit /b 0
 
 :VerifyRagflowRuntime
 echo [STEP] Exercise the Windows-compatible RAGFlow worker, tokenizer and XGBoost model

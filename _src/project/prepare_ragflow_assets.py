@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import shutil
 import stat
 import sys
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -27,6 +30,10 @@ from pathlib import Path
 
 RAGFLOW_VERSION = "0.27.1"
 RECORD_SCHEMA_VERSION = 2
+DOWNLOAD_ATTEMPTS = 4
+DOWNLOAD_TIMEOUT_SECONDS = 300
+DOWNLOAD_BACKOFF_SECONDS = (2, 5, 10)
+RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -222,31 +229,116 @@ def install_temporary(temporary: Path, destination: Path) -> None:
     os.replace(temporary, destination)
 
 
-def download_asset(asset: Asset, destination: Path) -> None:
+def retryable_download_error(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRYABLE_HTTP_CODES
+    return isinstance(
+        error,
+        (
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+            urllib.error.URLError,
+        ),
+    )
+
+
+def download_failure_message(
+    asset: Asset,
+    destination: Path,
+    manual_assets_dir: Path | None,
+    attempt: int,
+    error: BaseException,
+) -> str:
+    manual_hint = (
+        f" or to {manual_assets_dir / Path(asset.relative_path).name}"
+        if manual_assets_dir is not None
+        else ""
+    )
+    return (
+        f"Failed to download {asset.relative_path} from {asset.url} after "
+        f"{attempt} attempt(s): {type(error).__name__}: {error}. "
+        f"Manually downloading the pinned file to {destination}{manual_hint} "
+        "is also valid; "
+        "rerun the script afterward and the existing file will be verified "
+        "before any network request."
+    )
+
+
+def download_asset(
+    asset: Asset, destination: Path, manual_assets_dir: Path | None = None
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=f".{destination.name}.", suffix=".part",
-            dir=destination.parent, delete=False,
-        ) as output:
-            temporary_name = output.name
-            request = urllib.request.Request(
-                asset.url,
-                headers={"User-Agent": "local_llm-ragflow-assets/2"},
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        temporary_name: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f".{destination.name}.", suffix=".part",
+                dir=destination.parent, delete=False,
+            ) as output:
+                temporary_name = output.name
+                request = urllib.request.Request(
+                    asset.url,
+                    headers={"User-Agent": "local_llm-ragflow-assets/2"},
+                )
+                suffix = (
+                    ""
+                    if DOWNLOAD_ATTEMPTS == 1
+                    else f" (attempt {attempt}/{DOWNLOAD_ATTEMPTS})"
+                )
+                print(f"[GET ] {asset.url}{suffix}", flush=True)
+                with urllib.request.urlopen(
+                    request, timeout=DOWNLOAD_TIMEOUT_SECONDS
+                ) as response:
+                    shutil.copyfileobj(response, output, length=1024 * 1024)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary = Path(temporary_name)
+            verify_temporary(temporary, asset)
+            install_temporary(temporary, destination)
+            temporary_name = None
+            return
+        except Exception as error:
+            if temporary_name is not None:
+                Path(temporary_name).unlink(missing_ok=True)
+            if not retryable_download_error(error) or attempt >= DOWNLOAD_ATTEMPTS:
+                raise RuntimeError(
+                    download_failure_message(
+                        asset, destination, manual_assets_dir, attempt, error
+                    )
+                ) from error
+            delay = DOWNLOAD_BACKOFF_SECONDS[
+                min(attempt - 1, len(DOWNLOAD_BACKOFF_SECONDS) - 1)
+            ]
+            print(
+                f"[WARN] {type(error).__name__} while downloading "
+                f"{asset.relative_path}: {error}. Retrying in {delay}s...",
+                flush=True,
             )
-            print(f"[GET ] {asset.url}", flush=True)
-            with urllib.request.urlopen(request, timeout=120) as response:
-                shutil.copyfileobj(response, output, length=1024 * 1024)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary = Path(temporary_name)
-        verify_temporary(temporary, asset)
-        install_temporary(temporary, destination)
-        temporary_name = None
-    finally:
-        if temporary_name is not None:
-            Path(temporary_name).unlink(missing_ok=True)
+            time.sleep(delay)
+
+
+def manual_asset_candidates(asset: Asset, manual_assets_dir: Path | None) -> list[Path]:
+    if manual_assets_dir is None:
+        return []
+    relative = Path(asset.relative_path)
+    candidates = (manual_assets_dir / relative, manual_assets_dir / relative.name)
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(candidate)
+    return unique
+
+
+def find_manual_asset(asset: Asset, manual_assets_dir: Path | None) -> Path | None:
+    for candidate in manual_asset_candidates(asset, manual_assets_dir):
+        if candidate.exists():
+            inspect_asset(candidate, asset)
+            return candidate
+    return None
 
 
 def copy_identical_asset(source: Path, asset: Asset, destination: Path) -> None:
@@ -273,7 +365,10 @@ def copy_identical_asset(source: Path, asset: Asset, destination: Path) -> None:
 
 
 def ensure_assets(
-    root: Path, assets: list[Asset], verify_only: bool
+    root: Path,
+    assets: list[Asset],
+    verify_only: bool,
+    manual_assets_dir: Path | None = None,
 ) -> None:
     valid_by_content: dict[tuple[int, str], Path] = {}
     missing: list[tuple[Asset, Path]] = []
@@ -295,7 +390,11 @@ def ensure_assets(
         if source is not None:
             copy_identical_asset(source, asset, destination)
         else:
-            download_asset(asset, destination)
+            manual_source = find_manual_asset(asset, manual_assets_dir)
+            if manual_source is not None:
+                copy_identical_asset(manual_source, asset, destination)
+            else:
+                download_asset(asset, destination, manual_assets_dir)
         if not inspect_asset(destination, asset):  # pragma: no cover - defensive
             raise RuntimeError(f"Asset disappeared after installation: {destination}")
         valid_by_content.setdefault(content_key, destination)
@@ -473,11 +572,22 @@ def main() -> int:
         action="store_true",
         help="perform no downloads and require the deterministic record to exist",
     )
+    parser.add_argument(
+        "--manual-assets-dir",
+        type=Path,
+        help=(
+            "optional directory for manually downloaded pinned assets; files may "
+            "use either their manifest relative path or plain file name"
+        ),
+    )
     args = parser.parse_args()
 
     ragflow_dir = args.ragflow_dir.resolve()
     nltk_dir = args.nltk_dir.resolve()
     record_path = args.record.resolve()
+    manual_assets_dir = (
+        args.manual_assets_dir.resolve() if args.manual_assets_dir is not None else None
+    )
 
     print(f"[STEP] Verify RAGFlow {RAGFLOW_VERSION} source", flush=True)
     verify_ragflow(ragflow_dir)
@@ -485,10 +595,14 @@ def main() -> int:
 
     print("[STEP] Verify pinned Hugging Face runtime models", flush=True)
     model_dir = ragflow_dir / "rag/res/deepdoc"
-    ensure_assets(model_dir, make_huggingface_assets(), args.verify_only)
+    ensure_assets(
+        model_dir, make_huggingface_assets(), args.verify_only, manual_assets_dir
+    )
 
     print("[STEP] Verify pinned Tiktoken and Tika files", flush=True)
-    ensure_assets(ragflow_dir, list(STANDALONE_ASSETS), args.verify_only)
+    ensure_assets(
+        ragflow_dir, list(STANDALONE_ASSETS), args.verify_only, manual_assets_dir
+    )
     verify_tika_pair(ragflow_dir)
     print(
         "[INFO] Runtime must set TIKA_SERVER_JAR to the root-level JAR file:/// URI",
@@ -496,7 +610,7 @@ def main() -> int:
     )
 
     print("[STEP] Verify pinned NLTK data", flush=True)
-    ensure_assets(nltk_dir, list(NLTK_ASSETS), args.verify_only)
+    ensure_assets(nltk_dir, list(NLTK_ASSETS), args.verify_only, manual_assets_dir)
     verify_nltk_layout(nltk_dir)
 
     print("[STEP] Commit deterministic asset provenance", flush=True)
