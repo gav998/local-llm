@@ -121,6 +121,11 @@ class LauncherContractTest(unittest.TestCase):
             'call :BeginStepLog "%WEB_BUILD_LOG%"',
             '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" ci --no-audit --no-fund"',
             '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" run build"',
+            'move "%RAGFLOW_DIR%\\web\\dist" "%APP%\\web" >>"%WEB_BUILD_LOG%" 2>&1',
+            "Could not move the built RAGFlow web dist into app\\web.",
+            "Moved RAGFlow web dist is missing index.html",
+            "Could not fingerprint the prepared RAGFlow web dist.",
+            'set "TREE_ERROR_OUTPUT=%TREE_OUTPUT%.err"',
             "ONLINE PREPARATION FAILED with exit code",
         ):
             self.assertIn(required, prepare)

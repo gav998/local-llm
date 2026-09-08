@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.5"
+set "PROJECT_VERSION=2026.09.08.6"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -982,16 +982,20 @@ setlocal DisableDelayedExpansion
 set "TREE_ROOT=%~1"
 set "TREE_EXCLUDE_REL=%~2"
 set "TREE_OUTPUT=%WORK%\tree-fingerprint-%RANDOM%-%RANDOM%.txt"
+set "TREE_ERROR_OUTPUT=%TREE_OUTPUT%.err"
 set "TREE_SHA256_VALUE="
 set "TREE_FILE_COUNT_VALUE="
 if not exist "%~1\." (
     endlocal & exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:TREE_ROOT -Force; if(-not $root.PSIsContainer){throw 'Tree root is not a directory'}; if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Tree root is a reparse point'}; $rootPath=$root.FullName.TrimEnd([char[]]'\/'); $excludes=@([string]$env:TREE_EXCLUDE_REL -split ';' | ForEach-Object {$_.Replace('\','/').TrimStart('/') } | Where-Object {$_}); $rows=New-Object 'System.Collections.Generic.List[string]'; foreach($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAction Stop){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw ('Reparse point in sealed tree: '+$item.FullName)}; if($item.PSIsContainer){continue}; $rel=$item.FullName.Substring($rootPath.Length).TrimStart([char[]]'\/').Replace('\','/'); $skip=$false; foreach($exclude in $excludes){if($exclude.EndsWith('/')){if($rel.StartsWith($exclude,[StringComparison]::OrdinalIgnoreCase)){$skip=$true;break}}elseif([StringComparer]::OrdinalIgnoreCase.Equals($rel,$exclude)){$skip=$true;break}}; if($skip){continue}; $fileHash=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [void]$rows.Add($rel+"`0"+$item.Length+"`0"+$fileHash)}; [string[]]$ordered=$rows.ToArray(); [Array]::Sort($ordered,[StringComparer]::Ordinal); $body=[String]::Join("`n",$ordered); if($ordered.Length -gt 0){$body+="`n"}; $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($body); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=$sha.ComputeHash($bytes)}finally{$sha.Dispose()}; $hex=-join($digest | ForEach-Object {$_.ToString('x2')}); @('TREE_SHA256='+$hex,'TREE_FILE_COUNT='+$ordered.Length) | Set-Content -LiteralPath $env:TREE_OUTPUT -Encoding ascii" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:TREE_ROOT -Force; if(-not $root.PSIsContainer){throw 'Tree root is not a directory'}; if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Tree root is a reparse point'}; $rootPath=$root.FullName.TrimEnd([char[]]'\/'); $excludes=@([string]$env:TREE_EXCLUDE_REL -split ';' | ForEach-Object {$_.Replace('\','/').TrimStart('/') } | Where-Object {$_}); $rows=New-Object 'System.Collections.Generic.List[string]'; foreach($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAction Stop){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw ('Reparse point in sealed tree: '+$item.FullName)}; if($item.PSIsContainer){continue}; $rel=$item.FullName.Substring($rootPath.Length).TrimStart([char[]]'\/').Replace('\','/'); $skip=$false; foreach($exclude in $excludes){if($exclude.EndsWith('/')){if($rel.StartsWith($exclude,[StringComparison]::OrdinalIgnoreCase)){$skip=$true;break}}elseif([StringComparer]::OrdinalIgnoreCase.Equals($rel,$exclude)){$skip=$true;break}}; if($skip){continue}; $fileHash=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [void]$rows.Add($rel+"`0"+$item.Length+"`0"+$fileHash)}; [string[]]$ordered=$rows.ToArray(); [Array]::Sort($ordered,[StringComparer]::Ordinal); $body=[String]::Join("`n",$ordered); if($ordered.Length -gt 0){$body+="`n"}; $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($body); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=$sha.ComputeHash($bytes)}finally{$sha.Dispose()}; $hex=-join($digest | ForEach-Object {$_.ToString('x2')}); @('TREE_SHA256='+$hex,'TREE_FILE_COUNT='+$ordered.Length) | Set-Content -LiteralPath $env:TREE_OUTPUT -Encoding ascii" >"%TREE_ERROR_OUTPUT%" 2>&1
 if errorlevel 1 (
+    if exist "%TREE_ERROR_OUTPUT%" type "%TREE_ERROR_OUTPUT%"
+    if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1
     if exist "%TREE_OUTPUT%" del /f /q "%TREE_OUTPUT%" >nul 2>&1
     endlocal & exit /b 1
 )
+if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1
 for /f "usebackq tokens=1,* delims==" %%A in ("%TREE_OUTPUT%") do (
     if /i "%%A"=="TREE_SHA256" set "TREE_SHA256_VALUE=%%B"
     if /i "%%A"=="TREE_FILE_COUNT" set "TREE_FILE_COUNT_VALUE=%%B"
@@ -1419,7 +1423,10 @@ set "NPM_CONFIG_SCRIPTS_PREPEND_NODE_PATH=true"
 set "VITE_BUILD_SOURCEMAP=false"
 set "VITE_MINIFY=esbuild"
 call :RemoveTreeChecked "%RAGFLOW_DIR%\web\dist"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] Could not remove stale RAGFlow web dist before build.
+    exit /b 1
+)
 pushd "%RAGFLOW_DIR%\web" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Could not enter the RAGFlow web source directory.
@@ -1448,18 +1455,45 @@ if not exist "%RAGFLOW_DIR%\web\dist\index.html" (
     echo [ERROR] Web build did not produce dist\index.html.
     exit /b 1
 )
+call :AppendLogBanner "%WEB_BUILD_LOG%" "move built web dist into app web"
 call :RemoveTreeChecked "%APP%\web"
-if errorlevel 1 exit /b 1
-call :CopyTree "%RAGFLOW_DIR%\web\dist" "%APP%\web"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] Could not remove the previous app web dist: %APP%\web
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
+move "%RAGFLOW_DIR%\web\dist" "%APP%\web" >>"%WEB_BUILD_LOG%" 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not move the built RAGFlow web dist into app\web.
+    echo [INFO] See %WEB_BUILD_LOG%
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
+if not exist "%APP%\web\index.html" (
+    echo [ERROR] Moved RAGFlow web dist is missing index.html: %APP%\web\index.html
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
+call :AppendLogBanner "%WEB_BUILD_LOG%" "remove temporary web node_modules"
 call :RemoveTreeChecked "%RAGFLOW_DIR%\web\node_modules"
-if errorlevel 1 exit /b 1
-call :RemoveTreeChecked "%RAGFLOW_DIR%\web\dist"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] Could not remove temporary RAGFlow web node_modules.
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
+call :AppendLogBanner "%WEB_BUILD_LOG%" "fingerprint app web dist"
 call :ComputeTreeFingerprint "%APP%\web" "" WEB_TREE_SHA256 WEB_TREE_FILE_COUNT
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] Could not fingerprint the prepared RAGFlow web dist.
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
 call :WriteSealedFingerprintMarker "%WEB_MARKER%" "%WEB_FINGERPRINT%" "%WEB_TREE_SHA256%" "%WEB_TREE_FILE_COUNT%"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+    echo [ERROR] Could not write the RAGFlow web dist marker: %WEB_MARKER%
+    call :PrintLogTail "%WEB_BUILD_LOG%"
+    exit /b 1
+)
 exit /b 0
 
 REM ============================================================================
@@ -2299,6 +2333,14 @@ if /i not "%DIRECTORY_ATTRIBUTES:l=%"=="%DIRECTORY_ATTRIBUTES%" (
     endlocal & exit /b 1
 )
 rmdir /s /q "%~1" >nul 2>&1
+if exist "%~1" (
+    timeout /t 2 /nobreak >nul 2>&1
+    rmdir /s /q "%~1" >nul 2>&1
+)
+if exist "%~1" (
+    timeout /t 3 /nobreak >nul 2>&1
+    rmdir /s /q "%~1" >nul 2>&1
+)
 if exist "%~1" (
     echo [ERROR] Could not remove directory: %~1
     endlocal & exit /b 1
