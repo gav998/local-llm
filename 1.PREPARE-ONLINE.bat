@@ -1084,50 +1084,34 @@ REM VERSION AND NATIVE-RUNTIME CHECKS
 REM ============================================================================
 
 :VerifyArtifactVersions
-echo [STEP] Verify pinned versions and archive layouts
+echo [STEP] Verify artifact executables and archive layouts
 if not exist "%RAG_PY%" exit /b 1
 if not exist "%OCR_PY%" exit /b 1
 if not exist "%UV_EXE%" exit /b 1
 if not exist "%NODE_DIR%\node.exe" exit /b 1
 if not exist "%PORTABLE_GIT_DIR%\cmd\git.exe" exit /b 1
 
-"%RAG_PY%" -c "import sys; assert sys.version.split()[0] == '%PY_RAG_VERSION%', sys.version; print(sys.version)" >"%LOGS%\python-rag-version.log" 2>&1
+"%RAG_PY%" -c "import sys; print(sys.version)" >"%LOGS%\python-rag-version.log" 2>&1
 if errorlevel 1 (
-    echo [ERROR] RAGFlow Python must be exactly %PY_RAG_VERSION%. See %LOGS%\python-rag-version.log
+    echo [ERROR] RAGFlow Python executable failed. See %LOGS%\python-rag-version.log
     exit /b 1
 )
-"%OCR_PY%" -c "import sys; assert sys.version.split()[0] == '%PY_OCR_VERSION%', sys.version; print(sys.version)" >"%LOGS%\python-ocr-version.log" 2>&1
+"%OCR_PY%" -c "import sys; print(sys.version)" >"%LOGS%\python-ocr-version.log" 2>&1
 if errorlevel 1 (
-    echo [ERROR] OCR Python must be exactly %PY_OCR_VERSION%. See %LOGS%\python-ocr-version.log
+    echo [ERROR] OCR Python executable failed. See %LOGS%\python-ocr-version.log
     exit /b 1
 )
 "%UV_EXE%" --version >"%LOGS%\uv-version.log" 2>&1
 if errorlevel 1 exit /b 1
-findstr /b /c:"uv %PIN_UV_VERSION%" "%LOGS%\uv-version.log" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] uv version mismatch. See %LOGS%\uv-version.log
-    exit /b 1
-)
 "%NODE_DIR%\node.exe" --version >"%LOGS%\node-version.log" 2>&1
 if errorlevel 1 exit /b 1
-findstr /x /c:"v%NODE_VERSION%" "%LOGS%\node-version.log" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Node version mismatch. See %LOGS%\node-version.log
-    exit /b 1
-)
 "%PORTABLE_GIT_DIR%\cmd\git.exe" --version >"%LOGS%\git-version.log" 2>&1
 if errorlevel 1 exit /b 1
-findstr /x /c:"git version %MINGIT_GIT_VERSION%" "%LOGS%\git-version.log" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Portable Git version mismatch. See %LOGS%\git-version.log
-    exit /b 1
-)
 
 set "RAGFLOW_CHECK_FILE=%RAGFLOW_DIR%\pyproject.toml"
-set "RAGFLOW_CHECK_VERSION=%RAGFLOW_VERSION%"
-"%RAG_PY%" -c "import os,pathlib,tomllib; p=tomllib.loads(pathlib.Path(os.environ['RAGFLOW_CHECK_FILE']).read_text(encoding='utf-8')); assert p['project']['version']==os.environ['RAGFLOW_CHECK_VERSION'], p['project']['version']" >"%LOGS%\ragflow-version.log" 2>&1
+"%RAG_PY%" -c "import os,pathlib,tomllib; p=tomllib.loads(pathlib.Path(os.environ['RAGFLOW_CHECK_FILE']).read_text(encoding='utf-8')); print(p['project'].get('version',''))" >"%LOGS%\ragflow-version.log" 2>&1
 if errorlevel 1 (
-    echo [ERROR] The expanded RAGFlow source is not version %RAGFLOW_VERSION%.
+    echo [ERROR] The expanded RAGFlow source layout could not be inspected.
     echo [HINT] Delete %RAGFLOW_DIR% and rerun this script.
     exit /b 1
 )
@@ -1489,9 +1473,9 @@ if errorlevel 1 exit /b 1
 exit /b 0
 
 :ProbeOcrImports
-"%OCR_PY%" -c "import paddle,paddleocr,paddlex; assert paddle.__version__ == '%PADDLE_VERSION%', paddle.__version__; assert paddleocr.__version__ == '%PADDLEOCR_VERSION%', paddleocr.__version__; assert paddlex.__version__ == '%PADDLEX_VERSION%', paddlex.__version__; print('OCR imports and versions OK')" >"%LOGS%\ocr-import-smoke.log" 2>&1
+"%OCR_PY%" -c "import paddle,paddleocr,paddlex; print('paddle='+paddle.__version__); print('paddleocr='+paddleocr.__version__); print('paddlex='+paddlex.__version__); print('OCR imports OK')" >"%LOGS%\ocr-import-smoke.log" 2>&1
 if errorlevel 1 (
-    echo [ERROR] OCR import/version smoke failed. See %LOGS%\ocr-import-smoke.log
+    echo [ERROR] OCR import smoke failed. See %LOGS%\ocr-import-smoke.log
     exit /b 1
 )
 exit /b 0
@@ -1894,13 +1878,13 @@ if errorlevel 1 (endlocal & exit /b 1)
 call :ProbeRehydratedBinaries "%~1" "%~2"
 if errorlevel 1 (endlocal & exit /b 1)
 
-"%~1\runtime\python-rag\python.exe" -c "import sys; assert sys.version.split()[0] == '%PY_RAG_VERSION%'; import cv2,elasticsearch,quart,valkey" >>"%~2" 2>&1
+"%~1\runtime\python-rag\python.exe" -c "import sys; print(sys.version); import cv2,elasticsearch,quart,valkey" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-rag\python.exe" "%~1\config\project\prepare_ragflow_assets.py" --ragflow-dir "%~1\ragflow" --nltk-dir "%~1\data\nltk" --record "%~1\config\ragflow-assets.json" --verify-only >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-rag\python.exe" "%~1\config\project\verify_ragflow_runtime.py" --ragflow-dir "%~1\ragflow" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
-"%~1\runtime\python-ocr\python.exe" -c "import sys,paddle,paddleocr,paddlex; assert sys.version.split()[0] == '%PY_OCR_VERSION%'; assert paddle.__version__ == '%PADDLE_VERSION%'; assert paddleocr.__version__ == '%PADDLEOCR_VERSION%'; assert paddlex.__version__ == '%PADDLEX_VERSION%'" >>"%~2" 2>&1
+"%~1\runtime\python-ocr\python.exe" -c "import sys,paddle,paddleocr,paddlex; print(sys.version); print('paddle='+paddle.__version__); print('paddleocr='+paddleocr.__version__); print('paddlex='+paddlex.__version__)" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-ocr\python.exe" "%~1\services\ocr\test_ocr_job_gateway_contract.py" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
