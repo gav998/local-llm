@@ -91,6 +91,7 @@ DATRIE_WHEEL_NAME = "datrie-0.8.3-cp313-cp313-win_amd64.whl"
 DATRIE_WHEEL_SHA256 = (
     "76eb11c37919646ccd276a76eed9db2f066fbfb23b577ef32efeacf5387aea0e"
 )
+DATRIE_HASH_PREFIXES = ("sha256=", "sha256:")
 
 
 @dataclass(frozen=True)
@@ -739,8 +740,10 @@ def validate_datrie_direct_url(data: bytes, path: Path) -> None:
         raise RuntimeError(f"Missing archive_info in {path}")
     advertised: list[str] = []
     direct_hash = archive_info.get("hash")
-    if isinstance(direct_hash, str) and direct_hash.startswith("sha256="):
-        advertised.append(direct_hash.removeprefix("sha256="))
+    if isinstance(direct_hash, str):
+        digest = datrie_sha256_from_direct_url_hash(direct_hash)
+        if digest is not None:
+            advertised.append(digest)
     hashes = archive_info.get("hashes")
     if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str):
         advertised.append(hashes["sha256"])
@@ -748,6 +751,13 @@ def validate_datrie_direct_url(data: bytes, path: Path) -> None:
         raise RuntimeError(
             f"Unexpected or missing datrie wheel hash in {path}: {advertised!r}"
         )
+
+
+def datrie_sha256_from_direct_url_hash(value: str) -> str | None:
+    for prefix in DATRIE_HASH_PREFIXES:
+        if value.startswith(prefix):
+            return value.removeprefix(prefix)
+    return None
 
 
 def remove_datrie_direct_url() -> tuple[Path, Path]:
