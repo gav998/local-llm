@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.7"
+set "PROJECT_VERSION=2026.09.08.8"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -804,15 +804,19 @@ REM Never let a failed upgrade re-label an older destination as the new
 REM artifact. Preserve the old generated tree before attempting replacement;
 REM manual acceptance starts from an empty destination.
 if exist "!ART_STALE_BACKUP!" (
-    echo [ERROR] A preserved destination from an interrupted attempt exists:
-    echo [ERROR]   !ART_STALE_BACKUP!
-    echo [INFO] Inspect and move it before retrying this artifact.
-    endlocal & exit /b 1
+    call :MoveInterruptedArtifactBackupAside
+    if errorlevel 1 (endlocal & exit /b 1)
 )
-move "!ART_DEST!" "!ART_STALE_BACKUP!" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Could not preserve the previous destination: !ART_DEST!
-    endlocal & exit /b 1
+call :DirectoryIsEmpty "!ART_DEST!"
+if not errorlevel 1 (
+    call :RemoveTreeChecked "!ART_DEST!"
+    if errorlevel 1 (endlocal & exit /b 1)
+) else (
+    move "!ART_DEST!" "!ART_STALE_BACKUP!" >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Could not preserve the previous destination: !ART_DEST!
+        endlocal & exit /b 1
+    )
 )
 call :MakeDirChecked "!ART_DEST!"
 if errorlevel 1 (
@@ -950,6 +954,25 @@ if not defined ART_STALE_BACKUP exit /b 0
 call :RemoveTreeChecked "%ART_STALE_BACKUP%"
 if errorlevel 1 exit /b 1
 set "ART_STALE_BACKUP="
+exit /b 0
+
+:MoveInterruptedArtifactBackupAside
+if not defined ART_STALE_BACKUP exit /b 0
+if not exist "%ART_STALE_BACKUP%" exit /b 0
+set "ART_ORPHAN_BACKUP=%WORK%\artifact-orphaned-%ART_NAME%-%RANDOM%-%RANDOM%"
+if exist "%ART_ORPHAN_BACKUP%" (
+    echo [ERROR] Could not allocate a unique orphaned artifact backup path:
+    echo [ERROR]   %ART_ORPHAN_BACKUP%
+    exit /b 1
+)
+move "%ART_STALE_BACKUP%" "%ART_ORPHAN_BACKUP%" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not move the preserved destination aside:
+    echo [ERROR]   %ART_STALE_BACKUP%
+    exit /b 1
+)
+echo [WARN] Previous interrupted artifact backup moved aside:
+echo [WARN]   %ART_ORPHAN_BACKUP%
 exit /b 0
 
 :WriteArtifactMarker
@@ -2289,6 +2312,15 @@ for %%I in ("%~1") do set "REGULAR_FILE_ATTRIBUTES=%%~aI"
 if not defined REGULAR_FILE_ATTRIBUTES (endlocal & exit /b 1)
 if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d" (endlocal & exit /b 1)
 if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%" (endlocal & exit /b 1)
+endlocal & exit /b 0
+
+:DirectoryIsEmpty
+setlocal
+if "%~1"=="" (endlocal & exit /b 1)
+if not exist "%~1\." (endlocal & exit /b 1)
+for /f "delims=" %%I in ('dir /a /b "%~1" 2^>nul') do (
+    endlocal & exit /b 1
+)
 endlocal & exit /b 0
 
 :MakeDirChecked

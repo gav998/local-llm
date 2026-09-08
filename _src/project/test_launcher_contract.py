@@ -95,6 +95,17 @@ class LauncherContractTest(unittest.TestCase):
         self.assertIn(replace, prepare)
         self.assertLess(prepare.index(accept), prepare.index(replace))
 
+    def test_interrupted_artifact_backup_is_moved_aside_before_retry(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "A preserved destination from an interrupted attempt exists",
+            prepare,
+        )
+        self.assertIn(":MoveInterruptedArtifactBackupAside", prepare)
+        self.assertIn("artifact-orphaned-%ART_NAME%-%RANDOM%-%RANDOM%", prepare)
+        self.assertIn('call :MoveInterruptedArtifactBackupAside', prepare)
+        self.assertIn('call :DirectoryIsEmpty "!ART_DEST!"', prepare)
+
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (
             PREPARE.read_text(encoding="utf-8") + LAUNCHER.read_text(encoding="utf-8")
