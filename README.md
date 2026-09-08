@@ -158,6 +158,7 @@ Defaults записываются в локальный `service_conf`. Посл
 | PaddleOCR / PaddleX | `3.7.0` / `3.7.2` |
 | OCR models | PP-DocLayout-L, PP-DocBlockLayout, PP-OCRv6 medium det, East Slavic PP-OCRv5 rec, SLANet_plus |
 | llama.cpp | `b10786`, Windows Vulkan |
+| RAGFlow Windows additions | `scikit-learn 1.8.0`, `graspologic-native 1.2.5` |
 | Data services | MySQL `8.0.40`, Elasticsearch `8.11.3`, Silo `2026-08-06`, Valkey `8.1.6` |
 | Web proxy | Caddy `2.11.4` |
 | Online-only tools | Node `24.20.0`, MinGit `2.55.0.5`, uv `0.12.9` |

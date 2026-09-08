@@ -47,6 +47,7 @@ EXPECTED_DISTRIBUTIONS = {
     "xgboost": "2.1.4",
     "infinity-sdk": "0.7.3",
     "datrie": "0.8.3",
+    "scikit-learn": "1.8.0",
     "crawl4ai": "0.9.2",
     "agentrun-sdk": "0.0.51",
     "graspologic-native": "1.2.5",
@@ -374,6 +375,7 @@ def check_distributions() -> str:
     # Import the two compatibility-sensitive packages, not just their metadata.
     importlib.import_module("infinity")
     importlib.import_module("datrie")
+    importlib.import_module("sklearn")
 
     datrie = resolved["datrie"]
     datrie_files = datrie.files

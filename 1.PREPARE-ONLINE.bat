@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.2"
+set "PROJECT_VERSION=2026.09.08.3"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -34,6 +34,7 @@ set "DEJAVU_SANS_VERSION=2.37"
 set "DATRIE_VERSION=0.8.3"
 set "NUMPY_VERSION=2.3.5"
 set "XGBOOST_VERSION=2.1.4"
+set "SCIKIT_LEARN_VERSION=1.8.0"
 set "GRASPOLOGIC_NATIVE_VERSION=1.2.5"
 set "VC_REDIST_VERSION=14.44.35211"
 set "MYSQL_VERSION=8.0.40"
@@ -1196,7 +1197,7 @@ if errorlevel 1 exit /b 1
 call :FileSha256 "%PROJECT%\ragflow-windows-excludes.txt" RAG_EXCLUDE_HASH
 if errorlevel 1 exit /b 1
 set "RAG_MARKER=%APP%\config\ragflow-python.ok"
-set "RAG_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
+set "RAG_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;scikit-learn=%SCIKIT_LEARN_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
 call :MarkerMatches "%RAG_MARKER%" "%RAG_FINGERPRINT%"
 if errorlevel 1 goto :RAG_BUILD_RUNTIME
 call :FinalizeRagflowRuntime
@@ -1972,6 +1973,7 @@ endlocal & exit /b 1
     echo paddlex=%PADDLEX_VERSION%
     echo numpy_windows_override=%NUMPY_VERSION%
     echo xgboost_windows_override=%XGBOOST_VERSION%
+    echo scikit_learn_windows_addition=%SCIKIT_LEARN_VERSION%
     echo datrie_windows_wheel=%DATRIE_VERSION%
     echo graphrag_backend=graspologic-native-%GRASPOLOGIC_NATIVE_VERSION%-audited-adapter
     echo vc_runtime=%VC_REDIST_VERSION%-app-local

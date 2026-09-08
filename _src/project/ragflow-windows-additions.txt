@@ -2,3 +2,10 @@
 # excluded because it requires NumPy <2 on RAGFlow's CPython 3.13 runtime.
 graspologic-native==1.2.5 \
     --hash=sha256:c3ef2172d774083d7e2c8e77daccd218571ddeebeb2c1703cebb1a2cc4c56e07
+
+# RAGFlow imports sklearn from task_executor and deepdoc, but upstream 0.27.1
+# leaves scikit-learn in its disabled "not necessary" block.  Version 1.8.0
+# has a native Windows CPython 3.13 wheel and stays compatible with the pinned
+# NumPy 2.3.x runtime without adding the narwhals dependency introduced later.
+scikit-learn==1.8.0 \
+    --hash=sha256:2de443b9373b3b615aec1bb57f9baa6bb3a9bd093f1269ba95c17d870422b271

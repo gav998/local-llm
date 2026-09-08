@@ -55,6 +55,7 @@ Upstream lock экспортируется через `uv export --frozen`, за
 
 - `numpy==2.3.5`, потому что upstream 1.26.4 не имеет нужного cp313 Windows wheel;
 - `xgboost==2.1.4`, совместимый с NumPy 2;
+- `scikit-learn==1.8.0`, потому что RAGFlow импортирует `sklearn` из task/deepdoc кода, но upstream держит старый `scikit-learn==1.5.0` в отключённом блоке без CPython 3.13 wheel;
 - `datrie==0.8.3` как закреплённый MSVC/cp313 wheel;
 - metadata constraint `infinity-sdk==0.7.3` меняется на проверенный `numpy>=2,<2.4` с пересчётом RECORD;
 - полный `graspologic` исключён из-за `numpy<2`, но GraphRAG включён через `graspologic-native==1.2.5` и audited adapter;
