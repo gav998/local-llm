@@ -13,4 +13,6 @@ graspologic-native==1.2.5 \
 
 # This reproduces RAGFlow's own tool.uv override while external/user uv
 # configuration discovery is disabled for a deterministic portable build.
+# moodlepy 0.24.1 still publishes attrs<23 metadata; prepare_ragflow_windows.py
+# repairs that audited METADATA/RECORD after installation so pip check stays true.
 attrs>=23.2.0

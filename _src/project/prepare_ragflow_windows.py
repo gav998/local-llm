@@ -94,6 +94,20 @@ DATRIE_WHEEL_SHA256 = (
 )
 DATRIE_HASH_PREFIXES = ("sha256=", "sha256:")
 
+MOODLE_DISTRIBUTION = "moodlepy"
+MOODLE_VERSION = "0.24.1"
+MOODLE_DIST_INFO = "moodlepy-0.24.1.dist-info"
+MOODLE_REQUIREMENT_ORIGINAL = b"Requires-Dist: attrs (>=22.2.0,<23.0.0)\n"
+MOODLE_REQUIREMENT_PATCHED = b"Requires-Dist: attrs (>=23.2.0)\n"
+MOODLE_METADATA_ORIGINAL_SIZE = 8_344
+MOODLE_METADATA_ORIGINAL_SHA256 = (
+    "7ad1f8d84a9d8e723c63b358f17ec5cfc55c83154d2c56302245662b742d980d"
+)
+MOODLE_METADATA_PATCHED_SIZE = 8_336
+MOODLE_METADATA_PATCHED_SHA256 = (
+    "253e4fffc22de184669efdfafccc6a57a6234760e0cbe4cc75245c99ecce1f59"
+)
+
 
 @dataclass(frozen=True)
 class RemovedRequirementPatch:
@@ -724,6 +738,152 @@ def repair_excluded_dependency_metadata() -> None:
         repair_removed_requirement_metadata(patch)
 
 
+def moodle_metadata_state(data: bytes) -> str:
+    size = len(data)
+    digest = sha256_bytes(data)
+    if (
+        size == MOODLE_METADATA_ORIGINAL_SIZE
+        and digest == MOODLE_METADATA_ORIGINAL_SHA256
+    ):
+        if data.count(MOODLE_REQUIREMENT_ORIGINAL) != 1:
+            raise RuntimeError("Audited moodlepy METADATA has an unexpected attrs line")
+        return "original"
+    if (
+        size == MOODLE_METADATA_PATCHED_SIZE
+        and digest == MOODLE_METADATA_PATCHED_SHA256
+    ):
+        if data.count(MOODLE_REQUIREMENT_PATCHED) != 1:
+            raise RuntimeError("Patched moodlepy METADATA has an unexpected attrs line")
+        if MOODLE_REQUIREMENT_ORIGINAL in data:
+            raise RuntimeError("Patched moodlepy METADATA retains the stale attrs pin")
+        return "patched"
+    raise RuntimeError(
+        "Refusing to patch unknown moodlepy METADATA: "
+        f"expected SHA256 {MOODLE_METADATA_ORIGINAL_SHA256} (original) or "
+        f"{MOODLE_METADATA_PATCHED_SHA256} (patched), found {digest} ({size} bytes)"
+    )
+
+
+def inspect_moodle_record(
+    data: bytes, record_path: Path
+) -> tuple[str, list[bytes], int]:
+    lines = data.splitlines(keepends=True)
+    metadata_indices: list[int] = []
+    self_rows = 0
+    metadata_entry = f"{MOODLE_DIST_INFO}/METADATA"
+    record_entry = f"{MOODLE_DIST_INFO}/RECORD"
+    state: str | None = None
+    original = [
+        metadata_entry,
+        f"sha256={record_digest(MOODLE_METADATA_ORIGINAL_SHA256)}",
+        str(MOODLE_METADATA_ORIGINAL_SIZE),
+    ]
+    patched = [
+        metadata_entry,
+        f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)}",
+        str(MOODLE_METADATA_PATCHED_SIZE),
+    ]
+
+    for index, raw_line in enumerate(lines):
+        row = parse_record_row(raw_line, record_path)
+        if row[0] == metadata_entry:
+            metadata_indices.append(index)
+            if row == original:
+                state = "original"
+            elif row == patched:
+                state = "patched"
+            else:
+                raise RuntimeError(
+                    f"Unexpected moodlepy METADATA row in {record_path}: {row!r}"
+                )
+        if row[0] == record_entry:
+            self_rows += 1
+            if row[1:] != ["", ""]:
+                raise RuntimeError(
+                    f"Malformed moodlepy RECORD self row in {record_path}: {row!r}"
+                )
+
+    if len(metadata_indices) != 1 or state is None:
+        raise RuntimeError(
+            f"Expected exactly one moodlepy METADATA row in {record_path}; "
+            f"found {len(metadata_indices)}"
+        )
+    if self_rows != 1:
+        raise RuntimeError(
+            f"Expected exactly one moodlepy RECORD self row in {record_path}; "
+            f"found {self_rows}"
+        )
+    return state, lines, metadata_indices[0]
+
+
+def patched_moodle_record_bytes(lines: list[bytes], metadata_index: int) -> bytes:
+    current = lines[metadata_index]
+    if current.endswith(b"\r\n"):
+        ending = b"\r\n"
+    elif current.endswith(b"\n"):
+        ending = b"\n"
+    elif current.endswith(b"\r"):
+        ending = b"\r"
+    else:
+        ending = b""
+    entry = (
+        f"{MOODLE_DIST_INFO}/METADATA,"
+        f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)},"
+        f"{MOODLE_METADATA_PATCHED_SIZE}"
+    ).encode("ascii")
+    lines[metadata_index] = entry + ending
+    return b"".join(lines)
+
+
+def patch_moodle_metadata() -> tuple[Path, Path]:
+    dist_info = locate_dist_info(MOODLE_DISTRIBUTION, MOODLE_VERSION, MOODLE_DIST_INFO)
+    metadata_path = dist_info / "METADATA"
+    record_path = dist_info / "RECORD"
+    for description, path in (
+        ("METADATA", metadata_path),
+        ("RECORD", record_path),
+    ):
+        if path.is_symlink():
+            raise RuntimeError(f"moodlepy {description} must not be a symlink: {path}")
+        if not path.is_file():
+            raise RuntimeError(f"moodlepy {description} is missing: {path}")
+
+    metadata = metadata_path.read_bytes()
+    record = record_path.read_bytes()
+    metadata_status = moodle_metadata_state(metadata)
+    record_status, record_lines, metadata_index = inspect_moodle_record(
+        record, record_path
+    )
+
+    if metadata_status == "original":
+        patched = metadata.replace(
+            MOODLE_REQUIREMENT_ORIGINAL,
+            MOODLE_REQUIREMENT_PATCHED,
+            1,
+        )
+        if (
+            len(patched) != MOODLE_METADATA_PATCHED_SIZE
+            or sha256_bytes(patched) != MOODLE_METADATA_PATCHED_SHA256
+        ):
+            raise RuntimeError("Internal moodlepy METADATA patch verification failed")
+        atomic_write(metadata_path, patched)
+    if record_status == "original":
+        atomic_write(
+            record_path,
+            patched_moodle_record_bytes(record_lines, metadata_index),
+        )
+
+    if moodle_metadata_state(metadata_path.read_bytes()) != "patched":
+        raise RuntimeError("moodlepy METADATA did not reach the patched state")
+    final_record_status, _, _ = inspect_moodle_record(
+        record_path.read_bytes(), record_path
+    )
+    if final_record_status != "patched":
+        raise RuntimeError("moodlepy RECORD did not reach the patched state")
+    print("[OK  ] Repaired moodlepy 0.24.1 attrs requirement and wheel RECORD")
+    return metadata_path, record_path
+
+
 def validate_datrie_direct_url(data: bytes, path: Path) -> None:
     try:
         value = json.loads(data.decode("utf-8"))
@@ -854,7 +1014,7 @@ def remove_datrie_direct_url() -> tuple[Path, Path]:
 
 def expected_record() -> dict[str, object]:
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "helper": "prepare_ragflow_windows.py",
         "ragflow": {
             "version": RAGFLOW_VERSION,
@@ -893,6 +1053,23 @@ def expected_record() -> dict[str, object]:
             "wheel_sha256": DATRIE_WHEEL_SHA256,
             "removed": f"{DATRIE_DIST_INFO}/direct_url.json",
             "reason": "remove the absolute online-build wheel path",
+        },
+        "moodlepy": {
+            "version": MOODLE_VERSION,
+            "metadata_path": f"{MOODLE_DIST_INFO}/METADATA",
+            "metadata_original_sha256": MOODLE_METADATA_ORIGINAL_SHA256,
+            "metadata_patched_sha256": MOODLE_METADATA_PATCHED_SHA256,
+            "attrs_requirement": MOODLE_REQUIREMENT_PATCHED.decode("ascii").rstrip(),
+            "record_entry": (
+                f"{MOODLE_DIST_INFO}/METADATA,"
+                f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)},"
+                f"{MOODLE_METADATA_PATCHED_SIZE}"
+            ),
+            "reason": (
+                "RAGFlow pins trio>=0.26 for CPython 3.13 and overrides attrs "
+                "to >=23.2.0; moodlepy 0.24.1 metadata still advertises "
+                "the stale attrs<23 constraint"
+            ),
         },
         "excluded_dependency_metadata": {
             patch.distribution: {
@@ -953,6 +1130,8 @@ def main() -> int:
     install_graphrag_native_adapter(ragflow_dir)
     print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
     patch_infinity_metadata()
+    print("[STEP] Repair moodlepy metadata for the pinned attrs runtime")
+    patch_moodle_metadata()
     print("[STEP] Repair metadata for intentionally excluded dependencies")
     repair_excluded_dependency_metadata()
     print("[STEP] Remove build-bound datrie wheel provenance")

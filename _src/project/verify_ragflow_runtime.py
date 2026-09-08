@@ -50,8 +50,16 @@ EXPECTED_DISTRIBUTIONS = {
     "crawl4ai": "0.9.2",
     "agentrun-sdk": "0.0.51",
     "graspologic-native": "1.2.5",
+    "moodlepy": "0.24.1",
 }
 INFINITY_NUMPY_REQUIREMENT = "numpy>=2,<2.4"
+MOODLE_ATTRS_REQUIREMENT = b"Requires-Dist: attrs (>=23.2.0)\n"
+MOODLE_DIST_INFO = "moodlepy-0.24.1.dist-info"
+MOODLE_METADATA_PATCHED_SIZE = 8_336
+MOODLE_METADATA_PATCHED_SHA256 = (
+    "253e4fffc22de184669efdfafccc6a57a6234760e0cbe4cc75245c99ecce1f59"
+)
+MOODLE_RECORD_DIGEST_PATCHED = "JT5P_8It4YRmnv36_MxqV6YjR2Dgy-TMdSRcmezOH1k"
 DATRIE_DIST_INFO = "datrie-0.8.3.dist-info"
 
 
@@ -252,6 +260,74 @@ def verify_removed_requirement_metadata(
         )
 
 
+def verify_moodle_metadata(distribution: importlib.metadata.Distribution) -> None:
+    files = distribution.files
+    if files is None:
+        raise RuntimeError("moodlepy has no installed RECORD")
+    metadata_entries = [
+        item
+        for item in files
+        if item.name == "METADATA" and item.parent.name.endswith(".dist-info")
+    ]
+    if len(metadata_entries) != 1:
+        raise RuntimeError(
+            "Could not uniquely locate moodlepy METADATA through its RECORD; "
+            f"found {len(metadata_entries)} candidates"
+        )
+    metadata_entry = metadata_entries[0].as_posix()
+    expected_entry = f"{MOODLE_DIST_INFO}/METADATA"
+    if metadata_entry != expected_entry:
+        raise RuntimeError(
+            f"Unexpected moodlepy METADATA path {metadata_entry!r}; "
+            f"expected {expected_entry!r}"
+        )
+    metadata_path = Path(distribution.locate_file(metadata_entries[0]))
+    record_path = metadata_path.with_name("RECORD")
+    for description, path in (
+        ("METADATA", metadata_path),
+        ("RECORD", record_path),
+    ):
+        if path.is_symlink():
+            raise RuntimeError(f"moodlepy {description} must not be a symlink: {path}")
+        if not path.is_file():
+            raise RuntimeError(f"moodlepy {description} is missing: {path}")
+
+    metadata = metadata_path.read_bytes()
+    digest = hashlib.sha256(metadata).hexdigest()
+    if (
+        len(metadata) != MOODLE_METADATA_PATCHED_SIZE
+        or digest != MOODLE_METADATA_PATCHED_SHA256
+    ):
+        raise RuntimeError(
+            "moodlepy METADATA is not the audited repaired file: expected "
+            f"{MOODLE_METADATA_PATCHED_SIZE} bytes / SHA256 "
+            f"{MOODLE_METADATA_PATCHED_SHA256}, found {len(metadata)} bytes / "
+            f"SHA256 {digest}"
+        )
+    if metadata.count(MOODLE_ATTRS_REQUIREMENT) != 1:
+        raise RuntimeError("moodlepy attrs metadata was not repaired")
+
+    try:
+        rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise RuntimeError(f"Cannot parse moodlepy RECORD: {exc}") from exc
+    expected_metadata_row = [
+        expected_entry,
+        f"sha256={MOODLE_RECORD_DIGEST_PATCHED}",
+        str(MOODLE_METADATA_PATCHED_SIZE),
+    ]
+    metadata_rows = [row for row in rows if row and row[0] == expected_entry]
+    if metadata_rows != [expected_metadata_row]:
+        raise RuntimeError(
+            f"Unexpected moodlepy METADATA RECORD rows: {metadata_rows!r}; "
+            f"expected {[expected_metadata_row]!r}"
+        )
+    record_entry = f"{MOODLE_DIST_INFO}/RECORD"
+    self_rows = [row for row in rows if row and row[0] == record_entry]
+    if self_rows != [[record_entry, "", ""]]:
+        raise RuntimeError(f"Unexpected moodlepy RECORD self rows: {self_rows!r}")
+
+
 def check_distributions() -> str:
     found: list[str] = []
     resolved: dict[str, importlib.metadata.Distribution] = {}
@@ -293,6 +369,7 @@ def check_distributions() -> str:
 
     for repair in EXCLUDED_REQUIREMENT_METADATA:
         verify_removed_requirement_metadata(resolved[repair.distribution], repair)
+    verify_moodle_metadata(resolved["moodlepy"])
 
     # Import the two compatibility-sensitive packages, not just their metadata.
     importlib.import_module("infinity")
