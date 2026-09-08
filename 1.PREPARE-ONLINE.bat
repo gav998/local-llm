@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.07.4"
+set "PROJECT_VERSION=2026.09.08.1"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -775,10 +775,20 @@ if exist "!ART_MARKER!" (
         if /i "%%A"=="artifact" set "MARKER_ARTIFACT=%%B"
     )
 )
-if exist "!ART_KEY!" if not exist "!ART_KEY!\." if /i "!MARKER_ARTIFACT!"=="!ART_NAME!" (
+call :IsRegularFile "!ART_KEY!"
+if not errorlevel 1 if /i "!MARKER_ARTIFACT!"=="!ART_NAME!" (
     call :DiscardStaleArtifactBackup
     if errorlevel 1 (endlocal & exit /b 1)
     echo [OK] !ART_NAME! -- source and required destination file are present
+    endlocal & exit /b 0
+)
+call :IsRegularFile "!ART_KEY!"
+if not errorlevel 1 (
+    call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
+    if errorlevel 1 goto :ENSURE_MANUAL_WAIT
+    call :DiscardStaleArtifactBackup
+    if errorlevel 1 (endlocal & exit /b 1)
+    echo [OK] Accepted manually prepared destination for !ART_NAME!: !ART_KEY!
     endlocal & exit /b 0
 )
 if exist "!ART_KEY!" echo [INFO] Replacing stale or untracked destination for !ART_NAME!.
@@ -867,7 +877,8 @@ set "ART_STAGE=!ART_STAGE_BASE!\_content"
 :ENSURE_STAGE_READY
 call :CopyExtractedTree "!ART_STAGE!" "!ART_DEST!" "!KEY_REL!"
 if errorlevel 1 goto :ENSURE_AUTO_FAILED
-if exist "!ART_KEY!" if not exist "!ART_KEY!\." (
+call :IsRegularFile "!ART_KEY!"
+if not errorlevel 1 (
     call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
     if errorlevel 1 goto :ENSURE_MANUAL_WAIT
     call :DiscardStaleArtifactBackup
@@ -906,7 +917,8 @@ if errorlevel 1 (
     echo [WARN] Destination is not a regular project directory.
     goto :ENSURE_MANUAL_WAIT
 )
-if exist "!ART_KEY!" if not exist "!ART_KEY!\." (
+call :IsRegularFile "!ART_KEY!"
+if not errorlevel 1 (
     call :WriteArtifactMarker "!ART_MARKER!" "!ART_NAME!"
     if errorlevel 1 (
         echo [WARN] Could not write the artifact marker.
@@ -2128,6 +2140,17 @@ robocopy "%~1" "%~2" /E /COPY:DAT /DCOPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /NP >
 set "COPYTREE_RC=%ERRORLEVEL%"
 if %COPYTREE_RC% GEQ 8 exit /b 1
 exit /b 0
+
+:IsRegularFile
+setlocal
+if "%~1"=="" (endlocal & exit /b 1)
+if not exist "%~1" (endlocal & exit /b 1)
+set "REGULAR_FILE_ATTRIBUTES="
+for %%I in ("%~1") do set "REGULAR_FILE_ATTRIBUTES=%%~aI"
+if not defined REGULAR_FILE_ATTRIBUTES (endlocal & exit /b 1)
+if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d" (endlocal & exit /b 1)
+if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%" (endlocal & exit /b 1)
+endlocal & exit /b 0
 
 :MakeDirChecked
 setlocal

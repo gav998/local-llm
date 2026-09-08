@@ -73,9 +73,27 @@ class LauncherContractTest(unittest.TestCase):
             self.assertNotIn(removed_contract, combined)
         self.assertIn('if not exist "!ART_SOURCE!" (', prepare)
         self.assertNotIn('if exist "!ART_SOURCE!\\." (', prepare)
+
+    def test_artifact_key_is_checked_by_attributes(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        self.assertNotIn('if not exist "!ART_KEY!\\."', prepare)
+        self.assertGreaterEqual(
+            prepare.count('call :IsRegularFile "!ART_KEY!"'),
+            3,
+        )
+        self.assertIn('set "REGULAR_FILE_ATTRIBUTES=%%~aI"', prepare)
         self.assertNotIn("Required artifact path is a directory", prepare)
         self.assertIn("Source file is present: !ART_NAME!", prepare)
         self.assertIn("All required offline payload files are present.", launcher)
+
+    def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'
+        replace = "Replacing stale or untracked destination for !ART_NAME!."
+        self.assertIn(accept, prepare)
+        self.assertIn(replace, prepare)
+        self.assertLess(prepare.index(accept), prepare.index(replace))
 
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (
