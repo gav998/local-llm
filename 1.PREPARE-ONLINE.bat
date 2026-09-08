@@ -14,7 +14,10 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.8"
+set "PROJECT_VERSION=2026.09.08.9"
+REM Step resume markers intentionally use a component graph version instead of
+REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
+set "RESUME_GRAPH_VERSION=2026.09.08.8"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -82,7 +85,7 @@ if errorlevel 1 exit /b 1
 call :CopyProjectInputs
 if errorlevel 1 exit /b 1
 
-call :ValidateOrResetMutableTrees
+call :ValidateMutableResumeState
 if errorlevel 1 exit /b 1
 
 call :AcquireCoreArtifacts
@@ -537,48 +540,27 @@ for %%F in (ocr_job_gateway.py test_ocr_job_gateway_contract.py ocr_ragflow_e2e.
 )
 exit /b 0
 
-:ValidateOrResetMutableTrees
-set "RAG_RUNTIME_RESET="
-set "RAG_SOURCE_RESET="
-set "OCR_RUNTIME_RESET="
+:ValidateMutableResumeState
+call :ReportMutableResumeTree "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRINT%" "" "RAGFlow Python runtime"
+if errorlevel 1 exit /b 1
+call :ReportMutableResumeTree "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%" "RAGFlow source tree"
+if errorlevel 1 exit /b 1
+call :ReportMutableResumeTree "%OCR_PY_DIR%" "%OCR_PY_TREE_MARKER%" "%OCR_PY_TREE_FINGERPRINT%" "" "OCR Python runtime"
+if errorlevel 1 exit /b 1
+exit /b 0
 
-call :MutableTreeMatches "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRINT%"
-if errorlevel 1 (
-    if exist "%RAG_PY_DIR%\." echo [WARN] RAGFlow Python tree is unsealed or changed; restoring its clean base.
-    call :RemoveTreeChecked "%RAG_PY_DIR%"
-    if errorlevel 1 exit /b 1
-    set "RAG_RUNTIME_RESET=1"
+:ReportMutableResumeTree
+if not exist "%~1\." exit /b 0
+call :MarkerMatches "%~2" "%~3"
+if not errorlevel 1 (
+    echo [INFO] %~5 has a current final tree seal marker; preserving it for validation before packaging.
+    exit /b 0
 )
-call :MutableTreeMatches "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%"
-if errorlevel 1 (
-    if exist "%RAGFLOW_DIR%\." echo [WARN] RAGFlow source tree is unsealed or changed; restoring its clean base.
-    call :RemoveTreeChecked "%RAGFLOW_DIR%"
-    if errorlevel 1 exit /b 1
-    set "RAG_SOURCE_RESET=1"
+if exist "%~2" (
+    echo [INFO] %~5 final tree seal is stale or incomplete; preserving it for resumable prepare.
+) else (
+    echo [INFO] %~5 is not final-sealed yet; preserving completed step outputs for resumable prepare.
 )
-call :MutableTreeMatches "%OCR_PY_DIR%" "%OCR_PY_TREE_MARKER%" "%OCR_PY_TREE_FINGERPRINT%"
-if errorlevel 1 (
-    if exist "%OCR_PY_DIR%\." echo [WARN] OCR Python tree is unsealed or changed; restoring its clean base.
-    call :RemoveTreeChecked "%OCR_PY_DIR%"
-    if errorlevel 1 exit /b 1
-    set "OCR_RUNTIME_RESET=1"
-)
-
-if defined RAG_RUNTIME_RESET if exist "%RAG_PY_TREE_MARKER%" del /f /q "%RAG_PY_TREE_MARKER%" >nul 2>&1
-if defined RAG_SOURCE_RESET if exist "%RAGFLOW_TREE_MARKER%" del /f /q "%RAGFLOW_TREE_MARKER%" >nul 2>&1
-if defined OCR_RUNTIME_RESET if exist "%OCR_PY_TREE_MARKER%" del /f /q "%OCR_PY_TREE_MARKER%" >nul 2>&1
-if defined RAG_RUNTIME_RESET if exist "%APP%\config\ragflow-python.ok" del /f /q "%APP%\config\ragflow-python.ok" >nul 2>&1
-if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-python.ok" del /f /q "%APP%\config\ragflow-python.ok" >nul 2>&1
-if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-windows-compat.json" del /f /q "%APP%\config\ragflow-windows-compat.json" >nul 2>&1
-if defined OCR_RUNTIME_RESET if exist "%APP%\config\ocr-python.ok" del /f /q "%APP%\config\ocr-python.ok" >nul 2>&1
-
-if defined RAG_RUNTIME_RESET if exist "%RAG_PY_TREE_MARKER%" exit /b 1
-if defined RAG_SOURCE_RESET if exist "%RAGFLOW_TREE_MARKER%" exit /b 1
-if defined OCR_RUNTIME_RESET if exist "%OCR_PY_TREE_MARKER%" exit /b 1
-if defined RAG_RUNTIME_RESET if exist "%APP%\config\ragflow-python.ok" exit /b 1
-if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-python.ok" exit /b 1
-if defined RAG_SOURCE_RESET if exist "%APP%\config\ragflow-windows-compat.json" exit /b 1
-if defined OCR_RUNTIME_RESET if exist "%APP%\config\ocr-python.ok" exit /b 1
 exit /b 0
 
 :MutableTreeMatches
@@ -1152,8 +1134,25 @@ if errorlevel 1 (
 exit /b 0
 
 :PrepareSharedRuntimeDlls
-echo [STEP] Extract the pinned Microsoft VC runtime for app-local deployment
 set "VC_REDIST_EXE=%APP%\build\vendor-exe\vcredist\VC_redist.x64.exe"
+call :FileSha256 "%VC_REDIST_EXE%" VC_REDIST_HASH
+if errorlevel 1 exit /b 1
+set "VC_MARKER=%APP%\config\shared-runtime-dlls.ok"
+set "VC_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;vc=%VC_REDIST_VERSION%;source=%VC_REDIST_HASH%"
+call :MarkerMatches "%VC_MARKER%" "%VC_FINGERPRINT%"
+if errorlevel 1 goto :VC_EXTRACT
+call :VerifySharedRuntimeDlls
+if errorlevel 1 (
+    echo [WARN] The fingerprinted Microsoft VC runtime is incomplete; extracting it again.
+    if exist "%VC_MARKER%" del /f /q "%VC_MARKER%" >nul 2>&1
+    goto :VC_EXTRACT
+)
+set "PATH=%SHARED_DLL_DIR%;%PATH%"
+echo [SKIP] App-local Microsoft VC runtime already extracted.
+exit /b 0
+
+:VC_EXTRACT
+echo [STEP] Extract the pinned Microsoft VC runtime for app-local deployment
 set "VC_STAGE=%WORK%\vcredist-%RANDOM%-%RANDOM%"
 set "VC_PARTS=%VC_STAGE%\parts"
 set "VC_PAYLOAD=%VC_STAGE%\payload"
@@ -1201,6 +1200,8 @@ for %%N in (vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll msvc
 )
 if exist "%VC_STAGE%" rmdir /s /q "%VC_STAGE%" >nul 2>&1
 set "PATH=%SHARED_DLL_DIR%;%PATH%"
+call :WriteFingerprintMarker "%VC_MARKER%" "%VC_FINGERPRINT%"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :CopyVcRuntimeDll
@@ -1212,6 +1213,14 @@ if errorlevel 1 (
     endlocal & exit /b 1
 )
 endlocal & exit /b 0
+
+:VerifySharedRuntimeDlls
+for %%N in (vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll concrt140.dll vcomp140.dll) do (
+    if not exist "%SHARED_DLL_DIR%\%%N" exit /b 1
+    if not exist "%RAG_PY_DIR%\%%N" exit /b 1
+    if not exist "%OCR_PY_DIR%\%%N" exit /b 1
+)
+exit /b 0
 
 :VC_EXTRACT_FAILED
 echo [ERROR] Could not extract the app-local Microsoft VC runtime.
@@ -1233,7 +1242,7 @@ if errorlevel 1 exit /b 1
 call :FileSha256 "%PROJECT%\ragflow-windows-excludes.txt" RAG_EXCLUDE_HASH
 if errorlevel 1 exit /b 1
 set "RAG_MARKER=%APP%\config\ragflow-python.ok"
-set "RAG_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;scikit-learn=%SCIKIT_LEARN_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
+set "RAG_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;scikit-learn=%SCIKIT_LEARN_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
 call :MarkerMatches "%RAG_MARKER%" "%RAG_FINGERPRINT%"
 if errorlevel 1 goto :RAG_BUILD_RUNTIME
 call :FinalizeRagflowRuntime
@@ -1352,6 +1361,22 @@ exit /b 0
 :PrepareRagflowAssets
 set "RAG_ASSET_RECORD=%APP%\config\ragflow-assets.json"
 set "RAG_ASSET_LOG=%LOGS%\ragflow-assets.log"
+set "RAG_ASSET_MARKER=%APP%\config\ragflow-assets.ok"
+call :FileSha256 "%PROJECT%\prepare_ragflow_assets.py" RAG_ASSET_SCRIPT_HASH
+if errorlevel 1 exit /b 1
+set "RAG_ASSET_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;script=%RAG_ASSET_SCRIPT_HASH%"
+call :MarkerMatches "%RAG_ASSET_MARKER%" "%RAG_ASSET_FINGERPRINT%"
+if errorlevel 1 goto :RAG_ASSETS_VERIFY
+call :ValidateRagflowAssetsPrepared
+if errorlevel 1 (
+    echo [WARN] The fingerprinted RAGFlow asset set is incomplete; verifying it again.
+    if exist "%RAG_ASSET_MARKER%" del /f /q "%RAG_ASSET_MARKER%" >nul 2>&1
+    goto :RAG_ASSETS_VERIFY
+)
+echo [SKIP] RAGFlow models, NLTK, tiktoken and Tika assets already prepared.
+exit /b 0
+
+:RAG_ASSETS_VERIFY
 echo [STEP] Verify pinned RAGFlow models, NLTK, tiktoken and Tika assets
 call :BeginStepLog "%RAG_ASSET_LOG%" "local_llm RAGFlow asset log"
 if errorlevel 1 exit /b 1
@@ -1360,6 +1385,31 @@ if errorlevel 1 (
     echo [ERROR] RAGFlow asset preparation failed. See %RAG_ASSET_LOG%
     call :PrintLogTail "%RAG_ASSET_LOG%"
     exit /b 1
+)
+call :ValidateRagflowAssetsPrepared
+if errorlevel 1 (
+    echo [ERROR] RAGFlow asset preparation finished but required files are missing.
+    call :PrintLogTail "%RAG_ASSET_LOG%"
+    exit /b 1
+)
+call :WriteFingerprintMarker "%RAG_ASSET_MARKER%" "%RAG_ASSET_FINGERPRINT%"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:ValidateRagflowAssetsPrepared
+if not exist "%RAG_ASSET_RECORD%" exit /b 1
+for %%F in (
+    "%RAGFLOW_DIR%\rag\res\deepdoc\det.onnx"
+    "%RAGFLOW_DIR%\rag\res\deepdoc\layout.onnx"
+    "%RAGFLOW_DIR%\rag\res\deepdoc\updown_concat_xgb.model"
+    "%RAGFLOW_DIR%\ragflow_deps\cl100k_base.tiktoken"
+    "%RAGFLOW_DIR%\tika-server-standard-3.3.0.jar"
+    "%RAGFLOW_DIR%\tika-server-standard-3.3.0.jar.md5"
+    "%NLTK_DATA%\corpora\wordnet.zip"
+    "%NLTK_DATA%\tokenizers\punkt.zip"
+    "%NLTK_DATA%\tokenizers\punkt_tab.zip"
+) do (
+    if not exist "%%~F" exit /b 1
 )
 exit /b 0
 
@@ -1404,6 +1454,17 @@ echo [INFO] Last log lines:
 endlocal & exit /b 0
 
 :VerifyRagflowRuntime
+set "RAG_RUNTIME_MARKER=%APP%\config\ragflow-runtime-smoke.ok"
+call :FileSha256 "%PROJECT%\verify_ragflow_runtime.py" RAG_RUNTIME_SCRIPT_HASH
+if errorlevel 1 exit /b 1
+set "RAG_RUNTIME_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;script=%RAG_RUNTIME_SCRIPT_HASH%;runtime=%RAG_FINGERPRINT%;assets=%RAG_ASSET_FINGERPRINT%"
+call :MarkerMatches "%RAG_RUNTIME_MARKER%" "%RAG_RUNTIME_FINGERPRINT%"
+if errorlevel 1 goto :RAG_RUNTIME_VERIFY
+if not exist "%LOGS%\ragflow-runtime-smoke.log" goto :RAG_RUNTIME_VERIFY
+echo [SKIP] RAGFlow runtime smoke already passed.
+exit /b 0
+
+:RAG_RUNTIME_VERIFY
 echo [STEP] Exercise the Windows-compatible RAGFlow worker, tokenizer and XGBoost model
 set "RAG_RUNTIME_LOG=%LOGS%\ragflow-runtime-smoke.log"
 call :BeginStepLog "%RAG_RUNTIME_LOG%" "local_llm RAGFlow runtime smoke log"
@@ -1414,6 +1475,8 @@ if errorlevel 1 (
     call :PrintLogTail "%RAG_RUNTIME_LOG%"
     exit /b 1
 )
+call :WriteFingerprintMarker "%RAG_RUNTIME_MARKER%" "%RAG_RUNTIME_FINGERPRINT%"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :BuildRagflowWeb
@@ -1424,7 +1487,7 @@ if not exist "%RAGFLOW_DIR%\web\package-lock.json" (
 call :FileSha256 "%RAGFLOW_DIR%\web\package-lock.json" WEB_LOCK_HASH
 if errorlevel 1 exit /b 1
 set "WEB_MARKER=%APP%\config\ragflow-web.ok"
-set "WEB_FINGERPRINT=project=%PROJECT_VERSION%;ragflow=%RAGFLOW_VERSION%;node=%NODE_VERSION%;lock=%WEB_LOCK_HASH%"
+set "WEB_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;node=%NODE_VERSION%;lock=%WEB_LOCK_HASH%"
 call :MarkerMatches "%WEB_MARKER%" "%WEB_FINGERPRINT%"
 if errorlevel 1 goto :WEB_BUILD
 if not exist "%APP%\web\index.html" goto :WEB_BUILD
@@ -1528,7 +1591,7 @@ REM ============================================================================
 call :FileSha256 "%PROJECT%\requirements-ocr.txt" OCR_REQUIREMENTS_HASH
 if errorlevel 1 exit /b 1
 set "OCR_MARKER=%APP%\config\ocr-python.ok"
-set "OCR_FINGERPRINT=project=%PROJECT_VERSION%;python=%PY_OCR_VERSION%;paddle=%PADDLE_VERSION%;paddleocr=%PADDLEOCR_VERSION%;paddlex=%PADDLEX_VERSION%;requirements=%OCR_REQUIREMENTS_HASH%"
+set "OCR_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;python=%PY_OCR_VERSION%;paddle=%PADDLE_VERSION%;paddleocr=%PADDLEOCR_VERSION%;paddlex=%PADDLEX_VERSION%;requirements=%OCR_REQUIREMENTS_HASH%"
 call :MarkerMatches "%OCR_MARKER%" "%OCR_FINGERPRINT%"
 if errorlevel 1 goto :OCR_BUILD_RUNTIME
 call :FinalizeOcrRuntime
@@ -1625,6 +1688,19 @@ if errorlevel 1 (
 exit /b 0
 
 :RunOcrContract
+set "OCR_CONTRACT_MARKER=%APP%\config\ocr-gateway-contract.ok"
+call :FileSha256 "%PROJECT%\ocr_job_gateway.py" OCR_GATEWAY_HASH
+if errorlevel 1 exit /b 1
+call :FileSha256 "%PROJECT%\test_ocr_job_gateway_contract.py" OCR_CONTRACT_TEST_HASH
+if errorlevel 1 exit /b 1
+set "OCR_CONTRACT_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ocr=%OCR_FINGERPRINT%;gateway=%OCR_GATEWAY_HASH%;test=%OCR_CONTRACT_TEST_HASH%"
+call :MarkerMatches "%OCR_CONTRACT_MARKER%" "%OCR_CONTRACT_FINGERPRINT%"
+if errorlevel 1 goto :OCR_CONTRACT_VERIFY
+if not exist "%LOGS%\ocr-gateway-contract.log" goto :OCR_CONTRACT_VERIFY
+echo [SKIP] OCR gateway contract already passed.
+exit /b 0
+
+:OCR_CONTRACT_VERIFY
 echo [STEP] Validate the local OCR job API contract without loading GPU models
 set "OCR_CONTRACT_LOG=%LOGS%\ocr-gateway-contract.log"
 call :BeginStepLog "%OCR_CONTRACT_LOG%" "local_llm OCR gateway contract log"
@@ -1635,10 +1711,27 @@ if errorlevel 1 (
     call :PrintLogTail "%OCR_CONTRACT_LOG%"
     exit /b 1
 )
+call :WriteFingerprintMarker "%OCR_CONTRACT_MARKER%" "%OCR_CONTRACT_FINGERPRINT%"
+if errorlevel 1 exit /b 1
 
 exit /b 0
 
 :RunStrictGpuE2E
+set "GPU_E2E_MARKER=%APP%\config\ocr-gpu-smoke.ok"
+call :FileSha256 "%PROJECT%\ocr_ragflow_e2e.py" GPU_E2E_SCRIPT_HASH
+if errorlevel 1 exit /b 1
+call :FileSha256 "%PROJECT%\ocr_job_gateway.py" GPU_E2E_GATEWAY_HASH
+if errorlevel 1 exit /b 1
+call :FileSha256 "%PROJECT%\pp-structure-v3-8gb.yaml" GPU_E2E_CONFIG_HASH
+if errorlevel 1 exit /b 1
+set "GPU_E2E_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;rag=%RAG_FINGERPRINT%;assets=%RAG_ASSET_FINGERPRINT%;ocr=%OCR_FINGERPRINT%;script=%GPU_E2E_SCRIPT_HASH%;gateway=%GPU_E2E_GATEWAY_HASH%;config=%GPU_E2E_CONFIG_HASH%;gpu=%LOCAL_OCR_GPU_INDEX%"
+call :MarkerMatches "%GPU_E2E_MARKER%" "%GPU_E2E_FINGERPRINT%"
+if errorlevel 1 goto :GPU_E2E_VERIFY
+if not exist "%APP%\config\ocr-gpu-smoke.json" goto :GPU_E2E_VERIFY
+echo [SKIP] Strict GPU OCR/RAGFlow E2E already passed for LOCAL_OCR_GPU_INDEX=%LOCAL_OCR_GPU_INDEX%.
+exit /b 0
+
+:GPU_E2E_VERIFY
 echo [STEP] Run strict CUDA, OCR warmup and RAGFlow parser E2E on the selected GPU
 set "GPU_E2E_LOG=%LOGS%\ocr-gpu-smoke.log"
 call :BeginStepLog "%GPU_E2E_LOG%" "local_llm strict GPU OCR/RAGFlow E2E log"
@@ -1667,6 +1760,8 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [OK] Strict GPU OCR warmup passed.
+call :WriteFingerprintMarker "%GPU_E2E_MARKER%" "%GPU_E2E_FINGERPRINT%"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 REM ============================================================================
@@ -1674,6 +1769,20 @@ REM PROBES, PORTABILITY AUDIT AND PACKAGING
 REM ============================================================================
 
 :ProbePortableBinaries
+set "PROBE_MARKER=%APP%\config\probe-portable-binaries.ok"
+set "PROBE_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;vc=%VC_FINGERPRINT%;mysql=%MYSQL_VERSION%;elastic=%ELASTIC_VERSION%;valkey=%VALKEY_VERSION%;caddy=%CADDY_VERSION%;llama=%LLAMA_BUILD%"
+call :MarkerMatches "%PROBE_MARKER%" "%PROBE_FINGERPRINT%"
+if errorlevel 1 goto :PROBE_RUN
+call :PortableBinaryKeysPresent
+if errorlevel 1 (
+    echo [WARN] The fingerprinted portable binary set is incomplete; probing again.
+    if exist "%PROBE_MARKER%" del /f /q "%PROBE_MARKER%" >nul 2>&1
+    goto :PROBE_RUN
+)
+echo [SKIP] Portable service and inference executable probes already passed.
+exit /b 0
+
+:PROBE_RUN
 echo [STEP] Probe portable service and inference executables
 set "PROBE_LOG=%LOGS%\probe-portable-binaries.log"
 call :BeginStepLog "%PROBE_LOG%" "local_llm portable binary probe log"
@@ -1713,6 +1822,22 @@ if errorlevel 1 goto :PROBE_FAILED
 call :AppendLogBanner "%PROBE_LOG%" "silo --version"
 "%APP%\services\silo\silo.exe" --version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
+call :WriteFingerprintMarker "%PROBE_MARKER%" "%PROBE_FINGERPRINT%"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:PortableBinaryKeysPresent
+for %%F in (
+    "%APP%\services\elasticsearch\jdk\bin\java.exe"
+    "%APP%\services\mysql\bin\mysqld.exe"
+    "%APP%\services\elasticsearch\bin\elasticsearch.bat"
+    "%APP%\services\valkey\valkey-server.exe"
+    "%APP%\services\caddy\caddy.exe"
+    "%APP%\runtime\llama\llama-server.exe"
+    "%APP%\services\silo\silo.exe"
+) do (
+    if not exist "%%~F" exit /b 1
+)
 exit /b 0
 
 :PROBE_FAILED
@@ -1722,6 +1847,18 @@ call :PrintLogTail "%PROBE_LOG%"
 exit /b 1
 
 :AuditPortableRuntimes
+set "AUDIT_MARKER=%APP%\config\audit-portable-runtimes.ok"
+call :FileSha256 "%PROJECT%\audit_portability.py" AUDIT_SCRIPT_HASH
+if errorlevel 1 exit /b 1
+set "AUDIT_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;script=%AUDIT_SCRIPT_HASH%;rag=%RAG_FINGERPRINT%;ocr=%OCR_FINGERPRINT%"
+call :MarkerMatches "%AUDIT_MARKER%" "%AUDIT_FINGERPRINT%"
+if errorlevel 1 goto :AUDIT_RUN
+if not exist "%APP%\config\audit-python-rag.json" goto :AUDIT_RUN
+if not exist "%APP%\config\audit-python-ocr.json" goto :AUDIT_RUN
+echo [SKIP] Portable runtime audit already passed.
+exit /b 0
+
+:AUDIT_RUN
 echo [STEP] Check critical launch/config files for build-path leaks and symlinks
 set "AUDIT_LOG=%LOGS%\audit-portable-runtimes.log"
 call :BeginStepLog "%AUDIT_LOG%" "local_llm portable runtime audit log"
@@ -1732,6 +1869,8 @@ if errorlevel 1 goto :AUDIT_FAILED
 call :AppendLogBanner "%AUDIT_LOG%" "audit OCR Python runtime"
 "%RAG_PY%" "%PROJECT%\audit_portability.py" --root "%OCR_PY_DIR%" --build-root "%ROOT%" --record "%APP%\config\audit-python-ocr.json" >>"%AUDIT_LOG%" 2>&1
 if errorlevel 1 goto :AUDIT_FAILED
+call :WriteFingerprintMarker "%AUDIT_MARKER%" "%AUDIT_FINGERPRINT%"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :AUDIT_FAILED

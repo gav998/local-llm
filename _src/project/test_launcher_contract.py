@@ -106,6 +106,52 @@ class LauncherContractTest(unittest.TestCase):
         self.assertIn('call :MoveInterruptedArtifactBackupAside', prepare)
         self.assertIn('call :DirectoryIsEmpty "!ART_DEST!"', prepare)
 
+    def test_online_prepare_startup_preserves_resumable_outputs(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        self.assertIn("call :ValidateMutableResumeState", prepare)
+        self.assertIn('set "RESUME_GRAPH_VERSION=', prepare)
+        self.assertIn(
+            "launcher-only fixes do not invalidate completed runtimes",
+            prepare,
+        )
+        self.assertIn(":ReportMutableResumeTree", prepare)
+        self.assertNotIn("call :ValidateOrResetMutableTrees", prepare)
+        self.assertNotIn("restoring its clean base", prepare)
+        self.assertNotIn("RAG_RUNTIME_RESET", prepare)
+        self.assertNotIn("RAG_SOURCE_RESET", prepare)
+        self.assertNotIn("OCR_RUNTIME_RESET", prepare)
+        startup = prepare[
+            prepare.index("\n:ValidateMutableResumeState") : prepare.index(
+                "\n:MutableTreeMatches"
+            )
+        ]
+        self.assertNotIn("RemoveTreeChecked", startup)
+        self.assertNotIn("TreeMatchesMarker", startup)
+        self.assertIn("preserving completed step outputs", startup)
+
+    def test_online_prepare_has_fingerprinted_resume_markers_for_long_steps(
+        self,
+    ) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        for required in (
+            "shared-runtime-dlls.ok",
+            "ragflow-assets.ok",
+            "ragflow-runtime-smoke.ok",
+            "ocr-gateway-contract.ok",
+            "ocr-gpu-smoke.ok",
+            "probe-portable-binaries.ok",
+            "audit-portable-runtimes.ok",
+            "[SKIP] App-local Microsoft VC runtime already extracted.",
+            "[SKIP] RAGFlow models, NLTK, tiktoken and Tika assets already prepared.",
+            "[SKIP] RAGFlow runtime smoke already passed.",
+            "[SKIP] OCR gateway contract already passed.",
+            "[SKIP] Portable service and inference executable probes already passed.",
+            "[SKIP] Portable runtime audit already passed.",
+            ":ValidateRagflowAssetsPrepared",
+            ":PortableBinaryKeysPresent",
+        ):
+            self.assertIn(required, prepare)
+
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (
             PREPARE.read_text(encoding="utf-8") + LAUNCHER.read_text(encoding="utf-8")
