@@ -21,6 +21,7 @@ import sys
 import tempfile
 import tomllib
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -147,6 +148,14 @@ EXCLUDED_REQUIREMENT_PATCHES = (CRAWL4AI_EXCLUSION, AGENTRUN_EXCLUSION)
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def record_digest(hex_digest: str) -> str:
@@ -724,11 +733,13 @@ def validate_datrie_direct_url(data: bytes, path: Path) -> None:
         raise RuntimeError(f"Unexpected PEP 610 data in {path}: expected an object")
 
     url = value.get("url")
-    if not isinstance(url, str) or urllib.parse.urlparse(url).scheme.lower() != "file":
+    parsed_url = urllib.parse.urlparse(url) if isinstance(url, str) else None
+    if parsed_url is None or parsed_url.scheme.lower() != "file":
         raise RuntimeError(
             f"Refusing to remove an unexpected non-local datrie direct URL: {url!r}"
         )
-    basename = Path(urllib.parse.unquote(urllib.parse.urlparse(url).path)).name
+    wheel_path = Path(urllib.request.url2pathname(parsed_url.path))
+    basename = wheel_path.name
     if basename.lower() != DATRIE_WHEEL_NAME.lower():
         raise RuntimeError(
             f"Unexpected datrie wheel in {path}: {basename!r}; expected "
@@ -747,9 +758,31 @@ def validate_datrie_direct_url(data: bytes, path: Path) -> None:
     hashes = archive_info.get("hashes")
     if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str):
         advertised.append(hashes["sha256"])
-    if not advertised or any(item != DATRIE_WHEEL_SHA256 for item in advertised):
+    if advertised:
+        if any(item != DATRIE_WHEEL_SHA256 for item in advertised):
+            raise RuntimeError(
+                f"Unexpected datrie wheel hash in {path}: {advertised!r}"
+            )
+        return
+    validate_datrie_wheel_file(wheel_path, path)
+
+
+def validate_datrie_wheel_file(wheel_path: Path, direct_url_path: Path) -> None:
+    if wheel_path.is_symlink():
         raise RuntimeError(
-            f"Unexpected or missing datrie wheel hash in {path}: {advertised!r}"
+            f"Refusing to verify datrie wheel through a symlink from {direct_url_path}: "
+            f"{wheel_path}"
+        )
+    if not wheel_path.is_file():
+        raise RuntimeError(
+            f"Missing datrie wheel hash in {direct_url_path} and local wheel is not "
+            f"available for verification: {wheel_path}"
+        )
+    digest = sha256_file(wheel_path)
+    if digest != DATRIE_WHEEL_SHA256:
+        raise RuntimeError(
+            f"Missing datrie wheel hash in {direct_url_path} and local wheel hash "
+            f"is unexpected: {digest}"
         )
 
 
