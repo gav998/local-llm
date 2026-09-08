@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.6"
+set "PROJECT_VERSION=2026.09.08.7"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -508,6 +508,7 @@ for %%F in (
     "graphrag_native_adapter.py"
     "verify_ragflow_runtime.py"
     "sanitize_python_runtime.py"
+    "tree_fingerprint.ps1"
     "ocr_job_gateway.py"
     "test_ocr_job_gateway_contract.py"
     "ocr_ragflow_e2e.py"
@@ -988,7 +989,7 @@ set "TREE_FILE_COUNT_VALUE="
 if not exist "%~1\." (
     endlocal & exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:TREE_ROOT -Force; if(-not $root.PSIsContainer){throw 'Tree root is not a directory'}; if(($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Tree root is a reparse point'}; $rootPath=$root.FullName.TrimEnd([char[]]'\/'); $excludes=@([string]$env:TREE_EXCLUDE_REL -split ';' | ForEach-Object {$_.Replace('\','/').TrimStart('/') } | Where-Object {$_}); $rows=New-Object 'System.Collections.Generic.List[string]'; foreach($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAction Stop){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw ('Reparse point in sealed tree: '+$item.FullName)}; if($item.PSIsContainer){continue}; $rel=$item.FullName.Substring($rootPath.Length).TrimStart([char[]]'\/').Replace('\','/'); $skip=$false; foreach($exclude in $excludes){if($exclude.EndsWith('/')){if($rel.StartsWith($exclude,[StringComparison]::OrdinalIgnoreCase)){$skip=$true;break}}elseif([StringComparer]::OrdinalIgnoreCase.Equals($rel,$exclude)){$skip=$true;break}}; if($skip){continue}; $fileHash=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); [void]$rows.Add($rel+"`0"+$item.Length+"`0"+$fileHash)}; [string[]]$ordered=$rows.ToArray(); [Array]::Sort($ordered,[StringComparer]::Ordinal); $body=[String]::Join("`n",$ordered); if($ordered.Length -gt 0){$body+="`n"}; $bytes=(New-Object Text.UTF8Encoding($false)).GetBytes($body); $sha=[Security.Cryptography.SHA256]::Create(); try{$digest=$sha.ComputeHash($bytes)}finally{$sha.Dispose()}; $hex=-join($digest | ForEach-Object {$_.ToString('x2')}); @('TREE_SHA256='+$hex,'TREE_FILE_COUNT='+$ordered.Length) | Set-Content -LiteralPath $env:TREE_OUTPUT -Encoding ascii" >"%TREE_ERROR_OUTPUT%" 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel "%TREE_EXCLUDE_REL%" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
 if errorlevel 1 (
     if exist "%TREE_ERROR_OUTPUT%" type "%TREE_ERROR_OUTPUT%"
     if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1

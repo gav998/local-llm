@@ -122,6 +122,8 @@ class LauncherContractTest(unittest.TestCase):
             '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" ci --no-audit --no-fund"',
             '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" run build"',
             'move "%RAGFLOW_DIR%\\web\\dist" "%APP%\\web" >>"%WEB_BUILD_LOG%" 2>&1',
+            '"tree_fingerprint.ps1"',
+            '-File "%PROJECT%\\tree_fingerprint.ps1"',
             "Could not move the built RAGFlow web dist into app\\web.",
             "Moved RAGFlow web dist is missing index.html",
             "Could not fingerprint the prepared RAGFlow web dist.",
@@ -129,6 +131,12 @@ class LauncherContractTest(unittest.TestCase):
             "ONLINE PREPARATION FAILED with exit code",
         ):
             self.assertIn(required, prepare)
+        self.assertNotIn("Get-ChildItem -LiteralPath $rootPath", prepare)
+        self.assertNotIn('+"`0"+', prepare)
+        tree_fingerprint = ROOT / "_src" / "project" / "tree_fingerprint.ps1"
+        self.assertTrue(tree_fingerprint.is_file())
+        script = tree_fingerprint.read_text(encoding="utf-8")
+        self.assertIn("$rel + [char]0 + $item.Length + [char]0 + $fileHash", script)
 
 
 if __name__ == "__main__":
