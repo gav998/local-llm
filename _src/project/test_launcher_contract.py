@@ -109,6 +109,22 @@ class LauncherContractTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, combined)
 
+    def test_online_prepare_streams_long_step_logs_and_isolates_npm(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        for required in (
+            ":BeginStepLog",
+            ":StartLiveLog",
+            ":PrintLogTail",
+            'if /i "%LOCAL_LLM_LIVE_LOGS%"=="0"',
+            'if /i "%LOCAL_LLM_LIVE_LOGS%"=="off"',
+            'if /i "%LOCAL_LLM_LIVE_LOGS%"=="false"',
+            'call :BeginStepLog "%WEB_BUILD_LOG%"',
+            '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" ci --no-audit --no-fund"',
+            '"%ComSpec%" /d /s /c ""%NODE_DIR%\\npm.cmd" run build"',
+            "ONLINE PREPARATION FAILED with exit code",
+        ):
+            self.assertIn(required, prepare)
+
 
 if __name__ == "__main__":
     unittest.main()

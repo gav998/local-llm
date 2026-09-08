@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.4"
+set "PROJECT_VERSION=2026.09.08.5"
 set "SEVEN_ZIP_VERSION=26.02"
 set "SEVEN_ZIP_TAG=2602"
 set "RAGFLOW_VERSION=0.27.1"
@@ -165,6 +165,11 @@ set "APP=%ROOT%\app"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%POWERSHELL_EXE%" (
     echo [ERROR] Windows PowerShell 5.1 is required: %POWERSHELL_EXE%
+    exit /b 1
+)
+if not defined ComSpec set "ComSpec=%SystemRoot%\System32\cmd.exe"
+if not exist "%ComSpec%" (
+    echo [ERROR] Windows command processor is required: %ComSpec%
     exit /b 1
 )
 REM Before touching managed children, run PowerShell with neutral roots that
@@ -1126,6 +1131,8 @@ set "VC_PARTS=%VC_STAGE%\parts"
 set "VC_PAYLOAD=%VC_STAGE%\payload"
 set "VC_DLLS=%VC_STAGE%\dlls"
 set "VC_LOG=%LOGS%\vcredist-extract.log"
+call :BeginStepLog "%VC_LOG%" "local_llm VC runtime extract log"
+if errorlevel 1 exit /b 1
 if exist "%VC_STAGE%" (
     echo [ERROR] Temporary VC runtime directory collision: %VC_STAGE%
     exit /b 1
@@ -1137,7 +1144,7 @@ if errorlevel 1 goto :VC_EXTRACT_FAILED
 call :MakeDirChecked "%VC_DLLS%"
 if errorlevel 1 goto :VC_EXTRACT_FAILED
 
-"%SEVEN_ZIP%" x -y -t# "-o%VC_PARTS%" "%VC_REDIST_EXE%" >"%VC_LOG%" 2>&1
+"%SEVEN_ZIP%" x -y -t# "-o%VC_PARTS%" "%VC_REDIST_EXE%" >>"%VC_LOG%" 2>&1
 if errorlevel 1 goto :VC_EXTRACT_FAILED
 if not exist "%VC_PARTS%\4.cab" goto :VC_EXTRACT_FAILED
 "%SEVEN_ZIP%" x -y "-o%VC_PAYLOAD%" "%VC_PARTS%\4.cab" >>"%VC_LOG%" 2>&1
@@ -1182,6 +1189,7 @@ endlocal & exit /b 0
 echo [ERROR] Could not extract the app-local Microsoft VC runtime.
 echo [INFO] No installer was executed and no registry/system directory was changed.
 echo [INFO] See %VC_LOG%
+call :PrintLogTail "%VC_LOG%"
 if exist "%VC_STAGE%" rmdir /s /q "%VC_STAGE%" >nul 2>&1
 exit /b 1
 
@@ -1212,6 +1220,9 @@ if exist "%RAG_MARKER%" del /f /q "%RAG_MARKER%" >nul 2>&1
 :RAG_BUILD_RUNTIME
 
 echo [STEP] Resolve the pinned RAGFlow graph for native Windows CPython 3.13
+set "RAG_PREPARE_LOG=%LOGS%\ragflow-python-prepare.log"
+call :BeginStepLog "%RAG_PREPARE_LOG%" "local_llm RAGFlow Python preparation log"
+if errorlevel 1 exit /b 1
 set "RAG_UPSTREAM_REQUIREMENTS=%APP%\config\locks\ragflow-%RAGFLOW_VERSION%-upstream.txt"
 set "RAG_REQUIREMENTS=%APP%\config\locks\ragflow-%RAGFLOW_VERSION%-windows.txt"
 pushd "%RAGFLOW_DIR%" >nul 2>&1
@@ -1220,18 +1231,22 @@ if errorlevel 1 exit /b 1
 REM Prune every package intentionally overridden/excluded below. An exact pin
 REM left in a constraint file wins over uv's override and makes the graph
 REM unsatisfiable (notably NumPy 1.26.4 and XGBoost 1.6.0).
-"%UV_EXE%" export --frozen --no-group test --no-emit-project --no-emit-package numpy --no-emit-package xgboost --no-emit-package datrie --no-emit-package graspologic --no-emit-package infinity-emb --no-emit-package unclecode-litellm --no-emit-package agentrun-mem0ai --no-header --no-annotate --format requirements-txt --output-file "%RAG_UPSTREAM_REQUIREMENTS%" >"%LOGS%\ragflow-export.log" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv export RAGFlow lock"
+"%UV_EXE%" export --frozen --no-group test --no-emit-project --no-emit-package numpy --no-emit-package xgboost --no-emit-package datrie --no-emit-package graspologic --no-emit-package infinity-emb --no-emit-package unclecode-litellm --no-emit-package agentrun-mem0ai --no-header --no-annotate --format requirements-txt --output-file "%RAG_UPSTREAM_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     popd >nul
-    echo [ERROR] uv could not export the RAGFlow lock. See %LOGS%\ragflow-export.log
+    echo [ERROR] uv could not export the RAGFlow lock. See %RAG_PREPARE_LOG%
+    call :PrintLogTail "%RAG_PREPARE_LOG%"
     exit /b 1
 )
 
-"%UV_EXE%" pip compile "%RAGFLOW_DIR%\pyproject.toml" "%PROJECT%\ragflow-windows-additions.txt" --python "%RAG_PY%" --constraints "%RAG_UPSTREAM_REQUIREMENTS%" --overrides "%PROJECT%\ragflow-windows-overrides.txt" --excludes "%PROJECT%\ragflow-windows-excludes.txt" --generate-hashes --no-header --no-annotate --output-file "%RAG_REQUIREMENTS%" >"%LOGS%\ragflow-compile-windows.log" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip compile RAGFlow Windows graph"
+"%UV_EXE%" pip compile "%RAGFLOW_DIR%\pyproject.toml" "%PROJECT%\ragflow-windows-additions.txt" --python "%RAG_PY%" --constraints "%RAG_UPSTREAM_REQUIREMENTS%" --overrides "%PROJECT%\ragflow-windows-overrides.txt" --excludes "%PROJECT%\ragflow-windows-excludes.txt" --generate-hashes --no-header --no-annotate --output-file "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     popd >nul
     echo [ERROR] Could not compile the pinned Windows dependency graph.
-    echo [INFO] See %LOGS%\ragflow-compile-windows.log
+    echo [INFO] See %RAG_PREPARE_LOG%
+    call :PrintLogTail "%RAG_PREPARE_LOG%"
     exit /b 1
 )
 popd >nul
@@ -1243,18 +1258,22 @@ if errorlevel 1 exit /b 1
 call :RemoveTreeChecked "%RAG_PY_DIR%\Scripts"
 if errorlevel 1 exit /b 1
 
-"%UV_EXE%" pip sync --python "%RAG_PY%" --require-hashes "%RAG_REQUIREMENTS%" >"%LOGS%\ragflow-python-install.log" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip sync RAGFlow runtime"
+"%UV_EXE%" pip sync --python "%RAG_PY%" --require-hashes "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] RAGFlow dependency installation failed.
     echo [INFO] Native Windows is not an upstream-supported RAGFlow target.
     echo [INFO] The known datrie compiled gap is supplied as a pinned MSVC wheel.
-    echo [INFO] See %LOGS%\ragflow-python-install.log
+    echo [INFO] See %RAG_PREPARE_LOG%
+    call :PrintLogTail "%RAG_PREPARE_LOG%"
     exit /b 1
 )
 
-"%UV_EXE%" pip install --python "%RAG_PY%" --no-deps "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >"%LOGS%\ragflow-datrie-install.log" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip install pinned datrie wheel"
+"%UV_EXE%" pip install --python "%RAG_PY%" --no-deps "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] The pinned datrie wheel could not be installed. See %LOGS%\ragflow-datrie-install.log
+    echo [ERROR] The pinned datrie wheel could not be installed. See %RAG_PREPARE_LOG%
+    call :PrintLogTail "%RAG_PREPARE_LOG%"
     exit /b 1
 )
 
@@ -1306,15 +1325,32 @@ exit /b 0
 set "RAG_ASSET_RECORD=%APP%\config\ragflow-assets.json"
 set "RAG_ASSET_LOG=%LOGS%\ragflow-assets.log"
 echo [STEP] Verify pinned RAGFlow models, NLTK, tiktoken and Tika assets
-if exist "%RAG_ASSET_LOG%" del /f /q "%RAG_ASSET_LOG%" >nul 2>&1
-copy /y nul "%RAG_ASSET_LOG%" >nul 2>&1
-call :StartLiveLog "%RAG_ASSET_LOG%" "local_llm RAGFlow asset log"
+call :BeginStepLog "%RAG_ASSET_LOG%" "local_llm RAGFlow asset log"
+if errorlevel 1 exit /b 1
 "%RAG_PY%" "%PROJECT%\prepare_ragflow_assets.py" --ragflow-dir "%RAGFLOW_DIR%" --nltk-dir "%NLTK_DATA%" --record "%RAG_ASSET_RECORD%" --manual-assets-dir "%SRC%" >>"%RAG_ASSET_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] RAGFlow asset preparation failed. See %RAG_ASSET_LOG%
+    call :PrintLogTail "%RAG_ASSET_LOG%"
     exit /b 1
 )
 exit /b 0
+
+:BeginStepLog
+setlocal
+set "BEGIN_LOG_PATH=%~1"
+if "%BEGIN_LOG_PATH%"=="" (endlocal & exit /b 1)
+for %%D in ("%BEGIN_LOG_PATH%") do if not exist "%%~dpD." (
+    echo [ERROR] Log directory does not exist: %%~dpD
+    endlocal & exit /b 1
+)
+if exist "%BEGIN_LOG_PATH%" del /f /q "%BEGIN_LOG_PATH%" >nul 2>&1
+copy /y nul "%BEGIN_LOG_PATH%" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not initialize log file: %BEGIN_LOG_PATH%
+    endlocal & exit /b 1
+)
+call :StartLiveLog "%BEGIN_LOG_PATH%" "%~2"
+endlocal & exit /b %ERRORLEVEL%
 
 :StartLiveLog
 setlocal
@@ -1323,14 +1359,31 @@ if /i "%LOCAL_LLM_LIVE_LOGS%"=="off" endlocal & exit /b 0
 if /i "%LOCAL_LLM_LIVE_LOGS%"=="false" endlocal & exit /b 0
 set "LOCAL_LLM_LIVE_LOG=%~1"
 echo [INFO] Live log window: %LOCAL_LLM_LIVE_LOG%
-start "%~2" "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -NoExit -Command "Write-Host ('Watching log: ' + $env:LOCAL_LLM_LIVE_LOG); Get-Content -LiteralPath $env:LOCAL_LLM_LIVE_LOG -Wait -Tail 0"
+start "%~2" "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -NoExit -Command "Write-Host ('Watching log: ' + $env:LOCAL_LLM_LIVE_LOG); Get-Content -LiteralPath $env:LOCAL_LLM_LIVE_LOG -Wait -Tail 200"
+endlocal & exit /b 0
+
+:AppendLogBanner
+>>"%~1" echo.
+>>"%~1" echo [CMD] %~2
+exit /b %ERRORLEVEL%
+
+:PrintLogTail
+setlocal
+set "TAIL_LOG=%~1"
+if not exist "%TAIL_LOG%" (endlocal & exit /b 0)
+echo [INFO] Last log lines:
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; Get-Content -LiteralPath $env:TAIL_LOG -Tail 40" 2>nul
 endlocal & exit /b 0
 
 :VerifyRagflowRuntime
 echo [STEP] Exercise the Windows-compatible RAGFlow worker, tokenizer and XGBoost model
-"%RAG_PY%" "%PROJECT%\verify_ragflow_runtime.py" --ragflow-dir "%RAGFLOW_DIR%" >"%LOGS%\ragflow-runtime-smoke.log" 2>&1
+set "RAG_RUNTIME_LOG=%LOGS%\ragflow-runtime-smoke.log"
+call :BeginStepLog "%RAG_RUNTIME_LOG%" "local_llm RAGFlow runtime smoke log"
+if errorlevel 1 exit /b 1
+"%RAG_PY%" "%PROJECT%\verify_ragflow_runtime.py" --ragflow-dir "%RAGFLOW_DIR%" >>"%RAG_RUNTIME_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] RAGFlow runtime smoke failed. See %LOGS%\ragflow-runtime-smoke.log
+    echo [ERROR] RAGFlow runtime smoke failed. See %RAG_RUNTIME_LOG%
+    call :PrintLogTail "%RAG_RUNTIME_LOG%"
     exit /b 1
 )
 exit /b 0
@@ -1357,6 +1410,9 @@ exit /b 0
 
 :WEB_BUILD
 echo [STEP] Build production RAGFlow web assets with Node %NODE_VERSION%
+set "WEB_BUILD_LOG=%LOGS%\ragflow-web-build.log"
+call :BeginStepLog "%WEB_BUILD_LOG%" "local_llm RAGFlow web build log"
+if errorlevel 1 exit /b 1
 set "NODE_OPTIONS=--max-old-space-size=6144"
 set "npm_config_scripts_prepend_node_path=true"
 set "NPM_CONFIG_SCRIPTS_PREPEND_NODE_PATH=true"
@@ -1369,16 +1425,22 @@ if errorlevel 1 (
     echo [ERROR] Could not enter the RAGFlow web source directory.
     exit /b 1
 )
-call "%NODE_DIR%\npm.cmd" ci --no-audit --no-fund >"%LOGS%\ragflow-web-npm-ci.log" 2>&1
-if errorlevel 1 (
+call :AppendLogBanner "%WEB_BUILD_LOG%" "npm ci --no-audit --no-fund"
+"%ComSpec%" /d /s /c ""%NODE_DIR%\npm.cmd" ci --no-audit --no-fund" >>"%WEB_BUILD_LOG%" 2>&1
+set "WEB_NPM_CI_RC=%ERRORLEVEL%"
+if not "%WEB_NPM_CI_RC%"=="0" (
     popd >nul
-    echo [ERROR] npm ci failed. See %LOGS%\ragflow-web-npm-ci.log
+    echo [ERROR] npm ci failed with exit code %WEB_NPM_CI_RC%. See %WEB_BUILD_LOG%
+    call :PrintLogTail "%WEB_BUILD_LOG%"
     exit /b 1
 )
-call "%NODE_DIR%\npm.cmd" run build >"%LOGS%\ragflow-web-build.log" 2>&1
-if errorlevel 1 (
+call :AppendLogBanner "%WEB_BUILD_LOG%" "npm run build"
+"%ComSpec%" /d /s /c ""%NODE_DIR%\npm.cmd" run build" >>"%WEB_BUILD_LOG%" 2>&1
+set "WEB_NPM_BUILD_RC=%ERRORLEVEL%"
+if not "%WEB_NPM_BUILD_RC%"=="0" (
     popd >nul
-    echo [ERROR] RAGFlow web build failed. See %LOGS%\ragflow-web-build.log
+    echo [ERROR] RAGFlow web build failed with exit code %WEB_NPM_BUILD_RC%. See %WEB_BUILD_LOG%
+    call :PrintLogTail "%WEB_BUILD_LOG%"
     exit /b 1
 )
 popd >nul
@@ -1423,6 +1485,9 @@ if exist "%OCR_MARKER%" del /f /q "%OCR_MARKER%" >nul 2>&1
 :OCR_BUILD_RUNTIME
 
 echo [STEP] Resolve an offline-complete binary OCR wheelhouse
+set "OCR_PREPARE_LOG=%LOGS%\ocr-python-prepare.log"
+call :BeginStepLog "%OCR_PREPARE_LOG%" "local_llm OCR Python preparation log"
+if errorlevel 1 exit /b 1
 set "OCR_WHEEL_STAGE=%WORK%\ocr-wheelhouse-%RANDOM%-%RANDOM%"
 if exist "%OCR_WHEEL_STAGE%" (
     echo [ERROR] Temporary OCR wheelhouse collision: %OCR_WHEEL_STAGE%
@@ -1437,23 +1502,29 @@ if errorlevel 1 exit /b 1
 call :RemoveTreeChecked "%OCR_PY_DIR%\Scripts"
 if errorlevel 1 exit /b 1
 
-"%UV_EXE%" pip install --python "%OCR_PY%" "pip==%PIN_PIP_VERSION%" >"%LOGS%\ocr-pip-bootstrap.log" 2>&1
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "uv pip install OCR pip bootstrap"
+"%UV_EXE%" pip install --python "%OCR_PY%" "pip==%PIN_PIP_VERSION%" >>"%OCR_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] OCR pip bootstrap failed. See %LOGS%\ocr-pip-bootstrap.log
+    echo [ERROR] OCR pip bootstrap failed. See %OCR_PREPARE_LOG%
+    call :PrintLogTail "%OCR_PREPARE_LOG%"
     exit /b 1
 )
 
-"%OCR_PY%" -m pip download --dest "%OCR_WHEEL_STAGE%" --only-binary=:all: "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirement "%PROJECT%\requirements-ocr.txt" >"%LOGS%\ocr-wheelhouse.log" 2>&1
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "pip download OCR binary wheelhouse"
+"%OCR_PY%" -m pip download --dest "%OCR_WHEEL_STAGE%" --only-binary=:all: "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirement "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] Could not create a binary-only OCR wheelhouse.
-    echo [INFO] See %LOGS%\ocr-wheelhouse.log
+    echo [INFO] See %OCR_PREPARE_LOG%
+    call :PrintLogTail "%OCR_PREPARE_LOG%"
     exit /b 1
 )
 
-"%UV_EXE%" pip install --python "%OCR_PY%" --no-index --find-links "%OCR_WHEEL_STAGE%" "%OCR_WHEEL_STAGE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirements "%PROJECT%\requirements-ocr.txt" >"%LOGS%\ocr-offline-install.log" 2>&1
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "uv pip install OCR from local wheelhouse"
+"%UV_EXE%" pip install --python "%OCR_PY%" --no-index --find-links "%OCR_WHEEL_STAGE%" "%OCR_WHEEL_STAGE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirements "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] OCR installation from the local wheelhouse failed.
-    echo [INFO] See %LOGS%\ocr-offline-install.log
+    echo [INFO] See %OCR_PREPARE_LOG%
+    call :PrintLogTail "%OCR_PREPARE_LOG%"
     exit /b 1
 )
 
@@ -1497,9 +1568,13 @@ exit /b 0
 
 :RunOcrContract
 echo [STEP] Validate the local OCR job API contract without loading GPU models
-"%OCR_PY%" "%APP%\services\ocr\test_ocr_job_gateway_contract.py" >"%LOGS%\ocr-gateway-contract.log" 2>&1
+set "OCR_CONTRACT_LOG=%LOGS%\ocr-gateway-contract.log"
+call :BeginStepLog "%OCR_CONTRACT_LOG%" "local_llm OCR gateway contract log"
+if errorlevel 1 exit /b 1
+"%OCR_PY%" "%APP%\services\ocr\test_ocr_job_gateway_contract.py" >>"%OCR_CONTRACT_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] OCR gateway contract test failed. See %LOGS%\ocr-gateway-contract.log
+    echo [ERROR] OCR gateway contract test failed. See %OCR_CONTRACT_LOG%
+    call :PrintLogTail "%OCR_CONTRACT_LOG%"
     exit /b 1
 )
 
@@ -1507,6 +1582,9 @@ exit /b 0
 
 :RunStrictGpuE2E
 echo [STEP] Run strict CUDA, OCR warmup and RAGFlow parser E2E on the selected GPU
+set "GPU_E2E_LOG=%LOGS%\ocr-gpu-smoke.log"
+call :BeginStepLog "%GPU_E2E_LOG%" "local_llm strict GPU OCR/RAGFlow E2E log"
+if errorlevel 1 exit /b 1
 where nvidia-smi >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] nvidia-smi is not available.
@@ -1514,18 +1592,20 @@ if errorlevel 1 (
     echo [ERROR] This project never falls back to CPU inference.
     exit /b 1
 )
-nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader >"%LOGS%\nvidia-smi.log" 2>&1
+nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader >>"%GPU_E2E_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Could not query the NVIDIA driver. See %LOGS%\nvidia-smi.log
+    echo [ERROR] Could not query the NVIDIA driver. See %GPU_E2E_LOG%
+    call :PrintLogTail "%GPU_E2E_LOG%"
     exit /b 1
 )
 
-"%RAG_PY%" "%APP%\services\ocr\ocr_ragflow_e2e.py" --ocr-python "%OCR_PY%" --gateway-script "%APP%\services\ocr\ocr_job_gateway.py" --config "%APP%\config\pp-structure-v3-8gb.yaml" --model-root "%PADDLE_PDX_CACHE_HOME%\official_models" --font "%APP%\services\ocr\font\ttf\DejaVuSans.ttf" --ragflow-dir "%RAGFLOW_DIR%" --work-dir "%WORK%\ocr-e2e" --record "%APP%\config\ocr-gpu-smoke.json" --log "%LOGS%\ocr-gateway-e2e-server.log" >"%LOGS%\ocr-gpu-smoke.log" 2>&1
+"%RAG_PY%" "%APP%\services\ocr\ocr_ragflow_e2e.py" --ocr-python "%OCR_PY%" --gateway-script "%APP%\services\ocr\ocr_job_gateway.py" --config "%APP%\config\pp-structure-v3-8gb.yaml" --model-root "%PADDLE_PDX_CACHE_HOME%\official_models" --font "%APP%\services\ocr\font\ttf\DejaVuSans.ttf" --ragflow-dir "%RAGFLOW_DIR%" --work-dir "%WORK%\ocr-e2e" --record "%APP%\config\ocr-gpu-smoke.json" --log "%LOGS%\ocr-gateway-e2e-server.log" >>"%GPU_E2E_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] Strict GPU OCR warmup failed. No CPU fallback was attempted.
     echo [INFO] GTX 1080 requires the pinned cu118 wheel with sm_61 and a working driver.
     echo [INFO] The E2E test also requires actual text from RAGFlow's stock PaddleOCR parser.
-    echo [INFO] See %LOGS%\ocr-gpu-smoke.log
+    echo [INFO] See %GPU_E2E_LOG%
+    call :PrintLogTail "%GPU_E2E_LOG%"
     exit /b 1
 )
 echo [OK] Strict GPU OCR warmup passed.
@@ -1537,51 +1617,68 @@ REM ============================================================================
 
 :ProbePortableBinaries
 echo [STEP] Probe portable service and inference executables
+set "PROBE_LOG=%LOGS%\probe-portable-binaries.log"
+call :BeginStepLog "%PROBE_LOG%" "local_llm portable binary probe log"
+if errorlevel 1 exit /b 1
 if not exist "%APP%\services\elasticsearch\jdk\bin\java.exe" goto :PROBE_FAILED
 set "ES_JAVA_HOME=%APP%\services\elasticsearch\jdk"
 set "JAVA_HOME=%ES_JAVA_HOME%"
 set "PATH=%JAVA_HOME%\bin;%PATH%"
-"%JAVA_HOME%\bin\java.exe" -version >"%LOGS%\probe-java.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "java -version"
+"%JAVA_HOME%\bin\java.exe" -version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-"%APP%\services\mysql\bin\mysqld.exe" --version >"%LOGS%\probe-mysql.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "mysqld --version"
+"%APP%\services\mysql\bin\mysqld.exe" --version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-findstr /c:"%MYSQL_VERSION%" "%LOGS%\probe-mysql.log" >nul 2>&1
+findstr /c:"%MYSQL_VERSION%" "%PROBE_LOG%" >nul 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-call "%APP%\services\elasticsearch\bin\elasticsearch.bat" -V >"%LOGS%\probe-elasticsearch.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "elasticsearch.bat -V"
+call "%APP%\services\elasticsearch\bin\elasticsearch.bat" -V >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-findstr /c:"%ELASTIC_VERSION%" "%LOGS%\probe-elasticsearch.log" >nul 2>&1
+findstr /c:"%ELASTIC_VERSION%" "%PROBE_LOG%" >nul 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-"%APP%\services\valkey\valkey-server.exe" --version >"%LOGS%\probe-valkey.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "valkey-server --version"
+"%APP%\services\valkey\valkey-server.exe" --version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-findstr /c:"%VALKEY_VERSION%" "%LOGS%\probe-valkey.log" >nul 2>&1
+findstr /c:"%VALKEY_VERSION%" "%PROBE_LOG%" >nul 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-"%APP%\services\caddy\caddy.exe" version >"%LOGS%\probe-caddy.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "caddy version"
+"%APP%\services\caddy\caddy.exe" version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-findstr /c:"%CADDY_VERSION%" "%LOGS%\probe-caddy.log" >nul 2>&1
+findstr /c:"%CADDY_VERSION%" "%PROBE_LOG%" >nul 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-"%APP%\runtime\llama\llama-server.exe" --version >"%LOGS%\probe-llama.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "llama-server --version"
+"%APP%\runtime\llama\llama-server.exe" --version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-findstr /c:"%LLAMA_BUILD:~1%" "%LOGS%\probe-llama.log" >nul 2>&1
+findstr /c:"%LLAMA_BUILD:~1%" "%PROBE_LOG%" >nul 2>&1
 if errorlevel 1 goto :PROBE_FAILED
-"%APP%\services\silo\silo.exe" --version >"%LOGS%\probe-silo.log" 2>&1
+call :AppendLogBanner "%PROBE_LOG%" "silo --version"
+"%APP%\services\silo\silo.exe" --version >>"%PROBE_LOG%" 2>&1
 if errorlevel 1 goto :PROBE_FAILED
 exit /b 0
 
 :PROBE_FAILED
-echo [ERROR] A portable executable could not start. See probe logs in %LOGS%
+echo [ERROR] A portable executable could not start. See %PROBE_LOG%
 echo [INFO] A missing Microsoft runtime DLL is a common cause on clean Windows PCs.
+call :PrintLogTail "%PROBE_LOG%"
 exit /b 1
 
 :AuditPortableRuntimes
 echo [STEP] Check critical launch/config files for build-path leaks and symlinks
-"%RAG_PY%" "%PROJECT%\audit_portability.py" --root "%RAG_PY_DIR%" --build-root "%ROOT%" --record "%APP%\config\audit-python-rag.json" >"%LOGS%\audit-python-rag.log" 2>&1
+set "AUDIT_LOG=%LOGS%\audit-portable-runtimes.log"
+call :BeginStepLog "%AUDIT_LOG%" "local_llm portable runtime audit log"
+if errorlevel 1 exit /b 1
+call :AppendLogBanner "%AUDIT_LOG%" "audit RAGFlow Python runtime"
+"%RAG_PY%" "%PROJECT%\audit_portability.py" --root "%RAG_PY_DIR%" --build-root "%ROOT%" --record "%APP%\config\audit-python-rag.json" >>"%AUDIT_LOG%" 2>&1
 if errorlevel 1 goto :AUDIT_FAILED
-"%RAG_PY%" "%PROJECT%\audit_portability.py" --root "%OCR_PY_DIR%" --build-root "%ROOT%" --record "%APP%\config\audit-python-ocr.json" >"%LOGS%\audit-python-ocr.log" 2>&1
+call :AppendLogBanner "%AUDIT_LOG%" "audit OCR Python runtime"
+"%RAG_PY%" "%PROJECT%\audit_portability.py" --root "%OCR_PY_DIR%" --build-root "%ROOT%" --record "%APP%\config\audit-python-ocr.json" >>"%AUDIT_LOG%" 2>&1
 if errorlevel 1 goto :AUDIT_FAILED
 exit /b 0
 
 :AUDIT_FAILED
-echo [ERROR] Portability audit failed. See audit logs in %LOGS%
+echo [ERROR] Portability audit failed. See %AUDIT_LOG%
+call :PrintLogTail "%AUDIT_LOG%"
 exit /b 1
 
 :SealMutableRuntimeTrees
@@ -1701,22 +1798,27 @@ exit /b 0
 :MakeBundle
 set "BUNDLE_OUT=%BUNDLE_TARGET_DIR%\%~1"
 set "BUNDLE_LIST=%WORK%\%~2"
+set "BUNDLE_LOG=%LOGS%\bundle-%~1.log"
+call :BeginStepLog "%BUNDLE_LOG%" "local_llm bundle %~1 log"
+if errorlevel 1 exit /b 1
 pushd "%ROOT%" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Could not enter the project root while creating %~1.
     exit /b 1
 )
-"%SEVEN_ZIP%" a -t7z -mx=7 -ms=on -mmt=on "%BUNDLE_OUT%" @"%BUNDLE_LIST%" >"%LOGS%\bundle-%~1.log" 2>&1
+"%SEVEN_ZIP%" a -t7z -mx=7 -ms=on -mmt=on "%BUNDLE_OUT%" @"%BUNDLE_LIST%" >>"%BUNDLE_LOG%" 2>&1
 set "BUNDLE_RC=%ERRORLEVEL%"
 popd >nul
 if not "%BUNDLE_RC%"=="0" (
-    echo [ERROR] Could not create %~1. See %LOGS%\bundle-%~1.log
+    echo [ERROR] Could not create %~1. See %BUNDLE_LOG%
+    call :PrintLogTail "%BUNDLE_LOG%"
     exit /b 1
 )
 if not exist "%BUNDLE_OUT%" exit /b 1
-"%SEVEN_ZIP%" t "%BUNDLE_OUT%" >>"%LOGS%\bundle-%~1.log" 2>&1
+"%SEVEN_ZIP%" t "%BUNDLE_OUT%" >>"%BUNDLE_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Integrity test failed for %~1. See %LOGS%\bundle-%~1.log
+    echo [ERROR] Integrity test failed for %~1. See %BUNDLE_LOG%
+    call :PrintLogTail "%BUNDLE_LOG%"
     exit /b 1
 )
 echo [OK] Created %~1
@@ -1727,13 +1829,14 @@ echo [STEP] Rehydrate every bundle and verify the offline payload
 set "REHYDRATE_ROOT=%WORK%\rehydrate-%RANDOM%-%RANDOM%"
 set "REHYDRATE_APP=%REHYDRATE_ROOT%\app"
 set "REHYDRATE_LOG=%LOGS%\prepared-rehydrate.log"
+call :BeginStepLog "%REHYDRATE_LOG%" "local_llm prepared rehydrate log"
+if errorlevel 1 exit /b 1
 if exist "%REHYDRATE_ROOT%" (
     echo [ERROR] Temporary rehydrate directory collision: %REHYDRATE_ROOT%
     exit /b 1
 )
 call :MakeDirChecked "%REHYDRATE_ROOT%"
 if errorlevel 1 exit /b 1
-type nul >"%REHYDRATE_LOG%"
 for %%B in (
     "00-bootstrap-tools.7z"
     "10-python-rag-runtime.7z"
@@ -1834,6 +1937,7 @@ exit /b 0
 
 :REHYDRATE_FAILED
 echo [ERROR] Rehydrated bundle verification failed. See %REHYDRATE_LOG%
+call :PrintLogTail "%REHYDRATE_LOG%"
 call :RemoveTreeChecked "%REHYDRATE_ROOT%"
 exit /b 1
 
@@ -2207,6 +2311,11 @@ REM ============================================================================
 
 :SCRIPT_END
 if not defined SCRIPT_RC set "SCRIPT_RC=%ERRORLEVEL%"
+if not "%SCRIPT_RC%"=="0" (
+    echo.
+    echo [ERROR] ONLINE PREPARATION FAILED with exit code %SCRIPT_RC%.
+    if defined LOGS echo [INFO] Logs directory: %LOGS%
+)
 if defined PACKAGE_STAGE if exist "%PACKAGE_STAGE%" (
     echo [INFO] Removing unpublished package staging tree: %PACKAGE_STAGE%
     call :RemoveTreeChecked "%PACKAGE_STAGE%"
