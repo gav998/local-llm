@@ -334,13 +334,25 @@ for %%F in (
         echo [ERROR] Required offline payload is missing: %%~F
         exit /b 1
     )
-    if exist "%BUNDLE_DIR%\%%~F\." (
+    call :IS_REGULAR_FILE "%BUNDLE_DIR%\%%~F"
+    if errorlevel 1 (
         echo [ERROR] Required offline payload is not a file: %%~F
         exit /b 1
     )
 )
 echo [OK] All required offline payload files are present.
 exit /b 0
+
+:IS_REGULAR_FILE
+setlocal
+if "%~1"=="" (endlocal & exit /b 1)
+if not exist "%~1" (endlocal & exit /b 1)
+set "REGULAR_FILE_ATTRIBUTES="
+for %%I in ("%~1") do set "REGULAR_FILE_ATTRIBUTES=%%~aI"
+if not defined REGULAR_FILE_ATTRIBUTES (endlocal & exit /b 1)
+if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d" (endlocal & exit /b 1)
+if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%" (endlocal & exit /b 1)
+endlocal & exit /b 0
 
 :SET_PORTABLE_ENV
 set "LOCAL_LLM_ROOT_TO_VALIDATE="

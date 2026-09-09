@@ -87,6 +87,23 @@ class LauncherContractTest(unittest.TestCase):
         self.assertIn("Source file is present: !ART_NAME!", prepare)
         self.assertIn("All required offline payload files are present.", launcher)
 
+    def test_offline_payload_files_are_checked_by_attributes(self) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        self.assertNotIn('if exist "%BUNDLE_DIR%\\%%~F\\."', launcher)
+        self.assertIn(
+            'call :IS_REGULAR_FILE "%BUNDLE_DIR%\\%%~F"',
+            launcher,
+        )
+        self.assertIn('set "REGULAR_FILE_ATTRIBUTES=%%~aI"', launcher)
+        self.assertIn(
+            'if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d"',
+            launcher,
+        )
+        self.assertIn(
+            'if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%"',
+            launcher,
+        )
+
     def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'
