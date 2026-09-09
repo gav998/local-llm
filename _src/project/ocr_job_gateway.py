@@ -170,6 +170,27 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
     return options
 
 
+def validate_pipeline_profile(config: dict[str, Any]) -> None:
+    """Reject profile values that make PaddleX load disabled GPU models."""
+    disabled_doc_preprocessor_options = (
+        "use_doc_preprocessor",
+        "use_doc_orientation_classify",
+        "use_doc_unwarping",
+    )
+    for option in disabled_doc_preprocessor_options:
+        if config.get(option) is not False:
+            raise RuntimeError(
+                f"The 8 GiB profile must explicitly set {option}: false"
+            )
+    if config.get("use_table_recognition") is not True:
+        raise RuntimeError("PP-StructureV3 table recognition must be enabled")
+    table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
+    if table_config.get("pipeline_name") != "table_recognition":
+        raise RuntimeError("The audited compact table_recognition pipeline is missing")
+    if table_config.get("use_ocr_model") is not False:
+        raise RuntimeError("Table recognition must reuse the page-wide OCR result")
+
+
 def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     if os.environ.get("PADDLE_PDX_DISABLE_DEVICE_FALLBACK") != "1":
         raise RuntimeError("PADDLE_PDX_DISABLE_DEVICE_FALLBACK must be 1")
@@ -227,13 +248,8 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     checksum = float(paddle.sum(paddle.matmul(left, right)).numpy().item())
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if config.get("use_table_recognition") is not True:
-        raise RuntimeError("PP-StructureV3 table recognition must be enabled")
+    validate_pipeline_profile(config)
     table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
-    if table_config.get("pipeline_name") != "table_recognition":
-        raise RuntimeError("The audited compact table_recognition pipeline is missing")
-    if table_config.get("use_ocr_model") is not False:
-        raise RuntimeError("Table recognition must reuse the page-wide OCR result")
     config["SubModules"]["LayoutDetection"]["model_dir"] = str(
         model_root / "PP-DocLayout-L"
     )

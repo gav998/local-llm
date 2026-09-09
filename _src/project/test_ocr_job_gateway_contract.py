@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ocr_job_gateway import JobManager, create_app
+from ocr_job_gateway import JobManager, create_app, validate_pipeline_profile
 
 
 class FakeResult:
@@ -69,6 +69,23 @@ def wait_for_state(client: TestClient, job_id: str, state: str) -> dict:
 
 
 def main() -> int:
+    source_config = Path(__file__).with_name("pp-structure-v3-8gb.yaml")
+    installed_config = Path(__file__).resolve().parents[2] / "config" / source_config.name
+    config_path = source_config if source_config.is_file() else installed_config
+    import yaml
+
+    profile = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    validate_pipeline_profile(profile)
+
+    incomplete_profile = dict(profile)
+    incomplete_profile.pop("use_doc_unwarping")
+    try:
+        validate_pipeline_profile(incomplete_profile)
+    except RuntimeError as exc:
+        assert "use_doc_unwarping: false" in str(exc)
+    else:
+        raise AssertionError("Missing explicit DocPreprocessor switches must fail closed")
+
     with tempfile.TemporaryDirectory(prefix="local-ocr-contract-") as temporary:
         manager = JobManager(
             FakePipeline(),
