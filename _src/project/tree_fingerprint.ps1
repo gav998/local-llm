@@ -10,6 +10,37 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function ConvertTo-ExtendedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+        return $Path
+    }
+    if ($Path.StartsWith("\\", [StringComparison]::Ordinal)) {
+        return "\\?\UNC\" + $Path.Substring(2)
+    }
+    return "\\?\" + [IO.Path]::GetFullPath($Path)
+}
+
+function Get-FileSha256LongPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open(
+        (ConvertTo-ExtendedPath -Path $Path),
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha.ComputeHash($stream)
+    } finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+    return -join($digest | ForEach-Object { $_.ToString("x2") })
+}
+
 $rootItem = Get-Item -LiteralPath $Root -Force
 if (-not $rootItem.PSIsContainer) {
     throw "Tree root is not a directory"
@@ -51,7 +82,10 @@ foreach ($item in Get-ChildItem -LiteralPath $rootPath -Force -Recurse -ErrorAct
         continue
     }
 
-    $fileHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    # The Windows PowerShell 5.1 hash cmdlet resolves paths through its legacy
+    # provider and fails beyond MAX_PATH. 7-Zip can create such dependency
+    # paths, so hash through a FileStream with the Win32 extended-path prefix.
+    $fileHash = Get-FileSha256LongPath -Path $item.FullName
     [void]$rows.Add($rel + [char]0 + $item.Length + [char]0 + $fileHash)
 }
 

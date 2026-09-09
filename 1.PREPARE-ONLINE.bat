@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.08.9"
+set "PROJECT_VERSION=2026.09.09.1"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -77,6 +77,9 @@ echo Every generated file stays below this project directory.
 echo.
 
 call :AcquireLock
+if errorlevel 1 exit /b 1
+
+call :CleanupInterruptedRehydrateTrees
 if errorlevel 1 exit /b 1
 
 call :RecoverPreparedOutput
@@ -495,6 +498,14 @@ if errorlevel 1 (
 set "LOCK_HELD=1"
 exit /b 0
 
+:CleanupInterruptedRehydrateTrees
+for /d %%D in ("%WORK%\rehydrate-*") do if exist "%%~fD\." (
+    echo [INFO] Removing interrupted rehydrate tree: %%~fD
+    call :RemoveTreeChecked "%%~fD"
+    if errorlevel 1 exit /b 1
+)
+exit /b 0
+
 :CopyProjectInputs
 call :RemoveTreeChecked "%APP%\build\project"
 if errorlevel 1 exit /b 1
@@ -512,6 +523,7 @@ for %%F in (
     "verify_ragflow_runtime.py"
     "sanitize_python_runtime.py"
     "tree_fingerprint.ps1"
+    "remove_tree.ps1"
     "ocr_job_gateway.py"
     "test_ocr_job_gateway_contract.py"
     "ocr_ragflow_e2e.py"
@@ -2510,8 +2522,7 @@ if exist "%~1" (
     rmdir /s /q "%~1" >nul 2>&1
 )
 if exist "%~1" (
-    timeout /t 3 /nobreak >nul 2>&1
-    rmdir /s /q "%~1" >nul 2>&1
+    "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\remove_tree.ps1" -Root "%~1" >nul 2>&1
 )
 if exist "%~1" (
     echo [ERROR] Could not remove directory: %~1

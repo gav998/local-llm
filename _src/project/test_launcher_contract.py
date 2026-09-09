@@ -195,6 +195,30 @@ class LauncherContractTest(unittest.TestCase):
         script = tree_fingerprint.read_text(encoding="utf-8")
         self.assertIn("$rel + [char]0 + $item.Length + [char]0 + $fileHash", script)
 
+    def test_tree_fingerprint_hashes_windows_long_paths_without_resolve_path(
+        self,
+    ) -> None:
+        script = (ROOT / "_src" / "project" / "tree_fingerprint.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Get-FileHash", script)
+        self.assertIn("Get-FileSha256LongPath", script)
+        self.assertIn("[IO.File]::Open", script)
+        self.assertIn('return "\\\\?\\" + [IO.Path]::GetFullPath($Path)', script)
+
+    def test_remove_tree_has_a_long_path_fallback(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        remover = ROOT / "_src" / "project" / "remove_tree.ps1"
+        self.assertTrue(remover.is_file())
+        script = remover.read_text(encoding="utf-8")
+        self.assertIn('-File "%PROJECT%\\remove_tree.ps1"', prepare)
+        self.assertIn('"remove_tree.ps1"', prepare)
+        self.assertIn("call :CleanupInterruptedRehydrateTrees", prepare)
+        self.assertIn('for /d %%D in ("%WORK%\\rehydrate-*")', prepare)
+        self.assertIn("[IO.Directory]::EnumerateFileSystemEntries", script)
+        self.assertIn("Refusing to remove a volume root", script)
+        self.assertIn("[IO.FileAttributes]::ReparsePoint", script)
+
 
 if __name__ == "__main__":
     unittest.main()
