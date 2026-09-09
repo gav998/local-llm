@@ -161,6 +161,12 @@ class LauncherContractTest(unittest.TestCase):
         self.assertIn('tree_fingerprint.ps1" -Root "%TREE_ROOT%"', launcher)
         self.assertIn('echo tree_sha256=%TREE_SHA256_VALUE%', launcher)
         self.assertIn('echo tree_file_count=%TREE_FILE_COUNT_VALUE%', launcher)
+        self.assertIn(
+            'call :SEAL_STAGED_TREE '
+            '"%INSTALL_STAGE%\\app\\services\\elasticsearch" '
+            '".local-llm-artifact.txt;logs/"',
+            launcher,
+        )
 
     def test_current_controller_can_overlay_legacy_archives(self) -> None:
         launcher = LAUNCHER.read_text(encoding="utf-8")
@@ -272,6 +278,18 @@ class LauncherContractTest(unittest.TestCase):
             'call :WriteArtifactMarker "%ARTIFACT_MARKER%" '
             '"%ARTIFACT_NAME%" "%ARTIFACT_TREE_SHA256%" '
             '"%ARTIFACT_TREE_FILE_COUNT%"',
+            prepare,
+        )
+        self.assertIn(
+            'call :SealArtifactTree "%APP%\\services\\elasticsearch" '
+            '".local-llm-artifact.txt;logs/"',
+            prepare,
+        )
+        self.assertIn(
+            'call :TreeMatchesMarker '
+            '"%REHYDRATE_APP%\\services\\elasticsearch" '
+            '"%REHYDRATE_APP%\\services\\elasticsearch\\.local-llm-artifact.txt" '
+            '".local-llm-artifact.txt;logs/"',
             prepare,
         )
 

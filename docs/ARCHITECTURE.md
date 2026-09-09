@@ -72,6 +72,8 @@ logs/                           штатные rotating logs RAGFlow
 
 Исключения понимаются fingerprint-функцией как точный файл и точный directory prefix; произвольные соседние файлы всё ещё меняют seal. Это устраняет ложное падение integrity после первого запуска, не превращая backend в непроверяемый mutable tree.
 
+Elasticsearch запускается с рабочим каталогом в `app\logs\elasticsearch\runtime`, потому что штатные JVM options используют относительные пути `logs/gc.log`, `logs/hs_err_pid...` и `data` для аварийных файлов. Для совместимости с установками, которые уже запускались старым controller, из seal исключён только `services\elasticsearch\logs\`; бинарники, библиотеки и конфигурация vendor-дерева продолжают проверяться полностью.
+
 Нейтральные DeepDoc, XGBoost, NLTK, cl100k и Tika assets имеют фиксированные revision/hash/size. `TIKA_SERVER_JAR` указывает на app-local JAR, Java берётся из Elasticsearch.
 
 ## OCR: PP-StructureV3 на 8 ГБ Pascal

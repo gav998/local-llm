@@ -1926,7 +1926,6 @@ for %%D in (
     "cache\paddlex\official_models\SLANet_plus"
     "services\ocr\font"
     "services\mysql"
-    "services\elasticsearch"
     "services\silo"
     "services\valkey"
     "services\caddy"
@@ -1935,6 +1934,8 @@ for %%D in (
     call :SealArtifactTree "%APP%\%%~D"
     if errorlevel 1 exit /b 1
 )
+call :SealArtifactTree "%APP%\services\elasticsearch" ".local-llm-artifact.txt;logs/"
+if errorlevel 1 exit /b 1
 exit /b 0
 
 :SealArtifactTree
@@ -1952,11 +1953,13 @@ if not defined ARTIFACT_NAME (
     echo [ERROR] Immutable artifact marker has no artifact identity: %ARTIFACT_MARKER%
     endlocal & exit /b 1
 )
-call :ComputeTreeFingerprint "%~1" ".local-llm-artifact.txt" ARTIFACT_TREE_SHA256 ARTIFACT_TREE_FILE_COUNT
+set "ARTIFACT_TREE_EXCLUDES=%~2"
+if not defined ARTIFACT_TREE_EXCLUDES set "ARTIFACT_TREE_EXCLUDES=.local-llm-artifact.txt"
+call :ComputeTreeFingerprint "%~1" "%ARTIFACT_TREE_EXCLUDES%" ARTIFACT_TREE_SHA256 ARTIFACT_TREE_FILE_COUNT
 if errorlevel 1 (endlocal & exit /b 1)
 call :WriteArtifactMarker "%ARTIFACT_MARKER%" "%ARTIFACT_NAME%" "%ARTIFACT_TREE_SHA256%" "%ARTIFACT_TREE_FILE_COUNT%"
 if errorlevel 1 (endlocal & exit /b 1)
-call :TreeMatchesMarker "%~1" "%ARTIFACT_MARKER%" ".local-llm-artifact.txt"
+call :TreeMatchesMarker "%~1" "%ARTIFACT_MARKER%" "%ARTIFACT_TREE_EXCLUDES%"
 if errorlevel 1 (endlocal & exit /b 1)
 endlocal & exit /b 0
 
@@ -2222,7 +2225,6 @@ for %%D in (
     "cache\paddlex\official_models\SLANet_plus"
     "services\ocr\font"
     "services\mysql"
-    "services\elasticsearch"
     "services\silo"
     "services\valkey"
     "services\caddy"
@@ -2233,6 +2235,11 @@ for %%D in (
         echo [ERROR] Rehydrated immutable tree does not match its seal: app\%%~D
         exit /b 1
     )
+)
+call :TreeMatchesMarker "%REHYDRATE_APP%\services\elasticsearch" "%REHYDRATE_APP%\services\elasticsearch\.local-llm-artifact.txt" ".local-llm-artifact.txt;logs/"
+if errorlevel 1 (
+    echo [ERROR] Rehydrated immutable tree does not match its seal: app\services\elasticsearch
+    exit /b 1
 )
 exit /b 0
 

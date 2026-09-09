@@ -378,7 +378,6 @@ for %%D in (
     "cache\paddlex\official_models\SLANet_plus"
     "services\ocr\font"
     "services\mysql"
-    "services\elasticsearch"
     "services\silo"
     "services\valkey"
     "services\caddy"
@@ -387,6 +386,8 @@ for %%D in (
     call :SEAL_STAGED_TREE "%INSTALL_STAGE%\app\%%~D"
     if errorlevel 1 exit /b 1
 )
+call :SEAL_STAGED_TREE "%INSTALL_STAGE%\app\services\elasticsearch" ".local-llm-artifact.txt;logs/"
+if errorlevel 1 exit /b 1
 echo [OK] Extracted immutable component seals are current.
 exit /b 0
 
@@ -407,7 +408,9 @@ if not exist "%TREE_MARKER%" (
     echo [ERROR] Staged artifact marker is missing: "%TREE_MARKER%"
     endlocal & exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_STAGE%\app\config\project\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel ".local-llm-artifact.txt" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
+set "TREE_EXCLUDES=%~2"
+if not defined TREE_EXCLUDES set "TREE_EXCLUDES=.local-llm-artifact.txt"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_STAGE%\app\config\project\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel "%TREE_EXCLUDES%" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
 if errorlevel 1 goto :SEAL_STAGED_TREE_FAILED
 for /f "usebackq tokens=1,* delims==" %%A in ("%TREE_OUTPUT%") do if /i "%%A"=="TREE_SHA256" set "TREE_SHA256_VALUE=%%B"
 for /f "usebackq tokens=1,* delims==" %%A in ("%TREE_OUTPUT%") do if /i "%%A"=="TREE_FILE_COUNT" set "TREE_FILE_COUNT_VALUE=%%B"

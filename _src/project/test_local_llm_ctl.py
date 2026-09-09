@@ -115,6 +115,17 @@ class ControllerConfigTest(unittest.TestCase):
         )
         self.assertEqual(ingestion["ragflow-api"].environment["HF_HUB_OFFLINE"], "1")
 
+    def test_elasticsearch_runtime_files_are_kept_outside_vendor_tree(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+
+        service = controller.services("core")["elasticsearch"]
+
+        self.assertEqual(
+            service.cwd, controller.logs_dir / "elasticsearch" / "runtime"
+        )
+        self.assertTrue(service.cwd.is_dir())
+
     def test_valkey_config_uses_cygwin_path(self) -> None:
         self.assertEqual(
             cygwin_path(PureWindowsPath(r"I:\test\app\config\runtime\valkey.conf")),
@@ -257,6 +268,22 @@ class ControllerConfigTest(unittest.TestCase):
         (tree / "payload.bin").write_bytes(b"tampered")
         with self.assertRaisesRegex(ControlError, "no longer matches"):
             validate_tree_seal(tree, marker, ("mutable.conf", "logs/"), "test")
+
+    def test_elasticsearch_seal_allows_only_legacy_runtime_logs(self) -> None:
+        controller = Controller(self.root)
+        elasticsearch = controller.app / "services" / "elasticsearch"
+
+        with patch("local_llm_ctl.validate_tree_seal") as validate:
+            controller.verify_tree_seals()
+
+        call = next(
+            item
+            for item in validate.call_args_list
+            if item.args[0] == elasticsearch
+        )
+        self.assertEqual(
+            call.args[2], (".local-llm-artifact.txt", "logs/")
+        )
 
     def test_incomplete_tree_seal_is_reported_before_hashing(self) -> None:
         tree = self.root / "sealed-incomplete"

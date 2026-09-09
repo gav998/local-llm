@@ -347,6 +347,7 @@ class Controller:
             self.data_dir / "mysql",
             self.data_dir / "elasticsearch",
             self.logs_dir / "elasticsearch",
+            self.logs_dir / "elasticsearch" / "runtime",
             self.data_dir / "silo",
             self.data_dir / "valkey",
             self.data_dir / "ocr-jobs",
@@ -878,7 +879,10 @@ http://127.0.0.1:{self.port("web")} {{
             "elasticsearch": Service(
                 "elasticsearch",
                 [comspec, "/d", "/c", str(es_wrapper)],
-                self.app / "services" / "elasticsearch",
+                # The bundled JVM uses relative logs/gc.log, data/ and logs/
+                # crash paths from jvm.options. Keep those runtime artifacts
+                # outside the sealed Elasticsearch distribution tree.
+                self.logs_dir / "elasticsearch" / "runtime",
                 es_env,
                 lambda: self._http_health(
                     f"http://127.0.0.1:{self.port('elasticsearch')}/"
@@ -1657,8 +1661,17 @@ http://127.0.0.1:{self.port("web")} {{
             self.app / "runtime" / "llama",
         )
         for root in immutable:
+            exclusions = (".local-llm-artifact.txt",)
+            if root == self.app / "services" / "elasticsearch":
+                # Releases before this fix started Elasticsearch in its sealed
+                # vendor directory. Its stock JVM options consequently created
+                # or rotated logs/gc.log there. Permit only that known runtime
+                # subtree so an existing payload can be revalidated safely.
+                exclusions += ("logs/",)
             validate_tree_seal(
-                root, root / ".local-llm-artifact.txt", (".local-llm-artifact.txt",)
+                root,
+                root / ".local-llm-artifact.txt",
+                exclusions,
             )
         validate_tree_seal(self.app / "web", config / "ragflow-web.ok")
         print("[OK] All final tree seals match")
