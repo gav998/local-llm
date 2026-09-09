@@ -754,27 +754,28 @@ http://127.0.0.1:{self.port("web")} {{
             return False
 
     def _valkey_health(self) -> bool:
-        executable = self.app / "services" / "valkey" / "valkey-cli.exe"
-        env = self.portable_environment()
-        env["VALKEYCLI_AUTH"] = self.secret_values["valkey_password"]
+        password_value = self.secret_values["valkey_password"].encode("utf-8")
+
+        def command(*parts: bytes) -> bytes:
+            result = [f"*{len(parts)}\r\n".encode("ascii")]
+            for part in parts:
+                result.extend(
+                    (f"${len(part)}\r\n".encode("ascii"), part, b"\r\n")
+                )
+            return b"".join(result)
+
         try:
-            result = subprocess.run(
-                [
-                    str(executable),
-                    "-h",
-                    "127.0.0.1",
-                    "-p",
-                    str(self.port("valkey")),
-                    "PING",
-                ],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=5,
-                creationflags=CREATE_NO_WINDOW,
-            )
-            return result.returncode == 0 and "PONG" in result.stdout
-        except (OSError, subprocess.TimeoutExpired):
+            with socket.create_connection(
+                ("127.0.0.1", self.port("valkey")), timeout=2
+            ) as connection:
+                connection.settimeout(2)
+                connection.sendall(command(b"AUTH", password_value))
+                with connection.makefile("rb") as response:
+                    if response.readline(1024) != b"+OK\r\n":
+                        return False
+                    connection.sendall(command(b"PING"))
+                    return response.readline(1024) == b"+PONG\r\n"
+        except (OSError, UnicodeError):
             return False
 
     def _mysql_query(

@@ -108,7 +108,7 @@ Controller генерирует:
 
 MySQL впервые запускается с `--initialize-insecure`, затем при обычном старте выполняет одноразовый app-local `init-file`: назначает случайный пароль `root@localhost`, создаёт отдельную учётную запись `root@127.0.0.1` для TCP при включённом `skip-name-resolve` и базу `rag_flow`. Готовность подтверждается реальным авторизованным `SELECT`, после чего временный SQL-файл удаляется, а сервер штатно останавливается. Elasticsearch, Silo и Valkey создают данные при первом start. Все данные вынесены из sealed vendor trees в `app\data`.
 
-Silo сохраняет MinIO API/config compatibility. Valkey — community Windows build; launcher проверяет реальный authenticated `PING`, а целевая приёмка должна дополнительно прогнать RAGFlow queue semantics.
+Silo сохраняет MinIO API/config compatibility. Valkey — community Windows build; launcher проверяет реальный authenticated `PING` напрямую по RESP/TCP, не полагаясь на поведение Cygwin `valkey-cli.exe`, а целевая приёмка должна дополнительно прогнать RAGFlow queue semantics.
 
 ## Процессы, PID identity и остановка
 

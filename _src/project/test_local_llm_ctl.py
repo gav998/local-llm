@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import unittest
@@ -216,6 +217,63 @@ class ControllerConfigTest(unittest.TestCase):
                 encoding="utf-8"
             ),
         )
+
+    def test_valkey_health_uses_authenticated_resp_without_windows_cli(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+
+        class Connection:
+            def __init__(self, replies: bytes) -> None:
+                self.replies = io.BytesIO(replies)
+                self.sent: list[bytes] = []
+
+            def __enter__(self) -> "Connection":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                pass
+
+            def settimeout(self, timeout: int) -> None:
+                self.timeout = timeout
+
+            def sendall(self, value: bytes) -> None:
+                self.sent.append(value)
+
+            def makefile(self, mode: str) -> io.BytesIO:
+                return self.replies
+
+        connection = Connection(b"+OK\r\n+PONG\r\n")
+        with (
+            patch(
+                "local_llm_ctl.socket.create_connection",
+                return_value=connection,
+            ) as connect,
+            patch("local_llm_ctl.subprocess.run") as run,
+        ):
+            self.assertTrue(controller._valkey_health())
+
+        connect.assert_called_once_with(
+            ("127.0.0.1", controller.port("valkey")), timeout=2
+        )
+        run.assert_not_called()
+        self.assertEqual(connection.timeout, 2)
+        self.assertEqual(
+            connection.sent,
+            [
+                b"*2\r\n$4\r\nAUTH\r\n"
+                + f"${len(controller.secret_values['valkey_password'])}\r\n".encode()
+                + controller.secret_values["valkey_password"].encode()
+                + b"\r\n",
+                b"*1\r\n$4\r\nPING\r\n",
+            ],
+        )
+
+        denied = Connection(b"-WRONGPASS invalid username-password pair\r\n")
+        with patch(
+            "local_llm_ctl.socket.create_connection", return_value=denied
+        ):
+            self.assertFalse(controller._valkey_health())
+        self.assertEqual(len(denied.sent), 1)
 
     def test_mysql_bootstrap_creates_loopback_account_via_init_file(self) -> None:
         controller = Controller(self.root)
