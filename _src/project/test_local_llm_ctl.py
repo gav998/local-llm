@@ -124,6 +124,57 @@ class ControllerConfigTest(unittest.TestCase):
             ingestion["task-executor"].environment["PYTHONPATH"],
             expected_ragflow_root,
         )
+        self.assertEqual(
+            ingestion["ragflow-api"].command,
+            [str(controller.rag_python), "-m", "api.ragflow_server"],
+        )
+        self.assertFalse(hasattr(ingestion["ragflow-api"], "startup_timeout"))
+
+    def test_legacy_startup_timeout_settings_are_accepted_but_ignored(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+        value = controller.ini_path.read_text(encoding="utf-8")
+        controller.ini_path.write_text(
+            value.replace(
+                "[runtime]\n",
+                "[runtime]\nstartup_timeout_seconds = disabled\n"
+                "ocr_startup_timeout_seconds = disabled\n",
+            ),
+            encoding="utf-8",
+        )
+
+        controller.ensure_config()
+
+        mysql = controller.services("core")["mysql"]
+        self.assertFalse(hasattr(mysql, "startup_timeout"))
+
+    def test_live_log_window_starts_current_controller_and_profile_logs(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+
+        def launch(command: list[str], **kwargs: object) -> Mock:
+            ready = Path(command[command.index("--ready-file") + 1])
+            ready.write_text("ready\n", encoding="utf-8")
+            return Mock(poll=Mock(return_value=None))
+
+        with (
+            patch("local_llm_ctl.IS_WINDOWS", True),
+            patch("local_llm_ctl.subprocess.Popen", side_effect=launch) as popen,
+        ):
+            controller.start_live_log_window(("mysql", "ragflow-api"))
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], str(controller.rag_python))
+        self.assertEqual(
+            Path(command[1]), Path(__file__).with_name("local_llm_ctl.py")
+        )
+        self.assertEqual(command[-2:], ["mysql", "ragflow-api"])
+        self.assertFalse(any(controller.control_dir.glob("log-viewer.*.ready")))
+
+    def test_live_log_viewer_rejects_ready_marker_outside_control_data(self) -> None:
+        controller = Controller(self.root)
+        with self.assertRaisesRegex(ControlError, "inside control data"):
+            controller.watch_logs(("mysql",), self.root / "outside.ready")
 
     def test_elasticsearch_runtime_files_are_kept_outside_vendor_tree(self) -> None:
         controller = Controller(self.root)

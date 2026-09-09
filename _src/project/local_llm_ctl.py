@@ -28,10 +28,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-CONTROL_VERSION = "2026.09.09.1"
+CONTROL_VERSION = "2026.09.09.2"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+IS_WINDOWS = os.name == "nt"
 
 SERVICE_ORDER = (
     "mysql",
@@ -89,8 +90,8 @@ elasticsearch_heap_mb = 2048
 valkey_max_mb = 256
 
 [runtime]
-startup_timeout_seconds = 180
-ocr_startup_timeout_seconds = 600
+# Startup readiness has no deadline. Slow HDD initialization may take as long
+# as necessary; a crashed service is still detected immediately.
 shutdown_timeout_seconds = 30
 """
 
@@ -238,7 +239,6 @@ class Service:
     environment: dict[str, str]
     health: Callable[[], bool]
     graceful: list[str]
-    startup_timeout: int
 
 
 class Controller:
@@ -455,12 +455,7 @@ class Controller:
             parse_int(self.config, "llama", key, 1, 1_048_576)
         for key in ("mysql_buffer_mb", "elasticsearch_heap_mb", "valkey_max_mb"):
             parse_int(self.config, "memory", key, 64, 32768)
-        for key in (
-            "startup_timeout_seconds",
-            "ocr_startup_timeout_seconds",
-            "shutdown_timeout_seconds",
-        ):
-            parse_int(self.config, "runtime", key, 5, 3600)
+        parse_int(self.config, "runtime", "shutdown_timeout_seconds", 5, 3600)
         split = self.config.get("gpu", "chat_tensor_split", fallback="")
         try:
             values = [float(part.strip()) for part in split.split(",")]
@@ -823,7 +818,6 @@ http://127.0.0.1:{self.port("web")} {{
 
     def services(self, mode: str) -> dict[str, Service]:
         env = self.portable_environment()
-        startup = self.integer("runtime", "startup_timeout_seconds")
         shutdown = self.integer("runtime", "shutdown_timeout_seconds")
         mysql_ini = self.config_dir / "mysql.ini"
         mysqladmin = self.app / "services" / "mysql" / "bin" / "mysqladmin.exe"
@@ -880,7 +874,6 @@ http://127.0.0.1:{self.port("web")} {{
                 env,
                 self._mysql_health,
                 [str(mysqladmin), f"--defaults-file={mysql_ini}", "shutdown"],
-                startup,
             ),
             "elasticsearch": Service(
                 "elasticsearch",
@@ -894,7 +887,6 @@ http://127.0.0.1:{self.port("web")} {{
                     f"http://127.0.0.1:{self.port('elasticsearch')}/"
                 ),
                 [],
-                startup,
             ),
             "silo": Service(
                 "silo",
@@ -913,7 +905,6 @@ http://127.0.0.1:{self.port("web")} {{
                     f"http://127.0.0.1:{self.port('silo')}/minio/health/ready"
                 ),
                 [],
-                startup,
             ),
             "valkey": Service(
                 "valkey",
@@ -933,7 +924,6 @@ http://127.0.0.1:{self.port("web")} {{
                     "SHUTDOWN",
                     "SAVE",
                 ],
-                startup,
             ),
             "embedding": Service(
                 "embedding",
@@ -966,7 +956,6 @@ http://127.0.0.1:{self.port("web")} {{
                     f"http://127.0.0.1:{self.port('embedding')}/health"
                 ),
                 [],
-                startup,
             ),
             "ocr": Service(
                 "ocr",
@@ -990,7 +979,6 @@ http://127.0.0.1:{self.port("web")} {{
                     f"http://127.0.0.1:{self.port('ocr')}/health"
                 ),
                 [],
-                self.integer("runtime", "ocr_startup_timeout_seconds"),
             ),
             "chat": Service(
                 "chat",
@@ -1024,18 +1012,16 @@ http://127.0.0.1:{self.port("web")} {{
                     f"http://127.0.0.1:{self.port('chat')}/health"
                 ),
                 [],
-                startup,
             ),
             "ragflow-api": Service(
                 "ragflow-api",
-                [str(self.rag_python), str(ragflow_dir / "api" / "ragflow_server.py")],
+                [str(self.rag_python), "-m", "api.ragflow_server"],
                 ragflow_dir,
                 rag_env,
                 lambda: self._http_health(
                     f"http://127.0.0.1:{self.port('ragflow')}/api/v1/system/healthz"
                 ),
                 [],
-                startup,
             ),
             "task-executor": Service(
                 "task-executor",
@@ -1051,7 +1037,6 @@ http://127.0.0.1:{self.port("web")} {{
                 rag_env,
                 lambda: True,
                 [],
-                startup,
             ),
             "caddy": Service(
                 "caddy",
@@ -1072,7 +1057,6 @@ http://127.0.0.1:{self.port("web")} {{
                     "--address",
                     f"127.0.0.1:{self.port('caddy_admin')}",
                 ],
-                startup,
             ),
         }
         for service in result.values():
@@ -1170,6 +1154,105 @@ http://127.0.0.1:{self.port("web")} {{
             return "supervisor-only", value
         return "stopped", value
 
+    def start_live_log_window(self, names: tuple[str, ...]) -> None:
+        """Open one optional observer console for all logs in a startup profile."""
+        setting = os.environ.get("LOCAL_LLM_LIVE_LOGS", "1").strip().casefold()
+        if not IS_WINDOWS or setting in {"0", "off", "false"}:
+            return
+        invalid = sorted(set(names).difference(SERVICE_ORDER))
+        if invalid:
+            raise ControlError(f"Unknown live-log services: {', '.join(invalid)}")
+
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (self.logs_dir / f"{name}.log").touch(exist_ok=True)
+        token = uuid.uuid4().hex
+        ready_path = self.control_dir / f"log-viewer.{token}.ready"
+        command = [
+            str(self.rag_python),
+            str(Path(__file__).resolve()),
+            "--root",
+            str(self.root),
+            "watch-logs",
+            "--ready-file",
+            str(ready_path),
+            *names,
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=self.control_dir,
+                env=self.portable_environment(),
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=CREATE_NEW_CONSOLE,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if ready_path.is_file():
+                    print(
+                        "[INFO] Live service logs opened in a separate window "
+                        "(closing it does not stop services)"
+                    )
+                    return
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            print(
+                "[WARN] Live log window did not become ready; "
+                f"service logs remain available in {self.logs_dir}"
+            )
+        except OSError as exc:
+            print(
+                f"[WARN] Could not open live log window: {exc}; "
+                f"service logs remain available in {self.logs_dir}"
+            )
+        finally:
+            ready_path.unlink(missing_ok=True)
+
+    def watch_logs(self, names: tuple[str, ...], ready_path: Path) -> None:
+        """Stream newly appended service log lines to an independent console."""
+        invalid = sorted(set(names).difference(SERVICE_ORDER))
+        if not names or invalid:
+            raise ControlError("Invalid service list for the live log viewer")
+        resolved_ready = ready_path.resolve()
+        if not resolved_ready.is_relative_to(self.control_dir.resolve()):
+            raise ControlError("Live log ready marker must be inside control data")
+
+        if IS_WINDOWS:
+            ctypes.windll.kernel32.SetConsoleTitleW("local_llm live service logs")
+        streams: dict[str, Any] = {}
+        try:
+            print("local_llm live service logs")
+            print("Close this window at any time; services will keep running.")
+            for name in names:
+                path = self.logs_dir / f"{name}.log"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch(exist_ok=True)
+                stream = path.open("r", encoding="utf-8", errors="replace")
+                stream.seek(0, os.SEEK_END)
+                streams[name] = stream
+                print(f"[{name}] {path}")
+            atomic_text(resolved_ready, "ready\n")
+            print("--- waiting for new output ---", flush=True)
+            while True:
+                wrote = False
+                for name, stream in streams.items():
+                    chunk = stream.read()
+                    if not chunk:
+                        continue
+                    wrote = True
+                    for line in chunk.splitlines():
+                        print(f"[{name}] {line}")
+                if wrote:
+                    sys.stdout.flush()
+                else:
+                    time.sleep(0.25)
+        finally:
+            for stream in streams.values():
+                stream.close()
+            resolved_ready.unlink(missing_ok=True)
+
     def start_service(self, service: Service) -> None:
         process_state, _ = self.service_process_state(service.name)
         if process_state == "running":
@@ -1224,8 +1307,12 @@ http://127.0.0.1:{self.port("web")} {{
             startupinfo=startup_info,
         )
         try:
-            deadline = time.monotonic() + service.startup_timeout
-            while time.monotonic() < deadline:
+            wait_message = (
+                f"[INFO] {service.name}: starting; "
+                "waiting for readiness without a timeout"
+            )
+            print(wait_message)
+            while True:
                 if self.metadata_path(service.name).is_file() and self.service_running(
                     service.name
                 ):
@@ -1249,19 +1336,6 @@ http://127.0.0.1:{self.port("web")} {{
                         f"Supervisor for {service.name} exited during startup; see {self.logs_dir / (service.name + '.log')}"
                     )
                 time.sleep(1)
-            self.stop_path(service.name).touch()
-            stop_deadline = (
-                time.monotonic()
-                + self.integer("runtime", "shutdown_timeout_seconds")
-                + 15
-            )
-            while time.monotonic() < stop_deadline and self.service_running(
-                service.name
-            ):
-                time.sleep(0.5)
-            raise ControlError(
-                f"Timed out waiting for {service.name}; see {self.logs_dir / (service.name + '.log')}"
-            )
         except (ControlError, KeyboardInterrupt):
             self.stop_path(service.name).touch()
             try:
@@ -1785,6 +1859,11 @@ http://127.0.0.1:{self.port("web")} {{
             "ingestion": {"embedding", "ocr", "task-executor"},
             "chat": {"embedding", "chat"},
         }[mode]
+        profile_services = tuple(
+            name
+            for name in SERVICE_ORDER
+            if name not in optional or name in wanted
+        )
         if mode in {"ingestion", "chat"} and not self.model_path("embedding").is_file():
             raise ControlError(
                 f"Embedding GGUF not found: {self.model_path('embedding')}"
@@ -1804,6 +1883,7 @@ http://127.0.0.1:{self.port("web")} {{
         for name in reversed(SERVICE_ORDER):
             if name in optional and name not in wanted:
                 self.stop_service(name, quiet=True)
+        self.start_live_log_window(profile_services)
         started: list[str] = []
         try:
             for name in SERVICE_ORDER:
@@ -1942,6 +2022,9 @@ def build_parser() -> argparse.ArgumentParser:
     config = sub.add_parser("config")
     config.add_argument("action", nargs="?", default="show", choices=("show", "edit"))
     sub.add_parser("devices")
+    watch_logs = sub.add_parser("watch-logs", help=argparse.SUPPRESS)
+    watch_logs.add_argument("--ready-file", required=True, type=Path)
+    watch_logs.add_argument("services", nargs="+")
     return parser
 
 
@@ -1978,6 +2061,8 @@ def main() -> int:
                 controller.show_config()
         elif args.command == "devices":
             controller.devices()
+        elif args.command == "watch-logs":
+            controller.watch_logs(tuple(args.services), args.ready_file)
         return 0
     except (ControlError, OSError, subprocess.SubprocessError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
