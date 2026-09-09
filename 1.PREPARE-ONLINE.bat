@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.09.2"
+set "PROJECT_VERSION=2026.09.09.1"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"

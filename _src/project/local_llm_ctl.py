@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-CONTROL_VERSION = "2026.09.09.2"
+CONTROL_VERSION = "2026.09.09.1"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
