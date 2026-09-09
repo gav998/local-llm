@@ -128,6 +128,20 @@ def windows_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/")
 
 
+def cygwin_path(path: os.PathLike[str] | str) -> str:
+    """Convert an absolute native path for the Cygwin-based Valkey binaries."""
+    normalized = str(path).replace("\\", "/")
+    if (
+        len(normalized) >= 3
+        and normalized[0].isalpha()
+        and normalized[1:3] == ":/"
+    ):
+        return f"/cygdrive/{normalized[0].lower()}/{normalized[3:]}"
+    if normalized.startswith("/"):
+        return normalized
+    raise ControlError(f"Cannot convert relative path to Cygwin format: {path}")
+
+
 def tree_fingerprint(root: Path, exclusions: tuple[str, ...] = ()) -> tuple[str, int]:
     if root.is_symlink() or not root.is_dir():
         raise ControlError(f"Unsafe or missing tree root: {root}")
@@ -895,7 +909,7 @@ http://127.0.0.1:{self.port("web")} {{
                 "valkey",
                 [
                     str(self.app / "services" / "valkey" / "valkey-server.exe"),
-                    str(self.config_dir / "valkey.conf"),
+                    cygwin_path(self.config_dir / "valkey.conf"),
                 ],
                 self.app / "services" / "valkey",
                 valkey_env,

@@ -6,13 +6,14 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import Mock, patch
 
 from local_llm_ctl import (
     CONTROL_VERSION,
     ControlError,
     Controller,
+    cygwin_path,
     tree_fingerprint,
     validate_tree_seal,
 )
@@ -113,6 +114,21 @@ class ControllerConfigTest(unittest.TestCase):
             ingestion["ocr"].environment["PADDLE_PDX_DISABLE_DEVICE_FALLBACK"], "1"
         )
         self.assertEqual(ingestion["ragflow-api"].environment["HF_HUB_OFFLINE"], "1")
+
+    def test_valkey_config_uses_cygwin_path(self) -> None:
+        self.assertEqual(
+            cygwin_path(PureWindowsPath(r"I:\test\app\config\runtime\valkey.conf")),
+            "/cygdrive/i/test/app/config/runtime/valkey.conf",
+        )
+
+        controller = Controller(self.root)
+        controller.ensure_config()
+        converted = "/cygdrive/i/test/app/config/runtime/valkey.conf"
+        with patch("local_llm_ctl.cygwin_path", return_value=converted) as convert:
+            command = controller.services("core")["valkey"].command
+
+        convert.assert_called_once_with(controller.config_dir / "valkey.conf")
+        self.assertEqual(command[1], converted)
 
     def test_process_identity_rejects_wrong_identity(self) -> None:
         identity = Controller.process_identity(os.getpid())

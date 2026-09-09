@@ -98,7 +98,8 @@ Controller генерирует:
 
 - `mysql.ini`: app-local basedir/datadir, loopback, `mysqlx=OFF`, ограниченный pool;
 - отдельный `ES_PATH_CONF`: single-node, loopback, security/network download выключены, heap фиксирован;
-- `valkey.conf`: loopback, protected mode, пароль, AOF в app-local data;
+- `valkey.conf`: loopback, protected mode, пароль, AOF в app-local data; путь к конфигу
+  передаётся Cygwin-сборке Valkey в формате `/cygdrive/<drive>/...`;
 - Caddyfile: loopback SPA + reverse proxy `/v1/*` и `/api/*`;
 - `local.service_conf.yaml`: MySQL, Silo/MinIO, Elasticsearch, Valkey, local llama endpoints и PaddleOCR;
 - `local-llm.ini`: единственный пользовательский файл портов, моделей, GPU placement и memory limits.
