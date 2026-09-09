@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from local_llm_ctl import (
     CONTROL_VERSION,
@@ -196,6 +196,25 @@ class ControllerConfigTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ControlError, "Tree seal is incomplete"):
             validate_tree_seal(tree, marker)
+
+    def test_runtime_asset_verification_uses_packaged_provenance_record(self) -> None:
+        controller = Controller(self.root)
+        controller.logs_dir.mkdir(parents=True, exist_ok=True)
+        completed = Mock(returncode=0)
+
+        with (
+            patch.object(Controller, "portable_environment", return_value={}),
+            patch("local_llm_ctl.subprocess.run", return_value=completed) as run,
+        ):
+            controller.verify_runtime_assets()
+
+        asset_check = run.call_args_list[2].args[0]
+        record_index = asset_check.index("--record") + 1
+        self.assertEqual(
+            Path(asset_check[record_index]),
+            self.root / "app" / "config" / "ragflow-assets.json",
+        )
+        self.assertNotIn("ragflow-assets-verify.json", asset_check)
 
     def test_finalize_resumes_after_gpu_when_mysql_step_failed(self) -> None:
         controller = Controller(self.root)

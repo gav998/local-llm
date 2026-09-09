@@ -175,6 +175,22 @@ class LauncherContractTest(unittest.TestCase):
         )
         self.assertIn("'local_llm_ctl.py'", prepare)
 
+    def test_online_and_offline_asset_verification_use_packaged_record(self) -> None:
+        launcher_controller = (
+            ROOT / "_src" / "project" / "local_llm_ctl.py"
+        ).read_text(encoding="utf-8")
+        prepare = PREPARE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'self.ragflow_asset_record = self.app / "config" / "ragflow-assets.json"',
+            launcher_controller,
+        )
+        self.assertIn(
+            '--record "%~1\\config\\ragflow-assets.json" --verify-only',
+            prepare,
+        )
+        self.assertNotIn("ragflow-assets-verify.json", launcher_controller)
+
     def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'

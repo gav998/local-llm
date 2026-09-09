@@ -235,6 +235,7 @@ class Controller:
         self.data_dir = self.app / "data"
         self.control_dir = self.data_dir / "control"
         self.logs_dir = self.app / "logs"
+        self.ragflow_asset_record = self.app / "config" / "ragflow-assets.json"
         self.ini_path = self.config_dir / "local-llm.ini"
         self.secrets_path = self.config_dir / "secrets.json"
         self.install_marker = self.control_dir / "install.ok.json"
@@ -1457,7 +1458,7 @@ http://127.0.0.1:{self.port("web")} {{
                     "--nltk-dir",
                     str(self.data_dir / "nltk"),
                     "--record",
-                    str(self.config_dir / "ragflow-assets-verify.json"),
+                    str(self.ragflow_asset_record),
                     "--verify-only",
                 ],
                 self.app,
@@ -1525,6 +1526,7 @@ http://127.0.0.1:{self.port("web")} {{
             "config/project/local_llm_ctl.py",
             "config/project/prepare_ragflow_assets.py",
             "config/project/verify_ragflow_runtime.py",
+            "config/ragflow-assets.json",
             "config/pp-structure-v3-8gb.yaml",
             "services/ocr/ocr_job_gateway.py",
             "services/ocr/ocr_ragflow_e2e.py",
