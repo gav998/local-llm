@@ -126,6 +126,28 @@ class LauncherContractTest(unittest.TestCase):
         self.assertNotIn("00-bootstrap-tools.7z", remaining_loop)
         self.assertEqual(remaining_loop.count(".7z\""), 8)
 
+    def test_offline_launcher_redirects_bytecode_before_running_sealed_python(
+        self,
+    ) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        run_control = launcher[
+            launcher.index("\n:RUN_CONTROL") : launcher.index("\n:INSTALL")
+        ]
+        portable_env = launcher[
+            launcher.index("\n:SET_PORTABLE_ENV") : launcher.index("\n:USAGE")
+        ]
+        redirect = 'set "PYTHONPYCACHEPREFIX=%APP%\\cache\\python-bytecode"'
+
+        self.assertIn("call :SET_PORTABLE_ENV", run_control)
+        env_call = run_control.index("call :SET_PORTABLE_ENV")
+        self.assertLess(
+            env_call,
+            run_control.index(
+                '"%APP%\\runtime\\python-rag\\python.exe"', env_call
+            ),
+        )
+        self.assertIn(redirect, portable_env)
+
     def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'
