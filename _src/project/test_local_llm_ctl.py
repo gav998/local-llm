@@ -167,6 +167,61 @@ class ControllerConfigTest(unittest.TestCase):
             state, _ = controller.service_process_state("mysql")
         self.assertEqual(state, "orphaned")
 
+    def test_mysql_health_requires_an_authenticated_query(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+        denied = Mock(
+            returncode=1,
+            stdout="",
+            stderr="ERROR 1045 (28000): Access denied",
+        )
+
+        with patch("local_llm_ctl.subprocess.run", return_value=denied) as run:
+            self.assertFalse(controller._mysql_health())
+
+        command = run.call_args.args[0]
+        self.assertTrue(command[0].endswith("mysql.exe"))
+        self.assertNotIn("mysqladmin.exe", command[0])
+        self.assertEqual(command[-1], "SELECT 1")
+        self.assertIn(
+            "Access denied",
+            (controller.logs_dir / "mysql-client-error.log").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+    def test_mysql_bootstrap_creates_loopback_account_via_init_file(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+        (controller.data_dir / "mysql" / "mysql").mkdir(parents=True)
+        captured: dict[str, object] = {}
+
+        def inspect_start(service: object) -> None:
+            command = service.command  # type: ignore[attr-defined]
+            init_option = next(
+                item for item in command if item.startswith("--init-file=")
+            )
+            init_path = Path(init_option.partition("=")[2])
+            captured["command"] = command
+            captured["path"] = init_path
+            captured["sql"] = init_path.read_text(encoding="utf-8")
+
+        verified = Mock(returncode=0, stdout="1\n", stderr="")
+        with (
+            patch.object(Controller, "start_service", side_effect=inspect_start),
+            patch.object(Controller, "stop_service") as stop,
+            patch.object(Controller, "_mysql_query", return_value=verified) as query,
+        ):
+            controller.initialize_mysql()
+
+        command = captured["command"]
+        self.assertNotIn(controller.secret_values["mysql_password"], " ".join(command))
+        self.assertIn("'root'@'127.0.0.1'", captured["sql"])
+        self.assertIn("CREATE DATABASE IF NOT EXISTS rag_flow", captured["sql"])
+        self.assertFalse(captured["path"].exists())
+        query.assert_called_once()
+        stop.assert_called_once_with("mysql", quiet=True)
+
     def test_tree_seal_supports_exact_and_directory_exclusions(self) -> None:
         tree = self.root / "sealed"
         (tree / "logs").mkdir(parents=True)

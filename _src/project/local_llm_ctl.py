@@ -23,7 +23,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -762,38 +762,47 @@ http://127.0.0.1:{self.port("web")} {{
         except (OSError, subprocess.TimeoutExpired):
             return False
 
-    def _mysql_health(self) -> bool:
-        executable = self.app / "services" / "mysql" / "bin" / "mysqladmin.exe"
-        common = [
-            str(executable),
-            "--protocol=TCP",
-            "--host=127.0.0.1",
-            "--port",
-            str(self.port("mysql")),
-            "--user=root",
-        ]
-        commands = (
+    def _mysql_query(
+        self, sql: str, timeout: int = 5
+    ) -> subprocess.CompletedProcess[str]:
+        executable = self.app / "services" / "mysql" / "bin" / "mysql.exe"
+        return subprocess.run(
             [
                 str(executable),
                 f"--defaults-file={self.config_dir / 'mysql.ini'}",
-                "ping",
+                "--batch",
+                "--skip-column-names",
+                "--execute",
+                sql,
             ],
-            common + ["ping"],
+            env=self.portable_environment(),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            check=False,
+            creationflags=CREATE_NO_WINDOW,
         )
-        for command in commands:
-            try:
-                result = subprocess.run(
-                    command,
-                    env=self.portable_environment(),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                if result.returncode == 0:
-                    return True
-            except (OSError, subprocess.TimeoutExpired):
-                continue
+
+    def _write_mysql_client_error(self, detail: str) -> None:
+        password_value = str(self.secret_values.get("mysql_password", ""))
+        if password_value:
+            detail = detail.replace(password_value, "<redacted>")
+        atomic_text(self.logs_dir / "mysql-client-error.log", detail.rstrip() + "\n")
+
+    def _mysql_health(self) -> bool:
+        try:
+            result = self._mysql_query("SELECT 1")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self._write_mysql_client_error(f"Authenticated SELECT 1 failed: {exc}")
+            return False
+        if result.returncode == 0 and result.stdout.strip() == "1":
+            (self.logs_dir / "mysql-client-error.log").unlink(missing_ok=True)
+            return True
+        self._write_mysql_client_error(
+            "Authenticated SELECT 1 failed "
+            f"(exit code {result.returncode}).\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
         return False
 
     def services(self, mode: str) -> dict[str, Service]:
@@ -1370,58 +1379,62 @@ http://127.0.0.1:{self.port("web")} {{
                     f"MySQL initialization failed; see {self.logs_dir / 'mysql-error.log'}"
                 )
 
-        services = self.services("core")
-        self.start_service(services["mysql"])
+        print("[STEP] Secure portable MySQL and create the local database")
+        bootstrap_path = self.config_dir / "mysql-bootstrap.sql"
+        escaped = self.secret_values["mysql_password"].replace("'", "''")
+        atomic_text(
+            bootstrap_path,
+            f"ALTER USER 'root'@'localhost' IDENTIFIED BY '{escaped}';\n"
+            f"CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '{escaped}';\n"
+            f"ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '{escaped}';\n"
+            "GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;\n"
+            "CREATE DATABASE IF NOT EXISTS rag_flow CHARACTER SET utf8mb4 "
+            "COLLATE utf8mb4_unicode_ci;\n",
+        )
         try:
-            mysql = self.app / "services" / "mysql" / "bin" / "mysql.exe"
-            authenticated = [
-                str(mysql),
-                f"--defaults-file={self.config_dir / 'mysql.ini'}",
-                "--batch",
-                "--skip-column-names",
-            ]
-            probe = subprocess.run(
-                authenticated + ["-e", "SELECT 1"],
-                capture_output=True,
-                timeout=20,
-                check=False,
+            bootstrap_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+
+        try:
+            services = self.services("core")
+            mysql_service = replace(
+                services["mysql"],
+                command=services["mysql"].command
+                + [f"--init-file={windows_path(bootstrap_path)}"],
             )
-            if probe.returncode != 0:
-                bootstrap = [
-                    str(mysql),
-                    "--protocol=TCP",
-                    "--host=127.0.0.1",
-                    "--port",
-                    str(self.port("mysql")),
-                    "--user=root",
-                    "--batch",
-                ]
-                escaped = self.secret_values["mysql_password"].replace("'", "''")
-                sql = f"ALTER USER 'root'@'localhost' IDENTIFIED BY '{escaped}'; CREATE DATABASE IF NOT EXISTS rag_flow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-                result = subprocess.run(
-                    bootstrap + ["-e", sql],
-                    capture_output=True,
+            self.start_service(mysql_service)
+            try:
+                result = self._mysql_query(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.SCHEMATA "
+                    "WHERE SCHEMA_NAME='rag_flow'",
                     timeout=30,
-                    check=False,
                 )
-                if result.returncode != 0:
-                    raise ControlError(
-                        "Could not secure and create the local MySQL database"
-                    )
-            else:
-                result = subprocess.run(
-                    authenticated
-                    + [
-                        "-e",
-                        "CREATE DATABASE IF NOT EXISTS rag_flow CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
-                    ],
-                    timeout=30,
-                    check=False,
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self._write_mysql_client_error(
+                    f"Database verification could not run: {exc}"
                 )
-                if result.returncode != 0:
-                    raise ControlError("Could not create the local MySQL database")
+                raise ControlError(
+                    "Could not verify the local MySQL database; see "
+                    f"{self.logs_dir / 'mysql-error.log'} and "
+                    f"{self.logs_dir / 'mysql-client-error.log'}"
+                ) from exc
+            if result.returncode != 0 or result.stdout.strip() != "1":
+                self._write_mysql_client_error(
+                    "Database verification failed "
+                    f"(exit code {result.returncode}).\nSTDOUT:\n{result.stdout}\n"
+                    f"STDERR:\n{result.stderr}"
+                )
+                raise ControlError(
+                    "Could not secure and create the local MySQL database; see "
+                    f"{self.logs_dir / 'mysql-error.log'} and "
+                    f"{self.logs_dir / 'mysql-client-error.log'}"
+                )
         finally:
-            self.stop_service("mysql", quiet=True)
+            try:
+                self.stop_service("mysql", quiet=True)
+            finally:
+                bootstrap_path.unlink(missing_ok=True)
 
     def verify_static(self, gpu: bool) -> None:
         self.verify_tree_seals()
