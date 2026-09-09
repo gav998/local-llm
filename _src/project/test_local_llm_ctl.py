@@ -187,6 +187,47 @@ class ControllerConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ControlError, "no longer matches"):
             validate_tree_seal(tree, marker, ("mutable.conf", "logs/"), "test")
 
+    def test_incomplete_tree_seal_is_reported_before_hashing(self) -> None:
+        tree = self.root / "sealed-incomplete"
+        tree.mkdir()
+        (tree / "payload.bin").write_bytes(b"payload")
+        marker = self.root / "incomplete.ok"
+        marker.write_text("artifact=vendor.zip\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ControlError, "Tree seal is incomplete"):
+            validate_tree_seal(tree, marker)
+
+    def test_finalize_resumes_after_gpu_when_mysql_step_failed(self) -> None:
+        controller = Controller(self.root)
+        controller.ensure_config()
+
+        with (
+            patch.object(Controller, "service_running", return_value=False),
+            patch.object(Controller, "verify_tree_seals") as verify_seals,
+            patch.object(
+                Controller, "install_resume_identity", return_value="payload-1"
+            ),
+            patch.object(Controller, "verify_runtime_assets") as verify_runtime,
+            patch.object(Controller, "verify_gpu") as verify_gpu,
+            patch.object(
+                Controller,
+                "initialize_mysql",
+                side_effect=(ControlError("mysql failed"), None),
+            ) as initialize_mysql,
+        ):
+            with self.assertRaisesRegex(ControlError, "mysql failed"):
+                controller.finalize_install()
+            self.assertTrue(controller.install_progress_marker.is_file())
+
+            controller.finalize_install()
+
+        self.assertEqual(verify_seals.call_count, 2)
+        verify_runtime.assert_called_once_with()
+        verify_gpu.assert_called_once_with()
+        self.assertEqual(initialize_mysql.call_count, 2)
+        self.assertTrue(controller.install_marker.is_file())
+        self.assertFalse(controller.install_progress_marker.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

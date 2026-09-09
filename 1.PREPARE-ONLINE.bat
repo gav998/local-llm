@@ -149,6 +149,9 @@ if errorlevel 1 exit /b 1
 call :SealMutableRuntimeTrees
 if errorlevel 1 exit /b 1
 
+call :SealImmutableArtifactTrees
+if errorlevel 1 exit /b 1
+
 call :PackagePreparedOutput
 if errorlevel 1 exit /b 1
 
@@ -352,7 +355,7 @@ endlocal & exit /b 0
 setlocal
 set "VALIDATE_PREPARED_DIR=%~1"
 if not exist "%~1\." (endlocal & exit /b 1)
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $required=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md','PORTABILITY-AUDIT.json','build-info.txt','prepared.ok'); $allowed=@{}; foreach($name in $required){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; if(@(Get-ChildItem -LiteralPath $root.FullName -Force).Count -ne $required.Count){throw 'Prepared file count mismatch'}; foreach($name in $required){if(-not (Test-Path -LiteralPath (Join-Path $root.FullName $name) -PathType Leaf)){throw ('Missing prepared file: '+$name)}}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $root=Get-Item -LiteralPath $env:VALIDATE_PREPARED_DIR -Force; if(-not $root.PSIsContainer -or (($root.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)){throw 'Invalid prepared root'}; $required=@('00-bootstrap-tools.7z','10-python-rag-runtime.7z','20-python-ocr-gpu-runtime.7z','21-paddle-models.7z','30-ragflow-backend.7z','31-ragflow-web-dist.7z','40-services.7z','41-config-seed.7z','50-llama-vulkan-runtime.7z','7zr.exe','LOCAL-LLM.bat','README.md','PORTABILITY-AUDIT.json','build-info.txt','prepared.ok'); $optional=@('local_llm_ctl.py'); $allowed=@{}; foreach($name in $required){$allowed[$name.ToLowerInvariant()]=$true}; foreach($name in $optional){$allowed[$name.ToLowerInvariant()]=$true}; foreach($item in Get-ChildItem -LiteralPath $root.FullName -Force){if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -or -not $allowed.ContainsKey($item.Name.ToLowerInvariant())){throw ('Unexpected prepared entry: '+$item.Name)}}; foreach($name in $required){if(-not (Test-Path -LiteralPath (Join-Path $root.FullName $name) -PathType Leaf)){throw ('Missing prepared file: '+$name)}}; if((Get-Content -LiteralPath (Join-Path $root.FullName 'prepared.ok') -Raw).Trim() -ne 'prepared=1'){throw 'Invalid prepared marker'}; $audit=Get-Content -LiteralPath (Join-Path $root.FullName 'PORTABILITY-AUDIT.json') -Raw | ConvertFrom-Json; if($audit.passed -ne $true){throw 'Portability audit did not pass'}; if(-not (Select-String -LiteralPath (Join-Path $root.FullName 'build-info.txt') -Pattern '^local_llm_prepare_version=' -Quiet)){throw 'Missing build version'}" >nul 2>&1
 set "VALIDATE_RC=%ERRORLEVEL%"
 endlocal & exit /b %VALIDATE_RC%
 
@@ -977,6 +980,8 @@ if exist "%ARTIFACT_MARKER_TEMP%" (
 )
 >"%ARTIFACT_MARKER_TEMP%" (
     echo artifact=%~2
+    if not "%~3"=="" echo tree_sha256=%~3
+    if not "%~4"=="" echo tree_file_count=%~4
 )
 if errorlevel 1 (
     if exist "%ARTIFACT_MARKER_TEMP%" del /f /q "%ARTIFACT_MARKER_TEMP%" >nul 2>&1
@@ -1910,6 +1915,51 @@ if errorlevel 1 exit /b 1
 call :MutableTreeMatches "%~1" "%~2" "%~3" "%~4"
 exit /b %ERRORLEVEL%
 
+:SealImmutableArtifactTrees
+echo [STEP] Seal immutable vendor trees after all preparation probes
+for %%D in (
+    "tools\7zip"
+    "cache\paddlex\official_models\PP-DocLayout-L"
+    "cache\paddlex\official_models\PP-DocBlockLayout"
+    "cache\paddlex\official_models\PP-OCRv6_medium_det"
+    "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec"
+    "cache\paddlex\official_models\SLANet_plus"
+    "services\ocr\font"
+    "services\mysql"
+    "services\elasticsearch"
+    "services\silo"
+    "services\valkey"
+    "services\caddy"
+    "runtime\llama"
+) do (
+    call :SealArtifactTree "%APP%\%%~D"
+    if errorlevel 1 exit /b 1
+)
+exit /b 0
+
+:SealArtifactTree
+setlocal DisableDelayedExpansion
+set "ARTIFACT_MARKER=%~1\.local-llm-artifact.txt"
+set "ARTIFACT_NAME="
+set "ARTIFACT_TREE_SHA256="
+set "ARTIFACT_TREE_FILE_COUNT="
+if not exist "%ARTIFACT_MARKER%" (
+    echo [ERROR] Immutable artifact marker is missing: %ARTIFACT_MARKER%
+    endlocal & exit /b 1
+)
+for /f "usebackq tokens=1,* delims==" %%A in ("%ARTIFACT_MARKER%") do if /i "%%A"=="artifact" set "ARTIFACT_NAME=%%B"
+if not defined ARTIFACT_NAME (
+    echo [ERROR] Immutable artifact marker has no artifact identity: %ARTIFACT_MARKER%
+    endlocal & exit /b 1
+)
+call :ComputeTreeFingerprint "%~1" ".local-llm-artifact.txt" ARTIFACT_TREE_SHA256 ARTIFACT_TREE_FILE_COUNT
+if errorlevel 1 (endlocal & exit /b 1)
+call :WriteArtifactMarker "%ARTIFACT_MARKER%" "%ARTIFACT_NAME%" "%ARTIFACT_TREE_SHA256%" "%ARTIFACT_TREE_FILE_COUNT%"
+if errorlevel 1 (endlocal & exit /b 1)
+call :TreeMatchesMarker "%~1" "%ARTIFACT_MARKER%" ".local-llm-artifact.txt"
+if errorlevel 1 (endlocal & exit /b 1)
+endlocal & exit /b 0
+
 :PackagePreparedOutput
 echo [STEP] Create solid component archives for the offline installation stage
 set "PACKAGE_STAGE=%WORK%\prepared-next-%RANDOM%-%RANDOM%"
@@ -1928,6 +1978,10 @@ if errorlevel 1 exit /b 1
 copy /y "%ROOT%\LOCAL-LLM.bat" "%PACKAGE_STAGE%\LOCAL-LLM.bat" >nul 2>&1
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\README.md" "%PACKAGE_STAGE%\README.md" >nul 2>&1
+if errorlevel 1 exit /b 1
+copy /y "%PROJECT%\local_llm_ctl.py" "%PACKAGE_STAGE%\local_llm_ctl.py" >nul 2>&1
+if errorlevel 1 exit /b 1
+fc /b "%PROJECT%\local_llm_ctl.py" "%PACKAGE_STAGE%\local_llm_ctl.py" >nul 2>&1
 if errorlevel 1 exit /b 1
 
 call :WriteBundleList "00-bootstrap-tools.lst" "app\tools\7zip-bootstrap"
@@ -2098,6 +2152,7 @@ for %%K in (
     "config\project\audit_portability.py"
     "config\project\local_llm_ctl.py"
     "config\project\local_llm_supervisor.py"
+    "config\project\tree_fingerprint.ps1"
     "config\pp-structure-v3-8gb.yaml"
     "runtime\llama\llama-server.exe"
 ) do if not exist "%REHYDRATE_APP%\%%~K" (
@@ -2105,30 +2160,17 @@ for %%K in (
     goto :REHYDRATE_FAILED
 )
 
+fc /b "%BUNDLE_TARGET_DIR%\local_llm_ctl.py" "%REHYDRATE_APP%\config\project\local_llm_ctl.py" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Prepared control helper differs from the archived controller.
+    goto :REHYDRATE_FAILED
+)
+
 call :VerifyRehydratedMutableSeals
 if errorlevel 1 goto :REHYDRATE_FAILED
 
-for %%D in (
-    "tools\7zip"
-    "cache\paddlex\official_models\PP-DocLayout-L"
-    "cache\paddlex\official_models\PP-DocBlockLayout"
-    "cache\paddlex\official_models\PP-OCRv6_medium_det"
-    "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec"
-    "cache\paddlex\official_models\SLANet_plus"
-    "services\ocr\font"
-    "services\mysql"
-    "services\elasticsearch"
-    "services\silo"
-    "services\valkey"
-    "services\caddy"
-    "runtime\llama"
-) do (
-    call :TreeMatchesMarker "%REHYDRATE_APP%\%%~D" "%REHYDRATE_APP%\%%~D\.local-llm-artifact.txt" ".local-llm-artifact.txt"
-    if errorlevel 1 (
-        echo [ERROR] Rehydrated immutable tree does not match its seal: app\%%~D
-        goto :REHYDRATE_FAILED
-    )
-)
+call :VerifyRehydratedImmutableSeals
+if errorlevel 1 goto :REHYDRATE_FAILED
 call :TreeMatchesMarker "%REHYDRATE_APP%\web" "%REHYDRATE_APP%\config\ragflow-web.ok" ""
 if errorlevel 1 (
     echo [ERROR] Rehydrated web dist does not match its seal.
@@ -2138,6 +2180,8 @@ if errorlevel 1 (
 call :VerifyRehydratedPayload "%REHYDRATE_APP%" "%REHYDRATE_LOG%" "%BUNDLE_TARGET_DIR%\PORTABILITY-AUDIT.json"
 if errorlevel 1 goto :REHYDRATE_FAILED
 call :VerifyRehydratedMutableSeals
+if errorlevel 1 goto :REHYDRATE_FAILED
+call :VerifyRehydratedImmutableSeals
 if errorlevel 1 goto :REHYDRATE_FAILED
 call :RemoveTreeChecked "%REHYDRATE_ROOT%"
 if errorlevel 1 exit /b 1
@@ -2165,6 +2209,30 @@ call :MutableTreeMatches "%REHYDRATE_APP%\ragflow" "%REHYDRATE_APP%\config\ragfl
 if errorlevel 1 (
     echo [ERROR] Rehydrated RAGFlow source tree does not match its final seal.
     exit /b 1
+)
+exit /b 0
+
+:VerifyRehydratedImmutableSeals
+for %%D in (
+    "tools\7zip"
+    "cache\paddlex\official_models\PP-DocLayout-L"
+    "cache\paddlex\official_models\PP-DocBlockLayout"
+    "cache\paddlex\official_models\PP-OCRv6_medium_det"
+    "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec"
+    "cache\paddlex\official_models\SLANet_plus"
+    "services\ocr\font"
+    "services\mysql"
+    "services\elasticsearch"
+    "services\silo"
+    "services\valkey"
+    "services\caddy"
+    "runtime\llama"
+) do (
+    call :TreeMatchesMarker "%REHYDRATE_APP%\%%~D" "%REHYDRATE_APP%\%%~D\.local-llm-artifact.txt" ".local-llm-artifact.txt"
+    if errorlevel 1 (
+        echo [ERROR] Rehydrated immutable tree does not match its seal: app\%%~D
+        exit /b 1
+    )
 )
 exit /b 0
 

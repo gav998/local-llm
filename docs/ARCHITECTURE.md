@@ -20,9 +20,9 @@
      atomic _src\prepared + LOCAL-LLM.bat + README
 ```
 
-`LOCAL-LLM.bat install` работает уже без сети. До запуска payload executable он проверяет наличие всех обязательных файлов prepared-набора. Затем bootstrap `7zr.exe` раскрывает полный `7za.exe`; все архивы отдельно тестируются и распаковываются в случайный staging. Готовое `app` публикуется одним `move`. Частичный staging не смешивается с рабочей установкой и при ошибке сохраняется для диагностики.
+`LOCAL-LLM.bat install` работает уже без сети. До запуска payload executable он проверяет наличие всех обязательных файлов prepared-набора. Затем bootstrap `7zr.exe` раскрывает полный `7za.exe`; все архивы отдельно тестируются и распаковываются в случайный staging. После последнего использования staged `7za.exe` launcher заново вычисляет seals immutable-компонентов, поэтому seal описывает именно опубликованное дерево, а не промежуточное состояние packager. Готовое `app` публикуется одним `move`. Частичный staging не смешивается с рабочей установкой и при ошибке сохраняется для диагностики.
 
-Установка считается завершённой только после static/import проверок, реального CUDA/OCR/table E2E без CPU fallback и инициализации MySQL. Последним записывается `app\data\control\install.ok.json`; `start` без корректного marker запрещён.
+Установка считается завершённой только после static/import проверок, реального CUDA/OCR/table E2E без CPU fallback и инициализации MySQL. Между неуспешными попытками `install-progress.json` сохраняет законченные фазы и привязывает их к пути, control version, seal-маркерам и проверочным конфигам. Полное чтение sealed payload повторяется на каждой попытке; только после него разрешён skip дорогих завершённых фаз. Последним записывается `app\data\control\install.ok.json`, progress удаляется; `start` без корректного marker запрещён.
 
 Wheelhouse как переносимый формат сознательно отвергнут: он перенёс бы platform resolution на offline-машину. В архивы попадают уже установленные и проверенные runtime trees. GGUF переносятся отдельно.
 
@@ -150,9 +150,9 @@ chat       core + embedding(GPU 0) + Vikhr(split GPU 0/1 = 0.20/0.80)
 5. Python metadata очищается от build-path.
 6. Native imports, GraphRAG, tokenizer, XGBoost и OCR contract проходят smoke.
 7. Audit отклоняет reparse points и absolute build-path leaks.
-8. Runtime trees получают final seals с минимальными известными exclusions.
-9. Девять архивов rehydrate в изолированное дерево и повторно проверяются.
-10. Prepared payload, launcher и README проверяются как полный обязательный набор файлов.
+8. Runtime и immutable vendor trees получают final seals с минимальными известными exclusions.
+9. Девять архивов rehydrate в изолированное дерево и повторно проверяются до и после запуска payload executable.
+10. Prepared payload, launcher, обновляемый control helper и README проверяются как полный обязательный набор файлов.
 11. Offline installer проверяет наличие всех файлов и тестирует каждый 7z до atomic publish; при каждой команде BAT также сверяет версию controller.
 12. `install.ok` появляется только после target GPU E2E и MySQL initialization.
 

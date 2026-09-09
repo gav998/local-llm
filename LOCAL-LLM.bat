@@ -179,8 +179,14 @@ if exist "%APP%\runtime\python-rag\python.exe" (
         set "SCRIPT_RC=1"
         goto :SCRIPT_END
     )
+    call :OVERLAY_CONTROL_HELPER "%APP%"
+    if errorlevel 1 (
+        set "SCRIPT_RC=1"
+        goto :SCRIPT_END
+    )
     echo [INFO] Payload already exists. Regenerating location-specific configuration
-    echo [INFO] and repeating the strict install verification.
+    echo [SKIP] Payload was already extracted and atomically published.
+    echo [INFO] Resuming strict install verification.
     goto :FINALIZE_INSTALL
 )
 if exist "%APP%" (
@@ -245,6 +251,7 @@ for %%K in (
     "runtime\python-ocr\python.exe"
     "config\project\local_llm_ctl.py"
     "config\project\local_llm_supervisor.py"
+    "config\project\tree_fingerprint.ps1"
     "ragflow\api\ragflow_server.py"
     "services\mysql\bin\mysqld.exe"
     "services\elasticsearch\bin\elasticsearch.bat"
@@ -256,6 +263,11 @@ for %%K in (
     echo [ERROR] Extracted payload is missing app\%%~K
     goto :EXTRACT_FAILED
 )
+
+call :SEAL_STAGED_IMMUTABLE_TREES
+if errorlevel 1 goto :EXTRACT_FAILED
+call :OVERLAY_CONTROL_HELPER "%INSTALL_STAGE%\app"
+if errorlevel 1 goto :EXTRACT_FAILED
 
 echo [STEP] Atomically publish the installed app directory
 move "%INSTALL_STAGE%\app" "%APP%" >nul 2>&1
@@ -353,6 +365,96 @@ for %%I in ("%~1") do set "REGULAR_FILE_ATTRIBUTES=%%~aI"
 if not defined REGULAR_FILE_ATTRIBUTES (endlocal & exit /b 1)
 if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d" (endlocal & exit /b 1)
 if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%" (endlocal & exit /b 1)
+endlocal & exit /b 0
+
+:SEAL_STAGED_IMMUTABLE_TREES
+echo [STEP] Seal extracted immutable component trees
+for %%D in (
+    "tools\7zip"
+    "cache\paddlex\official_models\PP-DocLayout-L"
+    "cache\paddlex\official_models\PP-DocBlockLayout"
+    "cache\paddlex\official_models\PP-OCRv6_medium_det"
+    "cache\paddlex\official_models\eslav_PP-OCRv5_mobile_rec"
+    "cache\paddlex\official_models\SLANet_plus"
+    "services\ocr\font"
+    "services\mysql"
+    "services\elasticsearch"
+    "services\silo"
+    "services\valkey"
+    "services\caddy"
+    "runtime\llama"
+) do (
+    call :SEAL_STAGED_TREE "%INSTALL_STAGE%\app\%%~D"
+    if errorlevel 1 exit /b 1
+)
+echo [OK] Extracted immutable component seals are current.
+exit /b 0
+
+:SEAL_STAGED_TREE
+setlocal DisableDelayedExpansion
+set "TREE_ROOT=%~1"
+set "TREE_MARKER=%~1\.local-llm-artifact.txt"
+set "TREE_OUTPUT=%INSTALL_STAGE%\tree-seal-%RANDOM%-%RANDOM%.txt"
+set "TREE_ERROR_OUTPUT=%TREE_OUTPUT%.err"
+set "TREE_MARKER_TEMP=%~1\.local-llm-artifact.txt.tmp-%RANDOM%-%RANDOM%"
+set "TREE_SHA256_VALUE="
+set "TREE_FILE_COUNT_VALUE="
+if not exist "%TREE_ROOT%\." (
+    echo [ERROR] Cannot seal missing staged tree: "%TREE_ROOT%"
+    endlocal & exit /b 1
+)
+if not exist "%TREE_MARKER%" (
+    echo [ERROR] Staged artifact marker is missing: "%TREE_MARKER%"
+    endlocal & exit /b 1
+)
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_STAGE%\app\config\project\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel ".local-llm-artifact.txt" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
+if errorlevel 1 goto :SEAL_STAGED_TREE_FAILED
+for /f "usebackq tokens=1,* delims==" %%A in ("%TREE_OUTPUT%") do if /i "%%A"=="TREE_SHA256" set "TREE_SHA256_VALUE=%%B"
+for /f "usebackq tokens=1,* delims==" %%A in ("%TREE_OUTPUT%") do if /i "%%A"=="TREE_FILE_COUNT" set "TREE_FILE_COUNT_VALUE=%%B"
+if not defined TREE_SHA256_VALUE goto :SEAL_STAGED_TREE_FAILED
+if not defined TREE_FILE_COUNT_VALUE goto :SEAL_STAGED_TREE_FAILED
+findstr /v /b /i /c:"tree_sha256=" /c:"tree_file_count=" "%TREE_MARKER%" >"%TREE_MARKER_TEMP%"
+if errorlevel 1 goto :SEAL_STAGED_TREE_FAILED
+>>"%TREE_MARKER_TEMP%" echo tree_sha256=%TREE_SHA256_VALUE%
+>>"%TREE_MARKER_TEMP%" echo tree_file_count=%TREE_FILE_COUNT_VALUE%
+move /y "%TREE_MARKER_TEMP%" "%TREE_MARKER%" >nul 2>&1
+if errorlevel 1 goto :SEAL_STAGED_TREE_FAILED
+if exist "%TREE_OUTPUT%" del /f /q "%TREE_OUTPUT%" >nul 2>&1
+if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1
+endlocal & exit /b 0
+
+:SEAL_STAGED_TREE_FAILED
+echo [ERROR] Could not seal staged tree: "%TREE_ROOT%"
+if exist "%TREE_ERROR_OUTPUT%" type "%TREE_ERROR_OUTPUT%"
+if exist "%TREE_OUTPUT%" del /f /q "%TREE_OUTPUT%" >nul 2>&1
+if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1
+if exist "%TREE_MARKER_TEMP%" del /f /q "%TREE_MARKER_TEMP%" >nul 2>&1
+endlocal & exit /b 1
+
+:OVERLAY_CONTROL_HELPER
+setlocal DisableDelayedExpansion
+set "CONTROL_HELPER="
+if exist "%ROOT%\local_llm_ctl.py" set "CONTROL_HELPER=%ROOT%\local_llm_ctl.py"
+if not defined CONTROL_HELPER if exist "%ROOT%\_src\prepared\local_llm_ctl.py" set "CONTROL_HELPER=%ROOT%\_src\prepared\local_llm_ctl.py"
+if not defined CONTROL_HELPER (
+    endlocal & exit /b 0
+)
+call :IS_REGULAR_FILE "%CONTROL_HELPER%"
+if errorlevel 1 (
+    echo [ERROR] Offline control helper is not a regular file: "%CONTROL_HELPER%"
+    endlocal & exit /b 1
+)
+copy /y "%CONTROL_HELPER%" "%~1\config\project\local_llm_ctl.py" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not apply the current offline control helper.
+    endlocal & exit /b 1
+)
+fc /b "%CONTROL_HELPER%" "%~1\config\project\local_llm_ctl.py" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] The copied offline control helper did not verify.
+    endlocal & exit /b 1
+)
+echo [INFO] Applied current offline control helper: "%CONTROL_HELPER%"
 endlocal & exit /b 0
 
 :SET_PORTABLE_ENV

@@ -33,7 +33,7 @@ BAT печатает фиксированный URL и ожидаемый пут
 1.PREPARE-ONLINE.bat gpu-test
 ```
 
-Результат появится в `_src\prepared`. В набор входят девять архивов, offline launcher `LOCAL-LLM.bat`, README, bootstrap `7zr.exe`, audit и `prepared.ok`.
+Результат появится в `_src\prepared`. В набор входят девять архивов, offline launcher `LOCAL-LLM.bat`, обновляемый control helper `local_llm_ctl.py`, README, bootstrap `7zr.exe`, audit и `prepared.ok`.
 
 ### 2. Перенос на компьютер без интернета
 
@@ -42,6 +42,7 @@ BAT печатает фиксированный URL и ожидаемый пут
 ```text
 <каталог с LOCAL-LLM.bat>\
   LOCAL-LLM.bat
+  local_llm_ctl.py
   00-bootstrap-tools.7z ... 50-llama-vulkan-runtime.7z
 ```
 
@@ -67,6 +68,7 @@ LOCAL-LLM.bat install
 - находит архивы рядом с BAT или в `_src\prepared`;
 - проверяет наличие всех обязательных файлов набора до запуска `7zr.exe`;
 - тестирует каждый архив и распаковывает всё в новый staging-каталог;
+- после распаковки создаёт актуальные seals immutable-деревьев, включая уже использованный staged `7za.exe`;
 - публикует `app` одним `move`, не смешивая частичную установку с рабочей;
 - создаёт уникальные локальные пароли и конфигурацию всех путей/портов;
 - проверяет оба Python runtime, RAGFlow assets, OCR API contract и GraphRAG;
@@ -74,7 +76,7 @@ LOCAL-LLM.bat install
 - инициализирует и защищает portable MySQL;
 - пишет `app\data\control\install.ok.json` только после полного успеха.
 
-GPU-проверка может занять несколько минут. Если она не прошла, файлы и логи сохраняются, но запуск блокируется; после исправления причины достаточно повторить `install`.
+GPU-проверка может занять несколько минут. Если установка прервалась после публикации `app`, повторный `install` не распаковывает архивы заново. Успешные runtime/assets, GPU E2E и MySQL этапы записываются в `app\data\control\install-progress.json` и пропускаются при безопасном продолжении с тем же payload, путём и конфигурацией. Полная сверка tree seals всё равно повторяется перед использованием progress-маркера. После успешной записи `install.ok.json` временный progress-маркер удаляется.
 
 После установки доступны три профиля:
 

@@ -148,6 +148,33 @@ class LauncherContractTest(unittest.TestCase):
         )
         self.assertIn(redirect, portable_env)
 
+    def test_offline_launcher_reseals_fresh_immutable_trees_before_publish(
+        self,
+    ) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        seal_call = "call :SEAL_STAGED_IMMUTABLE_TREES"
+        publish = "echo [STEP] Atomically publish the installed app directory"
+
+        self.assertIn(seal_call, launcher)
+        self.assertLess(launcher.index(seal_call), launcher.index(publish))
+        self.assertIn(":SEAL_STAGED_TREE", launcher)
+        self.assertIn('tree_fingerprint.ps1" -Root "%TREE_ROOT%"', launcher)
+        self.assertIn('echo tree_sha256=%TREE_SHA256_VALUE%', launcher)
+        self.assertIn('echo tree_file_count=%TREE_FILE_COUNT_VALUE%', launcher)
+
+    def test_current_controller_can_overlay_legacy_archives(self) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        prepare = PREPARE.read_text(encoding="utf-8")
+
+        self.assertIn(":OVERLAY_CONTROL_HELPER", launcher)
+        self.assertIn('"%ROOT%\\local_llm_ctl.py"', launcher)
+        self.assertIn(
+            'copy /y "%PROJECT%\\local_llm_ctl.py" '
+            '"%PACKAGE_STAGE%\\local_llm_ctl.py"',
+            prepare,
+        )
+        self.assertIn("'local_llm_ctl.py'", prepare)
+
     def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'
@@ -212,6 +239,25 @@ class LauncherContractTest(unittest.TestCase):
             ":PortableBinaryKeysPresent",
         ):
             self.assertIn(required, prepare)
+
+    def test_online_prepare_seals_and_rechecks_immutable_payloads(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        seal = "call :SealImmutableArtifactTrees"
+        package = "call :PackagePreparedOutput"
+        verify = "call :VerifyRehydratedImmutableSeals"
+        payload_verify = "call :VerifyRehydratedPayload"
+
+        self.assertIn(seal, prepare)
+        self.assertLess(prepare.index(seal), prepare.index(package))
+        self.assertGreaterEqual(prepare.count(verify), 2)
+        self.assertLess(prepare.index(verify), prepare.index(payload_verify))
+        self.assertGreater(prepare.rindex(verify), prepare.index(payload_verify))
+        self.assertIn(
+            'call :WriteArtifactMarker "%ARTIFACT_MARKER%" '
+            '"%ARTIFACT_NAME%" "%ARTIFACT_TREE_SHA256%" '
+            '"%ARTIFACT_TREE_FILE_COUNT%"',
+            prepare,
+        )
 
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (

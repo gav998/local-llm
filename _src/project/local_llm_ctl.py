@@ -193,6 +193,8 @@ def validate_tree_seal(
         raise ControlError(f"Obsolete or unexpected tree fingerprint: {marker}")
     expected_hash = values.get("tree_sha256", "")
     expected_count = values.get("tree_file_count", "")
+    if not expected_hash or not expected_count:
+        raise ControlError(f"Tree seal is incomplete: {marker}")
     actual_hash, actual_count = tree_fingerprint(root, exclusions)
     if actual_hash != expected_hash or str(actual_count) != expected_count:
         raise ControlError(f"Installed tree no longer matches its seal: {root}")
@@ -236,6 +238,7 @@ class Controller:
         self.ini_path = self.config_dir / "local-llm.ini"
         self.secrets_path = self.config_dir / "secrets.json"
         self.install_marker = self.control_dir / "install.ok.json"
+        self.install_progress_marker = self.control_dir / "install-progress.json"
         self.supervisor = self.app / "config" / "project" / "local_llm_supervisor.py"
         self.rag_python = self.app / "runtime" / "python-rag" / "python.exe"
         if os.name != "nt" and not self.rag_python.exists():
@@ -1420,8 +1423,13 @@ http://127.0.0.1:{self.port("web")} {{
             self.stop_service("mysql", quiet=True)
 
     def verify_static(self, gpu: bool) -> None:
-        print("[STEP] Verify installed runtimes and offline assets")
         self.verify_tree_seals()
+        self.verify_runtime_assets()
+        if gpu:
+            self.verify_gpu()
+
+    def verify_runtime_assets(self) -> None:
+        print("[STEP] Verify installed runtimes and offline assets")
         env = self.portable_environment()
         checks = [
             (
@@ -1492,9 +1500,85 @@ http://127.0.0.1:{self.port("web")} {{
                     raise ControlError(
                         f"Offline runtime verification failed; see {log}"
                     )
-        if gpu:
-            self.verify_gpu()
         print("[OK] Installed payload verification passed")
+
+    def install_resume_identity(self) -> str:
+        """Bind resumable install steps to validated payload and config inputs."""
+        relative_inputs = (
+            "config/python-rag-tree.ok",
+            "config/python-ocr-tree.ok",
+            "config/ragflow-tree.ok",
+            "config/ragflow-web.ok",
+            "tools/7zip/.local-llm-artifact.txt",
+            "cache/paddlex/official_models/PP-DocLayout-L/.local-llm-artifact.txt",
+            "cache/paddlex/official_models/PP-DocBlockLayout/.local-llm-artifact.txt",
+            "cache/paddlex/official_models/PP-OCRv6_medium_det/.local-llm-artifact.txt",
+            "cache/paddlex/official_models/eslav_PP-OCRv5_mobile_rec/.local-llm-artifact.txt",
+            "cache/paddlex/official_models/SLANet_plus/.local-llm-artifact.txt",
+            "services/ocr/font/.local-llm-artifact.txt",
+            "services/mysql/.local-llm-artifact.txt",
+            "services/elasticsearch/.local-llm-artifact.txt",
+            "services/silo/.local-llm-artifact.txt",
+            "services/valkey/.local-llm-artifact.txt",
+            "services/caddy/.local-llm-artifact.txt",
+            "runtime/llama/.local-llm-artifact.txt",
+            "config/project/local_llm_ctl.py",
+            "config/project/prepare_ragflow_assets.py",
+            "config/project/verify_ragflow_runtime.py",
+            "config/pp-structure-v3-8gb.yaml",
+            "services/ocr/ocr_job_gateway.py",
+            "services/ocr/ocr_ragflow_e2e.py",
+            "services/ocr/test_ocr_job_gateway_contract.py",
+            "config/runtime/local-llm.ini",
+            "config/runtime/secrets.json",
+        )
+        digest = hashlib.sha256()
+        digest.update(f"control={CONTROL_VERSION}\nroot={self.root}\n".encode("utf-8"))
+        for relative in relative_inputs:
+            path = self.app / Path(relative)
+            if not path.is_file():
+                raise ControlError(f"Install resume input is missing: {path}")
+            file_digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    file_digest.update(chunk)
+            digest.update(
+                f"{relative}\0{path.stat().st_size}\0{file_digest.hexdigest()}\n".encode(
+                    "utf-8"
+                )
+            )
+        return digest.hexdigest()
+
+    def load_install_progress(self, identity: str) -> dict[str, Any]:
+        if not self.install_progress_marker.is_file():
+            return {}
+        try:
+            progress = load_json(self.install_progress_marker)
+        except ControlError:
+            return {}
+        if (
+            progress.get("schema") != 1
+            or progress.get("control_version") != CONTROL_VERSION
+            or progress.get("root") != str(self.root)
+            or progress.get("resume_identity") != identity
+        ):
+            return {}
+        return progress
+
+    def save_install_progress(
+        self, identity: str, progress: dict[str, Any], completed_step: str
+    ) -> None:
+        progress.update(
+            {
+                "schema": 1,
+                "control_version": CONTROL_VERSION,
+                "root": str(self.root),
+                "resume_identity": identity,
+                completed_step: "passed",
+                "updated_at": time.time(),
+            }
+        )
+        atomic_json(self.install_progress_marker, progress)
 
     def verify_tree_seals(self) -> None:
         print(
@@ -1600,8 +1684,35 @@ http://127.0.0.1:{self.port("web")} {{
                 "Stop the stack before install verification; running: "
                 + ", ".join(running)
             )
-        self.verify_static(gpu=True)
-        self.initialize_mysql()
+        # The complete seal scan is intentionally repeated on every retry. It
+        # is what makes the shorter phase markers safe to reuse after a failed
+        # GPU or database step.
+        self.verify_tree_seals()
+        resume_identity = self.install_resume_identity()
+        progress = self.load_install_progress(resume_identity)
+
+        if progress.get("runtime_assets") == "passed":
+            print("[SKIP] Installed runtime and asset checks already passed")
+        else:
+            self.verify_runtime_assets()
+            self.save_install_progress(resume_identity, progress, "runtime_assets")
+
+        if progress.get("gpu_e2e") == "passed":
+            print("[SKIP] Strict GPU E2E already passed for this payload and config")
+        else:
+            self.verify_gpu()
+            self.save_install_progress(resume_identity, progress, "gpu_e2e")
+
+        mysql_ready = (
+            (self.data_dir / "mysql" / "mysql").is_dir()
+            and (self.data_dir / "mysql" / "rag_flow").is_dir()
+        )
+        if progress.get("mysql") == "passed" and mysql_ready:
+            print("[SKIP] Portable MySQL was already initialized and secured")
+        else:
+            self.initialize_mysql()
+            self.save_install_progress(resume_identity, progress, "mysql")
+        self.install_progress_marker.unlink(missing_ok=True)
         atomic_json(
             self.install_marker,
             {
