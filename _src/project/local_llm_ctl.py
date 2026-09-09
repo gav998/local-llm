@@ -856,6 +856,11 @@ http://127.0.0.1:{self.port("web")} {{
 
         rag_env = dict(env)
         ragflow_dir = self.app / "ragflow"
+        # RAGFlow's script entrypoints import top-level packages such as `api`
+        # and `rag`.  Python otherwise puts only the entrypoint's own directory
+        # (for example ragflow/api) on sys.path, not the RAGFlow project root.
+        # Upstream launchers likewise export the project root as PYTHONPATH.
+        rag_env["PYTHONPATH"] = str(ragflow_dir)
         ocr_env = dict(env)
         llama = self.app / "runtime" / "llama" / "llama-server.exe"
         embedding = self.model_path("embedding")

@@ -115,6 +115,15 @@ class ControllerConfigTest(unittest.TestCase):
             ingestion["ocr"].environment["PADDLE_PDX_DISABLE_DEVICE_FALLBACK"], "1"
         )
         self.assertEqual(ingestion["ragflow-api"].environment["HF_HUB_OFFLINE"], "1")
+        expected_ragflow_root = str(controller.app / "ragflow")
+        self.assertEqual(
+            ingestion["ragflow-api"].environment["PYTHONPATH"],
+            expected_ragflow_root,
+        )
+        self.assertEqual(
+            ingestion["task-executor"].environment["PYTHONPATH"],
+            expected_ragflow_root,
+        )
 
     def test_elasticsearch_runtime_files_are_kept_outside_vendor_tree(self) -> None:
         controller = Controller(self.root)
