@@ -215,15 +215,16 @@ if not exist "%INSTALL_STAGE%\." (
     goto :SCRIPT_END
 )
 
-echo [STEP] Extract bootstrap tools into a private staging directory
-"%BUNDLE_DIR%\7zr.exe" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\00-bootstrap-tools.7z" >"%WORK%\offline-install-extract.log" 2>&1
+echo [STEP] Test and extract bootstrap tools into a private staging directory
+"%BUNDLE_DIR%\7zr.exe" t "%BUNDLE_DIR%\00-bootstrap-tools.7z" >"%WORK%\offline-install-extract.log" 2>&1
+if errorlevel 1 goto :EXTRACT_FAILED
+"%BUNDLE_DIR%\7zr.exe" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\00-bootstrap-tools.7z" >>"%WORK%\offline-install-extract.log" 2>&1
 if errorlevel 1 goto :EXTRACT_FAILED
 set "SEVEN_ZIP=%INSTALL_STAGE%\app\tools\7zip\x64\7za.exe"
 if not exist "%SEVEN_ZIP%" goto :EXTRACT_FAILED
 
-echo [STEP] Test and extract all nine payload archives
+echo [STEP] Test and extract the remaining eight payload archives
 for %%B in (
-    "00-bootstrap-tools.7z"
     "10-python-rag-runtime.7z"
     "20-python-ocr-gpu-runtime.7z"
     "21-paddle-models.7z"

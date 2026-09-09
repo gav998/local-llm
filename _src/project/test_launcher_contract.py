@@ -104,6 +104,28 @@ class LauncherContractTest(unittest.TestCase):
             launcher,
         )
 
+    def test_bootstrap_extractor_is_not_overwritten_while_running(self) -> None:
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        bootstrap_test = (
+            '"%BUNDLE_DIR%\\7zr.exe" t '
+            '"%BUNDLE_DIR%\\00-bootstrap-tools.7z"'
+        )
+        bootstrap_extract = (
+            '"%BUNDLE_DIR%\\7zr.exe" x -y "-o%INSTALL_STAGE%" '
+            '"%BUNDLE_DIR%\\00-bootstrap-tools.7z"'
+        )
+        remaining_start = launcher.index(
+            "echo [STEP] Test and extract the remaining eight payload archives"
+        )
+        remaining_end = launcher.index("\n\nfor %%K in (", remaining_start)
+        remaining_loop = launcher[remaining_start:remaining_end]
+
+        self.assertIn(bootstrap_test, launcher)
+        self.assertIn(bootstrap_extract, launcher)
+        self.assertLess(launcher.index(bootstrap_test), launcher.index(bootstrap_extract))
+        self.assertNotIn("00-bootstrap-tools.7z", remaining_loop)
+        self.assertEqual(remaining_loop.count(".7z\""), 8)
+
     def test_manual_artifact_destination_is_accepted_before_stale_replacement(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         accept = 'Accepted manually prepared destination for !ART_NAME!: !ART_KEY!'
