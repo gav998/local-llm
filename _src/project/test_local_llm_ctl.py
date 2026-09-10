@@ -463,6 +463,39 @@ class ControllerConfigTest(unittest.TestCase):
         self.assertTrue(controller.install_marker.is_file())
         self.assertFalse(controller.install_progress_marker.exists())
 
+    def test_notest_finalize_skips_every_install_check_and_requires_flag(self) -> None:
+        controller = Controller(self.root)
+        (self.root / "notest").touch()
+
+        with (
+            patch.object(Controller, "ensure_config") as ensure_config,
+            patch.object(Controller, "service_running") as service_running,
+            patch.object(Controller, "verify_tree_seals") as verify_seals,
+            patch.object(Controller, "verify_runtime_assets") as verify_runtime,
+            patch.object(Controller, "verify_gpu") as verify_gpu,
+            patch.object(Controller, "initialize_mysql") as initialize_mysql,
+        ):
+            controller.finalize_install(no_test=True)
+
+        ensure_config.assert_not_called()
+        service_running.assert_not_called()
+        verify_seals.assert_not_called()
+        verify_runtime.assert_not_called()
+        verify_gpu.assert_not_called()
+        initialize_mysql.assert_not_called()
+        marker = controller.install_marker.read_text(encoding="utf-8")
+        self.assertIn('"validation_mode": "notest"', marker)
+        self.assertIn('"gpu_e2e": "skipped"', marker)
+        controller.require_installed()
+
+        (self.root / "notest").unlink()
+        with self.assertRaisesRegex(ControlError, "GPU E2E gate"):
+            controller.require_installed()
+
+    def test_notest_finalize_refuses_missing_flag(self) -> None:
+        with self.assertRaisesRegex(ControlError, "requires a notest file"):
+            Controller(self.root).finalize_install(no_test=True)
+
 
 if __name__ == "__main__":
     unittest.main()

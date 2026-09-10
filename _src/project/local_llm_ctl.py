@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-CONTROL_VERSION = "2026.09.09.1"
+CONTROL_VERSION = "2026.09.10.1"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -260,6 +260,11 @@ class Controller:
             self.rag_python = Path(sys.executable)
         self.config: configparser.ConfigParser | None = None
         self.secret_values: dict[str, str] = {}
+
+    def notest_enabled(self) -> bool:
+        return (self.root / "notest").is_file() or (
+            self.root / "_src" / "prepared" / "notest"
+        ).is_file()
 
     @contextmanager
     def operation_lock(self):
@@ -1441,13 +1446,17 @@ http://127.0.0.1:{self.port("web")} {{
                 "Installation is not finalized. Run LOCAL-LLM.bat install."
             )
         marker = load_json(self.install_marker)
-        if (
-            marker.get("control_version") != CONTROL_VERSION
-            or marker.get("gpu_e2e") != "passed"
-        ):
+        if marker.get("control_version") != CONTROL_VERSION:
             raise ControlError(
-                "Installation marker is obsolete or lacks the required GPU E2E gate; run install again."
+                "Installation marker is obsolete; run install again."
             )
+        if marker.get("gpu_e2e") == "passed":
+            return
+        if marker.get("validation_mode") == "notest" and self.notest_enabled():
+            return
+        raise ControlError(
+            "Installation marker is obsolete or lacks the required GPU E2E gate; run install again."
+        )
 
     def installation_ready(self) -> bool:
         try:
@@ -1798,7 +1807,29 @@ http://127.0.0.1:{self.port("web")} {{
             raise ControlError(f"Strict GPU E2E failed; see {log}")
         print("[OK] Strict GPU E2E passed")
 
-    def finalize_install(self) -> None:
+    def finalize_install(self, no_test: bool = False) -> None:
+        if no_test:
+            if not self.notest_enabled():
+                raise ControlError(
+                    "--no-test requires a notest file beside the launcher"
+                )
+            self.control_dir.mkdir(parents=True, exist_ok=True)
+            self.install_progress_marker.unlink(missing_ok=True)
+            atomic_json(
+                self.install_marker,
+                {
+                    "schema": 1,
+                    "control_version": CONTROL_VERSION,
+                    "installed_at": time.time(),
+                    "root_at_install": str(self.root),
+                    "gpu_e2e": "skipped",
+                    "validation_mode": "notest",
+                },
+            )
+            print("[OK] Offline archives extracted; install tests were skipped")
+            print("[WARN] The payload will only be exercised when a profile is started")
+            return
+
         self.ensure_config()
         running = [name for name in SERVICE_ORDER if self.service_running(name)]
         if running:
@@ -1850,6 +1881,13 @@ http://127.0.0.1:{self.port("web")} {{
     def start(self, mode: str) -> None:
         self.ensure_config()
         self.require_installed()
+        marker = load_json(self.install_marker)
+        if (
+            marker.get("validation_mode") == "notest"
+            and not (self.data_dir / "mysql" / "rag_flow").is_dir()
+        ):
+            print("[INFO] First notest launch: initialize the portable database now")
+            self.initialize_mysql()
         if mode not in {"core", "ingestion", "chat"}:
             raise ControlError("Mode must be core, ingestion or chat")
         services = self.services(mode)
@@ -2010,7 +2048,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     version = sub.add_parser("version")
     version.add_argument("--expect")
-    sub.add_parser("install-finalize")
+    install_finalize = sub.add_parser("install-finalize")
+    install_finalize.add_argument("--no-test", action="store_true")
     start = sub.add_parser("start")
     start.add_argument(
         "mode", nargs="?", default="core", choices=("core", "ingestion", "chat")
@@ -2040,7 +2079,7 @@ def main() -> int:
             print(CONTROL_VERSION)
         elif args.command == "install-finalize":
             with controller.operation_lock():
-                controller.finalize_install()
+                controller.finalize_install(no_test=args.no_test)
         elif args.command == "start":
             with controller.operation_lock():
                 controller.start(args.mode)

@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.09.1"
+set "PROJECT_VERSION=2026.09.10.1"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -78,6 +78,19 @@ echo.
 
 call :AcquireLock
 if errorlevel 1 exit /b 1
+
+if defined NOTEST_MODE (
+    echo [WARN] notest is present: packaging the current app tree without tests,
+    echo [WARN] cleanup, probes, audits, tree seals, archive tests or rehydration.
+    set "LOCAL_LLM_LIVE_LOGS=0"
+    call :PackagePreparedOutput
+    if errorlevel 1 exit /b 1
+    echo.
+    echo [OK] NOTEST PACKAGING COMPLETED
+    echo [WARN] This prepared set is intentionally unverified.
+    echo Offline bundles: %PREPARED%
+    exit /b 0
+)
 
 call :CleanupInterruptedRehydrateTrees
 if errorlevel 1 exit /b 1
@@ -173,6 +186,8 @@ REM ============================================================================
 
 :Init
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
+set "NOTEST_MODE="
+if exist "%ROOT%\notest" if not exist "%ROOT%\notest\." set "NOTEST_MODE=1"
 set "APP=%ROOT%\app"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%POWERSHELL_EXE%" (
@@ -1989,16 +2004,23 @@ if errorlevel 1 exit /b 1
 
 copy /y "%SEVEN_ZIP_BOOTSTRAP%" "%PACKAGE_STAGE%\7zr.exe" >nul 2>&1
 if errorlevel 1 exit /b 1
-fc /b "%SEVEN_ZIP_BOOTSTRAP%" "%PACKAGE_STAGE%\7zr.exe" >nul 2>&1
-if errorlevel 1 exit /b 1
+if not defined NOTEST_MODE (
+    fc /b "%SEVEN_ZIP_BOOTSTRAP%" "%PACKAGE_STAGE%\7zr.exe" >nul 2>&1
+    if errorlevel 1 exit /b 1
+)
 copy /y "%ROOT%\LOCAL-LLM.bat" "%PACKAGE_STAGE%\LOCAL-LLM.bat" >nul 2>&1
 if errorlevel 1 exit /b 1
 copy /y "%ROOT%\README.md" "%PACKAGE_STAGE%\README.md" >nul 2>&1
 if errorlevel 1 exit /b 1
 copy /y "%PROJECT%\local_llm_ctl.py" "%PACKAGE_STAGE%\local_llm_ctl.py" >nul 2>&1
 if errorlevel 1 exit /b 1
-fc /b "%PROJECT%\local_llm_ctl.py" "%PACKAGE_STAGE%\local_llm_ctl.py" >nul 2>&1
-if errorlevel 1 exit /b 1
+if defined NOTEST_MODE (
+    copy /y "%ROOT%\notest" "%PACKAGE_STAGE%\notest" >nul 2>&1
+    if errorlevel 1 exit /b 1
+) else (
+    fc /b "%PROJECT%\local_llm_ctl.py" "%PACKAGE_STAGE%\local_llm_ctl.py" >nul 2>&1
+    if errorlevel 1 exit /b 1
+)
 
 call :WriteBundleList "00-bootstrap-tools.lst" "app\tools\7zip-bootstrap"
 if errorlevel 1 exit /b 1
@@ -2051,14 +2073,18 @@ if errorlevel 1 exit /b 1
 call :MakeBundle "50-llama-vulkan-runtime.7z" "50-llama-vulkan-runtime.lst"
 if errorlevel 1 exit /b 1
 
-call :VerifyPreparedStage
-if errorlevel 1 exit /b 1
+if not defined NOTEST_MODE (
+    call :VerifyPreparedStage
+    if errorlevel 1 exit /b 1
+)
 call :WriteBuildRecords
 if errorlevel 1 exit /b 1
-call :ValidatePreparedSet "%PACKAGE_STAGE%"
-if errorlevel 1 (
-    echo [ERROR] The unpublished prepared set failed its final completeness validation.
-    exit /b 1
+if not defined NOTEST_MODE (
+    call :ValidatePreparedSet "%PACKAGE_STAGE%"
+    if errorlevel 1 (
+        echo [ERROR] The unpublished prepared set failed its final completeness validation.
+        exit /b 1
+    )
 )
 call :PromotePreparedOutput
 if errorlevel 1 exit /b 1
@@ -2078,6 +2104,7 @@ exit /b 0
 set "BUNDLE_OUT=%BUNDLE_TARGET_DIR%\%~1"
 set "BUNDLE_LIST=%WORK%\%~2"
 set "BUNDLE_LOG=%LOGS%\bundle-%~1.log"
+if defined NOTEST_MODE set "BUNDLE_LOG=%LOGS%\bundle-%~1-notest-%RANDOM%-%RANDOM%.log"
 call :BeginStepLog "%BUNDLE_LOG%" "local_llm bundle %~1 log"
 if errorlevel 1 exit /b 1
 pushd "%ROOT%" >nul 2>&1
@@ -2085,7 +2112,7 @@ if errorlevel 1 (
     echo [ERROR] Could not enter the project root while creating %~1.
     exit /b 1
 )
-"%SEVEN_ZIP%" a -t7z -mx=7 -ms=on -mmt=on "%BUNDLE_OUT%" @"%BUNDLE_LIST%" >>"%BUNDLE_LOG%" 2>&1
+"%SEVEN_ZIP%" a -t7z -mx=7 -ms=on -mmt=on "-xr!app\config\runtime\*" "-xr!app\ragflow\logs\*" "-x!app\ragflow\conf\local.service_conf.yaml" "%BUNDLE_OUT%" @"%BUNDLE_LIST%" >>"%BUNDLE_LOG%" 2>&1
 set "BUNDLE_RC=%ERRORLEVEL%"
 popd >nul
 if not "%BUNDLE_RC%"=="0" (
@@ -2094,11 +2121,13 @@ if not "%BUNDLE_RC%"=="0" (
     exit /b 1
 )
 if not exist "%BUNDLE_OUT%" exit /b 1
-"%SEVEN_ZIP%" t "%BUNDLE_OUT%" >>"%BUNDLE_LOG%" 2>&1
-if errorlevel 1 (
-    echo [ERROR] Integrity test failed for %~1. See %BUNDLE_LOG%
-    call :PrintLogTail "%BUNDLE_LOG%"
-    exit /b 1
+if not defined NOTEST_MODE (
+    "%SEVEN_ZIP%" t "%BUNDLE_OUT%" >>"%BUNDLE_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Integrity test failed for %~1. See %BUNDLE_LOG%
+        call :PrintLogTail "%BUNDLE_LOG%"
+        exit /b 1
+    )
 )
 echo [OK] Created %~1
 exit /b 0
@@ -2403,6 +2432,7 @@ endlocal & exit /b 1
     echo llama_cpp=%LLAMA_BUILD%-vulkan
     echo ocr_profile=PP-DocLayout-L-PP-OCRv6-medium-det-eslav-PP-OCRv5-rec-SLANet-plus-table-gpu-only
     echo target_gpu_e2e=%GPU_VALIDATION%
+    if defined NOTEST_MODE echo validation=skipped-notest
     echo graphrag=enabled
     echo embeddings=external-llama-cpp-server
 )
@@ -2415,17 +2445,24 @@ exit /b 0
 
 :PromotePreparedOutput
 if exist "%PREPARED_BACKUP%" (
-    echo [ERROR] Stale prepared backup exists: %PREPARED_BACKUP%
-    echo [INFO] Rerun the script so startup recovery can resolve it.
-    exit /b 1
+    if defined NOTEST_MODE (
+        call :MoveNotestBackupAside "%PREPARED_BACKUP%"
+        if errorlevel 1 exit /b 1
+    ) else (
+        echo [ERROR] Stale prepared backup exists: %PREPARED_BACKUP%
+        echo [INFO] Rerun the script so startup recovery can resolve it.
+        exit /b 1
+    )
 )
 
 if exist "%PREPARED%" (
-    call :ValidatePreparedSet "%PREPARED%"
-    if errorlevel 1 (
-        echo [ERROR] Existing prepared output changed after startup validation.
-        echo [ERROR] It was preserved; refusing to replace or delete it.
-        exit /b 1
+    if not defined NOTEST_MODE (
+        call :ValidatePreparedSet "%PREPARED%"
+        if errorlevel 1 (
+            echo [ERROR] Existing prepared output changed after startup validation.
+            echo [ERROR] It was preserved; refusing to replace or delete it.
+            exit /b 1
+        )
     )
     move "%PREPARED%" "%PREPARED_BACKUP%" >nul 2>&1
     if errorlevel 1 (
@@ -2448,14 +2485,41 @@ if errorlevel 1 (
 )
 set "PACKAGE_STAGE="
 
-if exist "%PREPARED_BACKUP%" rmdir /s /q "%PREPARED_BACKUP%" >nul 2>&1
 if exist "%PREPARED_BACKUP%" (
-    echo [ERROR] New output is valid, but the previous backup could not be removed:
-    echo [ERROR]   %PREPARED_BACKUP%
-    exit /b 1
+    if defined NOTEST_MODE (
+        call :MoveNotestBackupAside "%PREPARED_BACKUP%"
+        if errorlevel 1 exit /b 1
+    ) else (
+        rmdir /s /q "%PREPARED_BACKUP%" >nul 2>&1
+        if exist "%PREPARED_BACKUP%" (
+            echo [ERROR] New output is valid, but the previous backup could not be removed:
+            echo [ERROR]   %PREPARED_BACKUP%
+            exit /b 1
+        )
+    )
 )
-echo [OK] Atomically replaced _src\prepared with the verified bundle set.
+if defined NOTEST_MODE (
+    echo [OK] Atomically replaced _src\prepared with the unverified notest bundle set.
+) else (
+    echo [OK] Atomically replaced _src\prepared with the verified bundle set.
+)
 exit /b 0
+
+:MoveNotestBackupAside
+setlocal DisableDelayedExpansion
+set "NOTEST_BACKUP_TARGET=%WORK%\prepared-previous-notest-%RANDOM%-%RANDOM%"
+if exist "%NOTEST_BACKUP_TARGET%" (
+    echo [ERROR] Random preserved-backup path already exists: %NOTEST_BACKUP_TARGET%
+    endlocal & exit /b 1
+)
+move "%~1" "%NOTEST_BACKUP_TARGET%" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not move the previous prepared set aside: %~1
+    endlocal & exit /b 1
+)
+echo [WARN] Previous prepared set was preserved without validation or deletion:
+echo [WARN]   %NOTEST_BACKUP_TARGET%
+endlocal & exit /b 0
 
 :FileSha256
 setlocal

@@ -117,14 +117,40 @@ class LauncherContractTest(unittest.TestCase):
         remaining_start = launcher.index(
             "echo [STEP] Test and extract the remaining eight payload archives"
         )
-        remaining_end = launcher.index("\n\nfor %%K in (", remaining_start)
+        remaining_end = launcher.index("\n\nif not defined NOTEST_MODE (", remaining_start)
         remaining_loop = launcher[remaining_start:remaining_end]
+        strict_bootstrap = launcher.index(
+            "echo [STEP] Test and extract bootstrap tools into a private staging directory"
+        )
 
         self.assertIn(bootstrap_test, launcher)
         self.assertIn(bootstrap_extract, launcher)
-        self.assertLess(launcher.index(bootstrap_test), launcher.index(bootstrap_extract))
+        self.assertLess(
+            launcher.index(bootstrap_test, strict_bootstrap),
+            launcher.index(bootstrap_extract, strict_bootstrap),
+        )
         self.assertNotIn("00-bootstrap-tools.7z", remaining_loop)
         self.assertEqual(remaining_loop.count(".7z\""), 8)
+
+    def test_notest_mode_skips_online_and_offline_verification(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+
+        self.assertIn('if exist "%ROOT%\\notest" if not exist', prepare)
+        self.assertIn('copy /y "%ROOT%\\notest" "%PACKAGE_STAGE%\\notest"', prepare)
+        self.assertIn("if not defined NOTEST_MODE (\n    call :VerifyPreparedStage", prepare)
+        self.assertIn('if not defined NOTEST_MODE (\n    "%SEVEN_ZIP%" t', prepare)
+        self.assertIn('"-xr!app\\config\\runtime\\*"', prepare)
+        self.assertIn('"-xr!app\\ragflow\\logs\\*"', prepare)
+        self.assertIn('"-x!app\\ragflow\\conf\\local.service_conf.yaml"', prepare)
+
+        self.assertIn('if exist "%ROOT%\\notest" if not exist', launcher)
+        self.assertIn("call :RUN_CONTROL install-finalize --no-test", launcher)
+        self.assertIn("if not defined NOTEST_MODE (\n    call :CHECK_BUNDLES", launcher)
+        self.assertIn("if not defined NOTEST_MODE (\n        \"%SEVEN_ZIP%\" t", launcher)
+        self.assertIn(
+            'if defined NOTEST_MODE if /i "%~1"=="install-finalize"', launcher
+        )
 
     def test_offline_launcher_redirects_bytecode_before_running_sealed_python(
         self,
@@ -270,7 +296,7 @@ class LauncherContractTest(unittest.TestCase):
         payload_verify = "call :VerifyRehydratedPayload"
 
         self.assertIn(seal, prepare)
-        self.assertLess(prepare.index(seal), prepare.index(package))
+        self.assertLess(prepare.index(seal), prepare.index(package, prepare.index(seal)))
         self.assertGreaterEqual(prepare.count(verify), 2)
         self.assertLess(prepare.index(verify), prepare.index(payload_verify))
         self.assertGreater(prepare.rindex(verify), prepare.index(payload_verify))
@@ -305,7 +331,10 @@ class LauncherContractTest(unittest.TestCase):
         ]
 
         self.assertLess(prepare.index(cleanup_call), prepare.index(mutable_seal))
-        self.assertLess(prepare.index(cleanup_call), prepare.index(package))
+        self.assertLess(
+            prepare.index(cleanup_call),
+            prepare.index(package, prepare.index(cleanup_call)),
+        )
         self.assertIn(
             'call :RemoveTreeChecked "%APP%\\config\\runtime"', cleanup
         )

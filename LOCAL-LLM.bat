@@ -1,11 +1,14 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "CONTROL_VERSION=2026.09.09.1"
+set "CONTROL_VERSION=2026.09.10.1"
 set "SCRIPT_RC=0"
 set "LOCK_HELD="
 set "INSTALL_STAGE="
 
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
+set "NOTEST_MODE="
+if exist "%ROOT%\notest" if not exist "%ROOT%\notest\." set "NOTEST_MODE=1"
+if exist "%ROOT%\_src\prepared\notest" if not exist "%ROOT%\_src\prepared\notest\." set "NOTEST_MODE=1"
 set "APP=%ROOT%\app"
 set "WORK=%ROOT%\_work"
 set "INSTALL_LOCK=%WORK%\offline-install.lock"
@@ -148,6 +151,11 @@ if not exist "%APP%\config\project\local_llm_ctl.py" (
     exit /b 1
 )
 call :SET_PORTABLE_ENV
+if defined NOTEST_MODE if /i "%~1"=="install-finalize" (
+    "%APP%\runtime\python-rag\python.exe" "%APP%\config\project\local_llm_ctl.py" --root "%ROOT%" %*
+    if errorlevel 1 exit /b 1
+    exit /b 0
+)
 "%APP%\runtime\python-rag\python.exe" "%APP%\config\project\local_llm_ctl.py" --root "%ROOT%" version --expect "%CONTROL_VERSION%" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Launcher/controller version mismatch.
@@ -186,7 +194,11 @@ if exist "%APP%\runtime\python-rag\python.exe" (
     )
     echo [INFO] Payload already exists. Regenerating location-specific configuration
     echo [SKIP] Payload was already extracted and atomically published.
-    echo [INFO] Resuming strict install verification.
+    if defined NOTEST_MODE (
+        echo [WARN] notest is present: install verification remains disabled.
+    ) else (
+        echo [INFO] Resuming strict install verification.
+    )
     goto :FINALIZE_INSTALL
 )
 if exist "%APP%" (
@@ -202,10 +214,16 @@ if errorlevel 1 (
     set "SCRIPT_RC=1"
     goto :SCRIPT_END
 )
-call :CHECK_BUNDLES
-if errorlevel 1 (
-    set "SCRIPT_RC=1"
-    goto :SCRIPT_END
+if not defined NOTEST_MODE (
+    call :CHECK_BUNDLES
+    if errorlevel 1 (
+        set "SCRIPT_RC=1"
+        goto :SCRIPT_END
+    )
+)
+if defined NOTEST_MODE (
+    echo [WARN] notest is present: extracting archives without presence checks,
+    echo [WARN] archive tests, payload checks, tree seals or install E2E tests.
 )
 
 set "INSTALL_STAGE=%WORK%\offline-install-%RANDOM%-%RANDOM%"
@@ -221,15 +239,24 @@ if not exist "%INSTALL_STAGE%\." (
     goto :SCRIPT_END
 )
 
-echo [STEP] Test and extract bootstrap tools into a private staging directory
-"%BUNDLE_DIR%\7zr.exe" t "%BUNDLE_DIR%\00-bootstrap-tools.7z" >"%WORK%\offline-install-extract.log" 2>&1
-if errorlevel 1 goto :EXTRACT_FAILED
-"%BUNDLE_DIR%\7zr.exe" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\00-bootstrap-tools.7z" >>"%WORK%\offline-install-extract.log" 2>&1
+if defined NOTEST_MODE (
+    echo [STEP] Extract bootstrap tools into a private staging directory
+    "%BUNDLE_DIR%\7zr.exe" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\00-bootstrap-tools.7z" >"%WORK%\offline-install-extract.log" 2>&1
+) else (
+    echo [STEP] Test and extract bootstrap tools into a private staging directory
+    "%BUNDLE_DIR%\7zr.exe" t "%BUNDLE_DIR%\00-bootstrap-tools.7z" >"%WORK%\offline-install-extract.log" 2>&1
+    if errorlevel 1 goto :EXTRACT_FAILED
+    "%BUNDLE_DIR%\7zr.exe" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\00-bootstrap-tools.7z" >>"%WORK%\offline-install-extract.log" 2>&1
+)
 if errorlevel 1 goto :EXTRACT_FAILED
 set "SEVEN_ZIP=%INSTALL_STAGE%\app\tools\7zip\x64\7za.exe"
 if not exist "%SEVEN_ZIP%" goto :EXTRACT_FAILED
 
-echo [STEP] Test and extract the remaining eight payload archives
+if defined NOTEST_MODE (
+    echo [STEP] Extract the remaining eight payload archives
+) else (
+    echo [STEP] Test and extract the remaining eight payload archives
+)
 for %%B in (
     "10-python-rag-runtime.7z"
     "20-python-ocr-gpu-runtime.7z"
@@ -240,32 +267,36 @@ for %%B in (
     "41-config-seed.7z"
     "50-llama-vulkan-runtime.7z"
 ) do (
-    "%SEVEN_ZIP%" t "%BUNDLE_DIR%\%%~B" >>"%WORK%\offline-install-extract.log" 2>&1
-    if errorlevel 1 goto :EXTRACT_FAILED
+    if not defined NOTEST_MODE (
+        "%SEVEN_ZIP%" t "%BUNDLE_DIR%\%%~B" >>"%WORK%\offline-install-extract.log" 2>&1
+        if errorlevel 1 goto :EXTRACT_FAILED
+    )
     "%SEVEN_ZIP%" x -y "-o%INSTALL_STAGE%" "%BUNDLE_DIR%\%%~B" >>"%WORK%\offline-install-extract.log" 2>&1
     if errorlevel 1 goto :EXTRACT_FAILED
 )
 
-for %%K in (
-    "runtime\python-rag\python.exe"
-    "runtime\python-ocr\python.exe"
-    "config\project\local_llm_ctl.py"
-    "config\project\local_llm_supervisor.py"
-    "config\project\tree_fingerprint.ps1"
-    "ragflow\api\ragflow_server.py"
-    "services\mysql\bin\mysqld.exe"
-    "services\elasticsearch\bin\elasticsearch.bat"
-    "services\silo\silo.exe"
-    "services\valkey\valkey-server.exe"
-    "services\caddy\caddy.exe"
-    "runtime\llama\llama-server.exe"
-) do if not exist "%INSTALL_STAGE%\app\%%~K" (
-    echo [ERROR] Extracted payload is missing app\%%~K
-    goto :EXTRACT_FAILED
-)
+if not defined NOTEST_MODE (
+    for %%K in (
+        "runtime\python-rag\python.exe"
+        "runtime\python-ocr\python.exe"
+        "config\project\local_llm_ctl.py"
+        "config\project\local_llm_supervisor.py"
+        "config\project\tree_fingerprint.ps1"
+        "ragflow\api\ragflow_server.py"
+        "services\mysql\bin\mysqld.exe"
+        "services\elasticsearch\bin\elasticsearch.bat"
+        "services\silo\silo.exe"
+        "services\valkey\valkey-server.exe"
+        "services\caddy\caddy.exe"
+        "runtime\llama\llama-server.exe"
+    ) do if not exist "%INSTALL_STAGE%\app\%%~K" (
+        echo [ERROR] Extracted payload is missing app\%%~K
+        goto :EXTRACT_FAILED
+    )
 
-call :SEAL_STAGED_IMMUTABLE_TREES
-if errorlevel 1 goto :EXTRACT_FAILED
+    call :SEAL_STAGED_IMMUTABLE_TREES
+    if errorlevel 1 goto :EXTRACT_FAILED
+)
 call :OVERLAY_CONTROL_HELPER "%INSTALL_STAGE%\app"
 if errorlevel 1 goto :EXTRACT_FAILED
 
@@ -281,7 +312,11 @@ if exist "%INSTALL_STAGE%\." echo [WARN] Empty staging parent could not be remov
 set "INSTALL_STAGE="
 
 :FINALIZE_INSTALL
-call :RUN_CONTROL install-finalize
+if defined NOTEST_MODE (
+    call :RUN_CONTROL install-finalize --no-test
+) else (
+    call :RUN_CONTROL install-finalize
+)
 set "SCRIPT_RC=%ERRORLEVEL%"
 if not "%SCRIPT_RC%"=="0" (
     echo.
@@ -291,7 +326,7 @@ if not "%SCRIPT_RC%"=="0" (
 goto :SCRIPT_END
 
 :EXTRACT_FAILED
-echo [ERROR] Archive test or extraction failed.
+echo [ERROR] Archive extraction failed.
 echo [INFO] Detailed log: "%WORK%\offline-install-extract.log"
 echo [INFO] The unpublished staging directory was preserved for inspection:
 echo [INFO]   "%INSTALL_STAGE%"
@@ -453,7 +488,7 @@ if errorlevel 1 (
     endlocal & exit /b 1
 )
 fc /b "%CONTROL_HELPER%" "%~1\config\project\local_llm_ctl.py" >nul 2>&1
-if errorlevel 1 (
+if errorlevel 1 if not defined NOTEST_MODE (
     echo [ERROR] The copied offline control helper did not verify.
     endlocal & exit /b 1
 )
