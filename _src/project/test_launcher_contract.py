@@ -305,6 +305,52 @@ class LauncherContractTest(unittest.TestCase):
         ):
             self.assertIn(required, prepare)
 
+    def test_python_wheels_are_persisted_below_src_and_reused_offline_first(
+        self,
+    ) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        for required in (
+            'set "RAG_WHEELHOUSE=%SRC%\\wheelhouse\\rag"',
+            'set "OCR_WHEELHOUSE=%SRC%\\wheelhouse\\ocr"',
+            'set "PIP_CACHE_DIR=%SRC%\\package-cache\\pip"',
+            'set "UV_CACHE_DIR=%SRC%\\package-cache\\uv"',
+            ":BootstrapPipForWheelhouse",
+            '--no-index --find-links "%RAG_WHEELHOUSE%"',
+            '--no-index --find-links "%OCR_WHEELHOUSE%"',
+            'pip download --dest "%RAG_WHEELHOUSE%"',
+            'pip download --dest "%OCR_WHEELHOUSE%"',
+        ):
+            self.assertIn(required, prepare)
+        self.assertNotIn("OCR_WHEEL_STAGE", prepare)
+        self.assertNotIn(
+            'RemoveTreeChecked "%OCR_WHEELHOUSE%"',
+            prepare,
+        )
+        self.assertIn("/_src/package-cache/", gitignore)
+        self.assertIn("/_src/wheelhouse/", gitignore)
+
+    def test_mutable_tree_seals_include_per_file_diagnostic_manifests(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        fingerprint = (ROOT / "_src" / "project" / "tree_fingerprint.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        for required in (
+            "tree-manifests/python-rag.manifest",
+            "tree-manifests/python-ocr.manifest",
+            "tree-manifests/ragflow.manifest",
+            "tree_manifest=%~5",
+            "tree-fingerprint-mismatch.log",
+            "ExpectedManifest",
+            "DiagnosticOutput",
+        ):
+            self.assertIn(required, prepare + fingerprint)
+        self.assertIn("MISSING`t", fingerprint)
+        self.assertIn("ADDED`t", fingerprint)
+        self.assertIn("CHANGED`t", fingerprint)
+
     def test_online_prepare_seals_and_rechecks_immutable_payloads(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         seal = "call :SealImmutableArtifactTrees"

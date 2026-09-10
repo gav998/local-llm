@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.10.2"
+set "PROJECT_VERSION=2026.09.10.3"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -237,6 +237,10 @@ for %%D in (
     "%SRC%"
     "%PROJECT%"
     "%LOGS%"
+    "%SRC%\package-cache\pip"
+    "%SRC%\package-cache\uv"
+    "%SRC%\wheelhouse\rag"
+    "%SRC%\wheelhouse\ocr"
     "%APP%"
     "%APP%\assets"
     "%APP%\build"
@@ -248,6 +252,7 @@ for %%D in (
     "%APP%\cache\uv"
     "%APP%\config"
     "%APP%\config\locks"
+    "%APP%\config\tree-manifests"
     "%APP%\data"
     "%APP%\data\nltk"
     "%APP%\data\profile\AppData\Local"
@@ -400,8 +405,8 @@ set "XDG_DATA_HOME=%APP%\data\xdg"
 set "HF_HOME=%APP%\cache\huggingface"
 set "HUGGINGFACE_HUB_CACHE=%APP%\cache\huggingface\hub"
 set "TRANSFORMERS_CACHE=%APP%\cache\huggingface\transformers"
-set "PIP_CACHE_DIR=%APP%\cache\pip"
-set "UV_CACHE_DIR=%APP%\cache\uv"
+set "PIP_CACHE_DIR=%SRC%\package-cache\pip"
+set "UV_CACHE_DIR=%SRC%\package-cache\uv"
 set "UV_PYTHON_INSTALL_DIR=%APP%\runtime\uv-python"
 set "UV_PYTHON_BIN_DIR=%APP%\runtime\uv-python-bin"
 set "UV_PYTHON_NO_REGISTRY=1"
@@ -498,7 +503,8 @@ set "OCR_PY=%OCR_PY_DIR%\python.exe"
 set "RAGFLOW_DIR=%APP%\ragflow"
 set "RAGFLOW_DIR_URI=%RAGFLOW_DIR:\=/%"
 set "TIKA_SERVER_JAR=file:///%RAGFLOW_DIR_URI%/tika-server-standard-3.3.0.jar"
-set "OCR_WHEELHOUSE=%APP%\build\wheelhouse\ocr"
+set "RAG_WHEELHOUSE=%SRC%\wheelhouse\rag"
+set "OCR_WHEELHOUSE=%SRC%\wheelhouse\ocr"
 set "SHARED_DLL_DIR=%APP%\runtime\shared-dll"
 set "RAG_PY_TREE_MARKER=%APP%\config\python-rag-tree.ok"
 set "OCR_PY_TREE_MARKER=%APP%\config\python-ocr-tree.ok"
@@ -1024,6 +1030,7 @@ endlocal & exit /b 0
 setlocal DisableDelayedExpansion
 set "TREE_ROOT=%~1"
 set "TREE_EXCLUDE_REL=%~2"
+set "TREE_MANIFEST_OUTPUT=%~5"
 set "TREE_OUTPUT=%WORK%\tree-fingerprint-%RANDOM%-%RANDOM%.txt"
 set "TREE_ERROR_OUTPUT=%TREE_OUTPUT%.err"
 set "TREE_SHA256_VALUE="
@@ -1031,7 +1038,11 @@ set "TREE_FILE_COUNT_VALUE="
 if not exist "%~1\." (
     endlocal & exit /b 1
 )
-"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel "%TREE_EXCLUDE_REL%" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
+if defined TREE_MANIFEST_OUTPUT (
+    "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel "%TREE_EXCLUDE_REL%" -Output "%TREE_OUTPUT%" -ManifestOutput "%TREE_MANIFEST_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
+) else (
+    "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\tree_fingerprint.ps1" -Root "%TREE_ROOT%" -ExcludeRel "%TREE_EXCLUDE_REL%" -Output "%TREE_OUTPUT%" >"%TREE_ERROR_OUTPUT%" 2>&1
+)
 if errorlevel 1 (
     if exist "%TREE_ERROR_OUTPUT%" type "%TREE_ERROR_OUTPUT%"
     if exist "%TREE_ERROR_OUTPUT%" del /f /q "%TREE_ERROR_OUTPUT%" >nul 2>&1
@@ -1053,15 +1064,17 @@ if not defined TREE_FILE_COUNT_VALUE (
 endlocal & set "%~3=%TREE_SHA256_VALUE%" & set "%~4=%TREE_FILE_COUNT_VALUE%" & exit /b 0
 
 :TreeMatchesMarker
-setlocal DisableDelayedExpansion
+setlocal EnableDelayedExpansion
 set "TREE_EXPECTED_SHA256="
 set "TREE_EXPECTED_FILE_COUNT="
+set "TREE_EXPECTED_MANIFEST_REL="
 if not exist "%~2" (
     endlocal & exit /b 1
 )
 for /f "usebackq tokens=1,* delims==" %%A in ("%~2") do (
     if /i "%%A"=="tree_sha256" set "TREE_EXPECTED_SHA256=%%B"
     if /i "%%A"=="tree_file_count" set "TREE_EXPECTED_FILE_COUNT=%%B"
+    if /i "%%A"=="tree_manifest" set "TREE_EXPECTED_MANIFEST_REL=%%B"
 )
 if not defined TREE_EXPECTED_SHA256 (
     endlocal & exit /b 1
@@ -1074,12 +1087,56 @@ if errorlevel 1 (
     endlocal & exit /b 1
 )
 if /i not "%TREE_CURRENT_SHA256%"=="%TREE_EXPECTED_SHA256%" (
-    endlocal & exit /b 1
+    goto :TREE_MATCH_FAILED
 )
 if not "%TREE_CURRENT_FILE_COUNT%"=="%TREE_EXPECTED_FILE_COUNT%" (
-    endlocal & exit /b 1
+    goto :TREE_MATCH_FAILED
 )
 endlocal & exit /b 0
+
+:TREE_MATCH_FAILED
+echo [ERROR] Tree seal mismatch: %~1
+echo [ERROR] Expected: files=%TREE_EXPECTED_FILE_COUNT% sha256=%TREE_EXPECTED_SHA256%
+echo [ERROR] Actual  : files=%TREE_CURRENT_FILE_COUNT% sha256=%TREE_CURRENT_SHA256%
+if not defined TREE_EXPECTED_MANIFEST_REL (
+    echo [INFO] This older seal has no per-file manifest, so an exact diff is unavailable.
+    endlocal & exit /b 1
+)
+if not "!TREE_EXPECTED_MANIFEST_REL:..=!"=="!TREE_EXPECTED_MANIFEST_REL!" (
+    echo [ERROR] Unsafe tree diagnostic manifest path: !TREE_EXPECTED_MANIFEST_REL!
+    endlocal & exit /b 1
+)
+if not "!TREE_EXPECTED_MANIFEST_REL::=!"=="!TREE_EXPECTED_MANIFEST_REL!" (
+    echo [ERROR] Unsafe tree diagnostic manifest path: !TREE_EXPECTED_MANIFEST_REL!
+    endlocal & exit /b 1
+)
+if "!TREE_EXPECTED_MANIFEST_REL:~0,1!"=="\" (
+    echo [ERROR] Unsafe tree diagnostic manifest path: !TREE_EXPECTED_MANIFEST_REL!
+    endlocal & exit /b 1
+)
+if "!TREE_EXPECTED_MANIFEST_REL:~0,1!"=="/" (
+    echo [ERROR] Unsafe tree diagnostic manifest path: !TREE_EXPECTED_MANIFEST_REL!
+    endlocal & exit /b 1
+)
+for %%M in ("%~2") do set "TREE_EXPECTED_MANIFEST=%%~dpM!TREE_EXPECTED_MANIFEST_REL!"
+if not exist "!TREE_EXPECTED_MANIFEST!" (
+    echo [ERROR] Tree diagnostic manifest is missing: !TREE_EXPECTED_MANIFEST!
+    endlocal & exit /b 1
+)
+set "TREE_DIAGNOSTIC_OUTPUT=%LOGS%\tree-fingerprint-mismatch.log"
+set "TREE_DIAGNOSTIC_RESULT=%WORK%\tree-diagnostic-%RANDOM%-%RANDOM%.txt"
+set "TREE_DIAGNOSTIC_ERROR=!TREE_DIAGNOSTIC_RESULT!.err"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%PROJECT%\tree_fingerprint.ps1" -Root "%~1" -ExcludeRel "%~3" -Output "!TREE_DIAGNOSTIC_RESULT!" -ExpectedManifest "!TREE_EXPECTED_MANIFEST!" -ExpectedTreeSha256 "!TREE_EXPECTED_SHA256!" -ExpectedTreeFileCount "!TREE_EXPECTED_FILE_COUNT!" -DiagnosticOutput "!TREE_DIAGNOSTIC_OUTPUT!" >"!TREE_DIAGNOSTIC_ERROR!" 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not create the per-file tree diff.
+    if exist "!TREE_DIAGNOSTIC_ERROR!" type "!TREE_DIAGNOSTIC_ERROR!"
+) else (
+    echo [INFO] Per-file tree diff: !TREE_DIAGNOSTIC_OUTPUT!
+    "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath $env:TREE_DIAGNOSTIC_OUTPUT -TotalCount 50" 2^>nul
+)
+if exist "!TREE_DIAGNOSTIC_RESULT!" del /f /q "!TREE_DIAGNOSTIC_RESULT!" >nul 2>&1
+if exist "!TREE_DIAGNOSTIC_ERROR!" del /f /q "!TREE_DIAGNOSTIC_ERROR!" >nul 2>&1
+endlocal & exit /b 1
 
 :CopyExtractedTree
 setlocal EnableDelayedExpansion
@@ -1332,8 +1389,55 @@ if errorlevel 1 exit /b 1
 call :RemoveTreeChecked "%RAG_PY_DIR%\Scripts"
 if errorlevel 1 exit /b 1
 
-call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip sync RAGFlow runtime"
-"%UV_EXE%" pip sync --python "%RAG_PY%" --require-hashes "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "bootstrap pip for persistent RAGFlow wheelhouse"
+call :BootstrapPipForWheelhouse "%RAG_PY%" "%RAG_WHEELHOUSE%" "%RAG_PREPARE_LOG%"
+if errorlevel 1 (
+    echo [ERROR] Could not bootstrap pip for the RAGFlow wheelhouse.
+    echo [INFO] See %RAG_PREPARE_LOG%
+    call :PrintLogTail "%RAG_PREPARE_LOG%"
+    exit /b 1
+)
+
+if not exist "%RAG_WHEELHOUSE%\pip-%PIN_PIP_VERSION%-py3-none-any.whl" (
+    call :AppendLogBanner "%RAG_PREPARE_LOG%" "cache pinned pip wheel for RAGFlow rebuilds"
+    "%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --only-binary=:all: "pip==%PIN_PIP_VERSION%" >>"%RAG_PREPARE_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Could not cache the pinned pip wheel for RAGFlow rebuilds.
+        echo [INFO] See %RAG_PREPARE_LOG%
+        call :PrintLogTail "%RAG_PREPARE_LOG%"
+        exit /b 1
+    )
+)
+
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "probe persistent RAGFlow wheelhouse without network"
+"%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --no-index --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    echo [INFO] RAGFlow wheelhouse is incomplete; downloading only missing wheels.
+    call :AppendLogBanner "%RAG_PREPARE_LOG%" "complete persistent RAGFlow wheelhouse from package index"
+    "%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Could not create the persistent binary RAGFlow wheelhouse.
+        echo [INFO] See %RAG_PREPARE_LOG%
+        call :PrintLogTail "%RAG_PREPARE_LOG%"
+        exit /b 1
+    )
+) else (
+    echo [SKIP] RAGFlow wheelhouse is complete; no package download was needed.
+)
+
+copy /y "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" "%RAG_WHEELHOUSE%\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Could not preserve the pinned datrie wheel in %RAG_WHEELHOUSE%
+    exit /b 1
+)
+fc /b "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" "%RAG_WHEELHOUSE%\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Cached datrie wheel differs from its pinned source.
+    exit /b 1
+)
+
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip sync RAGFlow runtime from persistent wheelhouse"
+"%UV_EXE%" pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] RAGFlow dependency installation failed.
     echo [INFO] Native Windows is not an upstream-supported RAGFlow target.
@@ -1344,7 +1448,7 @@ if errorlevel 1 (
 )
 
 call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip install pinned datrie wheel"
-"%UV_EXE%" pip install --python "%RAG_PY%" --no-deps "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >>"%RAG_PREPARE_LOG%" 2>&1
+"%UV_EXE%" pip install --python "%RAG_PY%" --no-index --no-deps "%RAG_WHEELHOUSE%\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] The pinned datrie wheel could not be installed. See %RAG_PREPARE_LOG%
     call :PrintLogTail "%RAG_PREPARE_LOG%"
@@ -1450,6 +1554,23 @@ for %%F in (
 )
 exit /b 0
 
+:BootstrapPipForWheelhouse
+setlocal DisableDelayedExpansion
+set "BOOTSTRAP_PYTHON=%~1"
+set "BOOTSTRAP_WHEELHOUSE=%~2"
+set "BOOTSTRAP_LOG=%~3"
+set "BOOTSTRAP_PIP_WHEEL=%~2\pip-%PIN_PIP_VERSION%-py3-none-any.whl"
+if exist "%BOOTSTRAP_PIP_WHEEL%" (
+    "%UV_EXE%" pip install --python "%BOOTSTRAP_PYTHON%" --no-index --find-links "%BOOTSTRAP_WHEELHOUSE%" "pip==%PIN_PIP_VERSION%" >>"%BOOTSTRAP_LOG%" 2>&1
+    if not errorlevel 1 (
+        endlocal & exit /b 0
+    )
+    >>"%BOOTSTRAP_LOG%" echo [WARN] Cached pip bootstrap failed; retrying from the package index.
+)
+"%UV_EXE%" pip install --python "%BOOTSTRAP_PYTHON%" "pip==%PIN_PIP_VERSION%" >>"%BOOTSTRAP_LOG%" 2>&1
+set "BOOTSTRAP_RC=%ERRORLEVEL%"
+endlocal & exit /b %BOOTSTRAP_RC%
+
 :BeginStepLog
 setlocal
 set "BEGIN_LOG_PATH=%~1"
@@ -1533,6 +1654,20 @@ if errorlevel 1 (
     echo [WARN] The fingerprinted web dist changed; rebuilding it.
     goto :WEB_BUILD
 )
+findstr /b /i /c:"tree_manifest=" "%WEB_MARKER%" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Adding a per-file diagnostic manifest to the existing web seal.
+    call :ComputeTreeFingerprint "%APP%\web" "" WEB_TREE_SHA256 WEB_TREE_FILE_COUNT "%APP%\config\tree-manifests\ragflow-web.manifest"
+    if errorlevel 1 (
+        echo [ERROR] Could not create the RAGFlow web diagnostic manifest.
+        exit /b 1
+    )
+    call :WriteSealedFingerprintMarker "%WEB_MARKER%" "%WEB_FINGERPRINT%" "%WEB_TREE_SHA256%" "%WEB_TREE_FILE_COUNT%" "tree-manifests/ragflow-web.manifest"
+    if errorlevel 1 (
+        echo [ERROR] Could not update the RAGFlow web dist marker: %WEB_MARKER%
+        exit /b 1
+    )
+)
 echo [SKIP] RAGFlow production web build already prepared and fingerprinted.
 exit /b 0
 
@@ -1606,13 +1741,13 @@ if errorlevel 1 (
     exit /b 1
 )
 call :AppendLogBanner "%WEB_BUILD_LOG%" "fingerprint app web dist"
-call :ComputeTreeFingerprint "%APP%\web" "" WEB_TREE_SHA256 WEB_TREE_FILE_COUNT
+call :ComputeTreeFingerprint "%APP%\web" "" WEB_TREE_SHA256 WEB_TREE_FILE_COUNT "%APP%\config\tree-manifests\ragflow-web.manifest"
 if errorlevel 1 (
     echo [ERROR] Could not fingerprint the prepared RAGFlow web dist.
     call :PrintLogTail "%WEB_BUILD_LOG%"
     exit /b 1
 )
-call :WriteSealedFingerprintMarker "%WEB_MARKER%" "%WEB_FINGERPRINT%" "%WEB_TREE_SHA256%" "%WEB_TREE_FILE_COUNT%"
+call :WriteSealedFingerprintMarker "%WEB_MARKER%" "%WEB_FINGERPRINT%" "%WEB_TREE_SHA256%" "%WEB_TREE_FILE_COUNT%" "tree-manifests/ragflow-web.manifest"
 if errorlevel 1 (
     echo [ERROR] Could not write the RAGFlow web dist marker: %WEB_MARKER%
     call :PrintLogTail "%WEB_BUILD_LOG%"
@@ -1646,13 +1781,6 @@ echo [STEP] Resolve an offline-complete binary OCR wheelhouse
 set "OCR_PREPARE_LOG=%LOGS%\ocr-python-prepare.log"
 call :BeginStepLog "%OCR_PREPARE_LOG%" "local_llm OCR Python preparation log"
 if errorlevel 1 exit /b 1
-set "OCR_WHEEL_STAGE=%WORK%\ocr-wheelhouse-%RANDOM%-%RANDOM%"
-if exist "%OCR_WHEEL_STAGE%" (
-    echo [ERROR] Temporary OCR wheelhouse collision: %OCR_WHEEL_STAGE%
-    exit /b 1
-)
-call :MakeDirChecked "%OCR_WHEEL_STAGE%"
-if errorlevel 1 exit /b 1
 call :RemoveTreeChecked "%OCR_PY_DIR%\Lib\site-packages"
 if errorlevel 1 exit /b 1
 call :MakeDirChecked "%OCR_PY_DIR%\Lib\site-packages"
@@ -1660,25 +1788,54 @@ if errorlevel 1 exit /b 1
 call :RemoveTreeChecked "%OCR_PY_DIR%\Scripts"
 if errorlevel 1 exit /b 1
 
-call :AppendLogBanner "%OCR_PREPARE_LOG%" "uv pip install OCR pip bootstrap"
-"%UV_EXE%" pip install --python "%OCR_PY%" "pip==%PIN_PIP_VERSION%" >>"%OCR_PREPARE_LOG%" 2>&1
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "bootstrap pip for persistent OCR wheelhouse"
+call :BootstrapPipForWheelhouse "%OCR_PY%" "%OCR_WHEELHOUSE%" "%OCR_PREPARE_LOG%"
 if errorlevel 1 (
     echo [ERROR] OCR pip bootstrap failed. See %OCR_PREPARE_LOG%
     call :PrintLogTail "%OCR_PREPARE_LOG%"
     exit /b 1
 )
 
-call :AppendLogBanner "%OCR_PREPARE_LOG%" "pip download OCR binary wheelhouse"
-"%OCR_PY%" -m pip download --dest "%OCR_WHEEL_STAGE%" --only-binary=:all: "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirement "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
+if not exist "%OCR_WHEELHOUSE%\pip-%PIN_PIP_VERSION%-py3-none-any.whl" (
+    call :AppendLogBanner "%OCR_PREPARE_LOG%" "cache pinned pip wheel for OCR rebuilds"
+    "%OCR_PY%" -m pip download --dest "%OCR_WHEELHOUSE%" --only-binary=:all: "pip==%PIN_PIP_VERSION%" >>"%OCR_PREPARE_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Could not cache the pinned pip wheel for OCR rebuilds.
+        echo [INFO] See %OCR_PREPARE_LOG%
+        call :PrintLogTail "%OCR_PREPARE_LOG%"
+        exit /b 1
+    )
+)
+
+copy /y "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" "%OCR_WHEELHOUSE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Could not create a binary-only OCR wheelhouse.
-    echo [INFO] See %OCR_PREPARE_LOG%
-    call :PrintLogTail "%OCR_PREPARE_LOG%"
+    echo [ERROR] Could not preserve the pinned Paddle GPU wheel in %OCR_WHEELHOUSE%
+    exit /b 1
+)
+fc /b "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" "%OCR_WHEELHOUSE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Cached Paddle GPU wheel differs from its pinned source.
     exit /b 1
 )
 
-call :AppendLogBanner "%OCR_PREPARE_LOG%" "uv pip install OCR from local wheelhouse"
-"%UV_EXE%" pip install --python "%OCR_PY%" --no-index --find-links "%OCR_WHEEL_STAGE%" "%OCR_WHEEL_STAGE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirements "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "probe persistent OCR wheelhouse without network"
+"%OCR_PY%" -m pip download --dest "%OCR_WHEELHOUSE%" --no-index --find-links "%OCR_WHEELHOUSE%" --only-binary=:all: "%OCR_WHEELHOUSE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirement "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    echo [INFO] OCR wheelhouse is incomplete; downloading only missing wheels.
+    call :AppendLogBanner "%OCR_PREPARE_LOG%" "complete persistent OCR wheelhouse from package index"
+    "%OCR_PY%" -m pip download --dest "%OCR_WHEELHOUSE%" --find-links "%OCR_WHEELHOUSE%" --only-binary=:all: "%APP%\build\vendor-wheels\ocr\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirement "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Could not create the persistent binary OCR wheelhouse.
+        echo [INFO] See %OCR_PREPARE_LOG%
+        call :PrintLogTail "%OCR_PREPARE_LOG%"
+        exit /b 1
+    )
+) else (
+    echo [SKIP] OCR wheelhouse is complete; no package download was needed.
+)
+
+call :AppendLogBanner "%OCR_PREPARE_LOG%" "uv pip install OCR from persistent wheelhouse"
+"%UV_EXE%" pip install --python "%OCR_PY%" --no-index --find-links "%OCR_WHEELHOUSE%" "%OCR_WHEELHOUSE%\paddlepaddle_gpu-%PADDLE_VERSION%-cp311-cp311-win_amd64.whl" --requirements "%PROJECT%\requirements-ocr.txt" >>"%OCR_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] OCR installation from the local wheelhouse failed.
     echo [INFO] See %OCR_PREPARE_LOG%
@@ -1687,10 +1844,6 @@ if errorlevel 1 (
 )
 
 call :FinalizeOcrRuntime
-if errorlevel 1 exit /b 1
-call :RemoveTreeChecked "%APP%\build\wheelhouse\ocr"
-if errorlevel 1 exit /b 1
-call :RemoveTreeChecked "%OCR_WHEEL_STAGE%"
 if errorlevel 1 exit /b 1
 call :WriteFingerprintMarker "%OCR_MARKER%" "%OCR_FINGERPRINT%"
 if errorlevel 1 exit /b 1
@@ -1927,20 +2080,20 @@ exit /b 0
 
 :SealMutableRuntimeTrees
 echo [STEP] Seal final Python and RAGFlow trees after all online mutations
-call :SealOneTree "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRINT%"
+call :SealOneTree "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRINT%" "" "tree-manifests/python-rag.manifest"
 if errorlevel 1 exit /b 1
-call :SealOneTree "%OCR_PY_DIR%" "%OCR_PY_TREE_MARKER%" "%OCR_PY_TREE_FINGERPRINT%"
+call :SealOneTree "%OCR_PY_DIR%" "%OCR_PY_TREE_MARKER%" "%OCR_PY_TREE_FINGERPRINT%" "" "tree-manifests/python-ocr.manifest"
 if errorlevel 1 exit /b 1
-call :SealOneTree "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%"
+call :SealOneTree "%RAGFLOW_DIR%" "%RAGFLOW_TREE_MARKER%" "%RAGFLOW_TREE_FINGERPRINT%" "%RAGFLOW_TREE_EXCLUDES%" "tree-manifests/ragflow.manifest"
 if errorlevel 1 exit /b 1
 exit /b 0
 
 :SealOneTree
 set "FINAL_TREE_SHA256="
 set "FINAL_TREE_FILE_COUNT="
-call :ComputeTreeFingerprint "%~1" "%~4" FINAL_TREE_SHA256 FINAL_TREE_FILE_COUNT
+call :ComputeTreeFingerprint "%~1" "%~4" FINAL_TREE_SHA256 FINAL_TREE_FILE_COUNT "%APP%\config\%~5"
 if errorlevel 1 exit /b 1
-call :WriteSealedFingerprintMarker "%~2" "%~3" "%FINAL_TREE_SHA256%" "%FINAL_TREE_FILE_COUNT%"
+call :WriteSealedFingerprintMarker "%~2" "%~3" "%FINAL_TREE_SHA256%" "%FINAL_TREE_FILE_COUNT%" "%~5"
 if errorlevel 1 exit /b 1
 call :MutableTreeMatches "%~1" "%~2" "%~3" "%~4"
 exit /b %ERRORLEVEL%
@@ -2563,6 +2716,7 @@ if exist "%SEALED_MARKER_TEMP%" (
     echo fingerprint=%~2
     echo tree_sha256=%~3
     echo tree_file_count=%~4
+    if not "%~5"=="" echo tree_manifest=%~5
 )
 if errorlevel 1 (
     if exist "%SEALED_MARKER_TEMP%" del /f /q "%SEALED_MARKER_TEMP%" >nul 2>&1

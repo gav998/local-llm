@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-CONTROL_VERSION = "2026.09.10.2"
+CONTROL_VERSION = "2026.09.10.3"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -143,13 +143,15 @@ def cygwin_path(path: os.PathLike[str] | str) -> str:
     raise ControlError(f"Cannot convert relative path to Cygwin format: {path}")
 
 
-def tree_fingerprint(root: Path, exclusions: tuple[str, ...] = ()) -> tuple[str, int]:
+def tree_snapshot(
+    root: Path, exclusions: tuple[str, ...] = ()
+) -> tuple[str, dict[str, tuple[int, str]], bytes]:
     if root.is_symlink() or not root.is_dir():
         raise ControlError(f"Unsafe or missing tree root: {root}")
     normalized = tuple(
         item.replace("\\", "/").lstrip("/").casefold() for item in exclusions
     )
-    rows: list[str] = []
+    entries: dict[str, tuple[int, str]] = {}
 
     def walk_error(error: OSError) -> None:
         raise ControlError(f"Cannot read sealed tree {root}: {error}") from error
@@ -180,10 +182,18 @@ def tree_fingerprint(root: Path, exclusions: tuple[str, ...] = ()) -> tuple[str,
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     digest.update(chunk)
-            rows.append(f"{relative}\0{path.stat().st_size}\0{digest.hexdigest()}")
-    rows.sort()
+            entries[relative] = (path.stat().st_size, digest.hexdigest())
+    rows = [
+        f"{relative}\0{entries[relative][0]}\0{entries[relative][1]}"
+        for relative in sorted(entries)
+    ]
     body = ("\n".join(rows) + ("\n" if rows else "")).encode("utf-8")
-    return hashlib.sha256(body).hexdigest(), len(rows)
+    return hashlib.sha256(body).hexdigest(), entries, body
+
+
+def tree_fingerprint(root: Path, exclusions: tuple[str, ...] = ()) -> tuple[str, int]:
+    digest, entries, _ = tree_snapshot(root, exclusions)
+    return digest, len(entries)
 
 
 def marker_values(path: Path) -> dict[str, str]:
@@ -202,6 +212,7 @@ def validate_tree_seal(
     marker: Path,
     exclusions: tuple[str, ...] = (),
     expected_fingerprint: str = "",
+    diagnostic_log: Path | None = None,
 ) -> None:
     values = marker_values(marker)
     if expected_fingerprint and values.get("fingerprint") != expected_fingerprint:
@@ -210,9 +221,96 @@ def validate_tree_seal(
     expected_count = values.get("tree_file_count", "")
     if not expected_hash or not expected_count:
         raise ControlError(f"Tree seal is incomplete: {marker}")
-    actual_hash, actual_count = tree_fingerprint(root, exclusions)
-    if actual_hash != expected_hash or str(actual_count) != expected_count:
-        raise ControlError(f"Installed tree no longer matches its seal: {root}")
+    actual_hash, actual_entries, _ = tree_snapshot(root, exclusions)
+    actual_count = len(actual_entries)
+    diagnostic_lines = [
+        f"[CHECK] {root}",
+        f"marker={marker}",
+        f"expected_sha256={expected_hash}",
+        f"actual_sha256={actual_hash}",
+        f"expected_file_count={expected_count}",
+        f"actual_file_count={actual_count}",
+    ]
+    mismatch = actual_hash != expected_hash or str(actual_count) != expected_count
+    difference_summary = ""
+    if mismatch:
+        manifest_value = values.get("tree_manifest", "")
+        expected_entries: dict[str, tuple[int, str]] | None = None
+        if manifest_value:
+            normalized = manifest_value.replace("\\", "/")
+            parts = normalized.split("/")
+            if (
+                normalized.startswith("/")
+                or any(not part or part in (".", "..") for part in parts)
+                or ":" in parts[0]
+            ):
+                diagnostic_lines.append(
+                    f"diagnostic_manifest_error=unsafe path: {manifest_value}"
+                )
+            else:
+                manifest = marker.parent.joinpath(*parts)
+                try:
+                    manifest_bytes = manifest.read_bytes()
+                    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+                    rows = manifest_bytes.decode("utf-8").splitlines()
+                    parsed: dict[str, tuple[int, str]] = {}
+                    for row in rows:
+                        path_value, size_value, hash_value = row.split("\0")
+                        if (
+                            not path_value
+                            or not size_value.isdecimal()
+                            or len(hash_value) != 64
+                            or any(char not in "0123456789abcdef" for char in hash_value)
+                            or path_value in parsed
+                        ):
+                            raise ValueError("invalid row")
+                        parsed[path_value] = (int(size_value), hash_value)
+                    if manifest_hash != expected_hash or str(len(parsed)) != expected_count:
+                        raise ValueError("summary does not match the tree seal")
+                    expected_entries = parsed
+                    diagnostic_lines.append(f"expected_manifest={manifest}")
+                except (OSError, UnicodeError, ValueError) as exc:
+                    diagnostic_lines.append(f"diagnostic_manifest_error={exc}")
+        else:
+            diagnostic_lines.append(
+                "diagnostic_manifest_error=seal predates per-file manifests"
+            )
+
+        if expected_entries is not None:
+            missing = sorted(expected_entries.keys() - actual_entries.keys())
+            added = sorted(actual_entries.keys() - expected_entries.keys())
+            changed = sorted(
+                path
+                for path in expected_entries.keys() & actual_entries.keys()
+                if expected_entries[path] != actual_entries[path]
+            )
+            diagnostic_lines.extend(
+                (
+                    f"missing_count={len(missing)}",
+                    f"added_count={len(added)}",
+                    f"changed_count={len(changed)}",
+                )
+            )
+            difference_summary = (
+                f" (missing={len(missing)}, added={len(added)}, "
+                f"changed={len(changed)})"
+            )
+            diagnostic_lines.extend(f"MISSING\t{path}" for path in missing)
+            diagnostic_lines.extend(f"ADDED\t{path}" for path in added)
+            diagnostic_lines.extend(f"CHANGED\t{path}" for path in changed)
+        diagnostic_lines.append("result=MISMATCH")
+    else:
+        diagnostic_lines.append("result=OK")
+
+    if diagnostic_log is not None:
+        diagnostic_log.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostic_log.open("a", encoding="utf-8", newline="\n") as stream:
+            stream.write("\n".join(diagnostic_lines) + "\n\n")
+
+    if mismatch:
+        raise ControlError(
+            f"Installed tree no longer matches its seal: {root}{difference_summary}"
+        )
 
 
 def parse_int(
@@ -1706,6 +1804,33 @@ http://127.0.0.1:{self.port("web")} {{
         print(
             "[STEP] Verify final tree seals (this reads the complete installed payload)"
         )
+        diagnostic_log = self.logs_dir / "tree-seal-verify.log"
+        atomic_text(
+            diagnostic_log,
+            "local_llm installed tree seal verification\n"
+            f"control_version={CONTROL_VERSION}\n"
+            f"root={self.root}\n\n",
+        )
+
+        def check_tree(
+            root: Path,
+            marker: Path,
+            exclusions: tuple[str, ...] = (),
+            fingerprint: str = "",
+        ) -> None:
+            try:
+                validate_tree_seal(
+                    root,
+                    marker,
+                    exclusions,
+                    fingerprint,
+                    diagnostic_log=diagnostic_log,
+                )
+            except (ControlError, OSError, UnicodeError) as exc:
+                with diagnostic_log.open("a", encoding="utf-8", newline="\n") as stream:
+                    stream.write(f"[ERROR] {exc}\n")
+                raise ControlError(f"{exc}; details: {diagnostic_log}") from exc
+
         config = self.app / "config"
         mutable = (
             (
@@ -1728,7 +1853,7 @@ http://127.0.0.1:{self.port("web")} {{
             ),
         )
         for root, marker, exclusions, fingerprint in mutable:
-            validate_tree_seal(root, marker, exclusions, fingerprint)
+            check_tree(root, marker, exclusions, fingerprint)
 
         immutable = (
             self.app / "tools" / "7zip",
@@ -1757,12 +1882,12 @@ http://127.0.0.1:{self.port("web")} {{
                 # or rotated logs/gc.log there. Permit only that known runtime
                 # subtree so an existing payload can be revalidated safely.
                 exclusions += ("logs/",)
-            validate_tree_seal(
+            check_tree(
                 root,
                 root / ".local-llm-artifact.txt",
                 exclusions,
             )
-        validate_tree_seal(self.app / "web", config / "ragflow-web.ok")
+        check_tree(self.app / "web", config / "ragflow-web.ok")
         print("[OK] All final tree seals match")
 
     def verify_gpu(self) -> None:

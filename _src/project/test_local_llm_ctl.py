@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -413,6 +414,49 @@ class ControllerConfigTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ControlError, "Tree seal is incomplete"):
             validate_tree_seal(tree, marker)
+
+    def test_tree_seal_mismatch_log_names_added_and_changed_files(self) -> None:
+        tree = self.root / "sealed-diagnostic"
+        tree.mkdir()
+        payload = tree / "payload.bin"
+        payload.write_bytes(b"before")
+        digest, count = tree_fingerprint(tree)
+        payload_hash = hashlib.sha256(payload.read_bytes()).hexdigest()
+        manifest_body = f"payload.bin\0{payload.stat().st_size}\0{payload_hash}\n"
+
+        manifest_dir = self.root / "tree-manifests"
+        manifest_dir.mkdir()
+        (manifest_dir / "runtime.manifest").write_bytes(
+            manifest_body.encode("utf-8")
+        )
+        marker = self.root / "runtime.ok"
+        marker.write_text(
+            "fingerprint=test\n"
+            f"tree_sha256={digest}\n"
+            f"tree_file_count={count}\n"
+            "tree_manifest=tree-manifests/runtime.manifest\n",
+            encoding="utf-8",
+        )
+
+        payload.write_bytes(b"after")
+        bytecode = tree / "package" / "__pycache__" / "module.pyc"
+        bytecode.parent.mkdir(parents=True)
+        bytecode.write_bytes(b"generated")
+        diagnostic = self.root / "tree-seal-verify.log"
+
+        with self.assertRaisesRegex(ControlError, "no longer matches"):
+            validate_tree_seal(
+                tree,
+                marker,
+                expected_fingerprint="test",
+                diagnostic_log=diagnostic,
+            )
+
+        detail = diagnostic.read_text(encoding="utf-8")
+        self.assertIn("changed_count=1", detail)
+        self.assertIn("added_count=1", detail)
+        self.assertIn("CHANGED\tpayload.bin", detail)
+        self.assertIn("ADDED\tpackage/__pycache__/module.pyc", detail)
 
     def test_runtime_asset_verification_uses_packaged_provenance_record(self) -> None:
         controller = Controller(self.root)

@@ -34,7 +34,13 @@ MySQL и реальные health checks выполняются при перво
 
 Установка считается завершённой только после static/import проверок, реального CUDA/OCR/table E2E без CPU fallback и инициализации MySQL. Между неуспешными попытками `install-progress.json` сохраняет законченные фазы и привязывает их к пути, control version, seal-маркерам и проверочным конфигам. Полное чтение sealed payload повторяется на каждой попытке; только после него разрешён skip дорогих завершённых фаз. Последним записывается `app\data\control\install.ok.json`, progress удаляется; `start` без корректного marker запрещён.
 
-Wheelhouse как переносимый формат сознательно отвергнут: он перенёс бы platform resolution на offline-машину. В архивы попадают уже установленные и проверенные runtime trees. GGUF переносятся отдельно.
+Wheelhouse не используется как переносимый offline-формат: это перенесло бы
+platform resolution на целевую машину. Но online-сборщик хранит разрешённые
+Windows wheels в `_src\wheelhouse\rag` и `_src\wheelhouse\ocr`, а внутренние
+кэши package managers — в `_src\package-cache`. При пересборке сначала делается
+полностью offline-проба wheelhouse и только недостающие файлы запрашиваются из
+индекса. В prepared-архивы по-прежнему попадают уже установленные и проверенные
+runtime trees. GGUF переносятся отдельно.
 
 ## Portable boundary
 
@@ -81,6 +87,15 @@ logs/                           штатные rotating logs RAGFlow
 ```
 
 Исключения понимаются fingerprint-функцией как точный файл и точный directory prefix; произвольные соседние файлы всё ещё меняют seal. Это устраняет ложное падение integrity после первого запуска, не превращая backend в непроверяемый mutable tree.
+
+Seal хранит общий SHA-256 от отсортированных строк `relative path + size +
+file SHA-256` и число файлов. Для mutable Python/RAGFlow/web-деревьев рядом с
+marker также архивируется per-file manifest. Он не ослабляет проверку общего
+hash, а позволяет при расхождении записать точные `ADDED`, `MISSING` и
+`CHANGED` пути. Online rehydrate пишет такой diff в
+`_src\logs\tree-fingerprint-mismatch.log`, offline controller — в
+`app\logs\tree-seal-verify.log`. `.pyc` внутри runtime остаются частью seal;
+новый runtime bytecode всегда направляется в `app\cache\python-bytecode`.
 
 Elasticsearch запускается с рабочим каталогом в `app\logs\elasticsearch\runtime`, потому что штатные JVM options используют относительные пути `logs/gc.log`, `logs/hs_err_pid...` и `data` для аварийных файлов. Для совместимости с установками, которые уже запускались старым controller, из seal исключён только `services\elasticsearch\logs\`; бинарники, библиотеки и конфигурация vendor-дерева продолжают проверяться полностью.
 

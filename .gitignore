@@ -12,6 +12,8 @@
 /_src/logs/*
 /_src/prepared/*
 /_src/prepared.previous/
+/_src/package-cache/
+/_src/wheelhouse/
 
 # Keep the source-controlled project inputs.
 !/_src/logs/.gitkeep
