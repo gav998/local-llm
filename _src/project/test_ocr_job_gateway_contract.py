@@ -15,6 +15,7 @@ from ocr_job_gateway import (
     JobManager,
     atomic_json,
     create_app,
+    read_json,
     validate_pipeline_profile,
 )
 
@@ -111,6 +112,22 @@ def main() -> int:
             atomic_json(state_path, {"state": "done"})
         assert replace_attempts == 3
         assert json.loads(state_path.read_text(encoding="utf-8")) == {"state": "done"}
+
+        real_read_text = Path.read_text
+        read_attempts = 0
+
+        def transient_windows_read(path: Path, *args, **kwargs) -> str:
+            nonlocal read_attempts
+            read_attempts += 1
+            if read_attempts <= 2:
+                raise PermissionError(13, "transient Windows sharing violation")
+            return real_read_text(path, *args, **kwargs)
+
+        with mock.patch.object(
+            Path, "read_text", autospec=True, side_effect=transient_windows_read
+        ):
+            assert read_json(state_path) == {"state": "done"}
+        assert read_attempts == 3
 
     with tempfile.TemporaryDirectory(prefix="local-ocr-contract-") as temporary:
         manager = JobManager(

@@ -113,6 +113,20 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
             time.sleep(ATOMIC_REPLACE_RETRY_SECONDS)
 
 
+def read_json(path: Path) -> dict[str, Any]:
+    # A concurrent atomic replacement can also make the destination briefly
+    # unavailable to readers on Windows. Retry the open instead of turning a
+    # normal state transition into a transient HTTP 500 response.
+    deadline = time.monotonic() + ATOMIC_REPLACE_TIMEOUT_SECONDS
+    while True:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(ATOMIC_REPLACE_RETRY_SECONDS)
+
+
 def prune_result(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -329,7 +343,7 @@ class JobManager:
     def _recover_interrupted_jobs(self) -> None:
         for state_path in self.jobs_root.glob("*/state.json"):
             try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state = read_json(state_path)
             except (OSError, ValueError):
                 continue
             if state.get("state") in {"queued", "running"}:
@@ -361,9 +375,10 @@ class JobManager:
 
     def status(self, job_id: str) -> dict[str, Any]:
         path = self._state_path(job_id)
-        if not path.is_file():
-            raise KeyError(job_id)
-        state = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            state = read_json(path)
+        except FileNotFoundError as exc:
+            raise KeyError(job_id) from exc
         if state.get("state") == "done":
             state["resultJsonUrl"] = (
                 f"{self.public_url}/api/v2/ocr/jobs/{job_id}/result"
@@ -383,7 +398,7 @@ class JobManager:
                 return
             job_id, input_path, predict_options = item
             state_path = self._state_path(job_id)
-            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state = read_json(state_path)
             try:
                 state.update(state="running", updated=time.time())
                 atomic_json(state_path, state)
