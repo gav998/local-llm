@@ -7,10 +7,16 @@ import json
 import tempfile
 import time
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from ocr_job_gateway import JobManager, create_app, validate_pipeline_profile
+from ocr_job_gateway import (
+    JobManager,
+    atomic_json,
+    create_app,
+    validate_pipeline_profile,
+)
 
 
 class FakeResult:
@@ -85,6 +91,26 @@ def main() -> int:
         assert "use_doc_unwarping: false" in str(exc)
     else:
         raise AssertionError("Missing explicit DocPreprocessor switches must fail closed")
+
+    with tempfile.TemporaryDirectory(prefix="local-ocr-atomic-") as temporary:
+        state_path = Path(temporary) / "state.json"
+        state_path.write_text('{"state": "queued"}\n', encoding="utf-8")
+        real_replace = Path.replace
+        replace_attempts = 0
+
+        def transient_windows_lock(source: Path, target: Path) -> Path:
+            nonlocal replace_attempts
+            replace_attempts += 1
+            if replace_attempts <= 2:
+                raise PermissionError(13, "transient Windows sharing violation")
+            return real_replace(source, target)
+
+        with mock.patch.object(
+            Path, "replace", autospec=True, side_effect=transient_windows_lock
+        ):
+            atomic_json(state_path, {"state": "done"})
+        assert replace_attempts == 3
+        assert json.loads(state_path.read_text(encoding="utf-8")) == {"state": "done"}
 
     with tempfile.TemporaryDirectory(prefix="local-ocr-contract-") as temporary:
         manager = JobManager(

@@ -33,6 +33,8 @@ MODEL_NAMES = (
     "SLANet_plus",
 )
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
+ATOMIC_REPLACE_TIMEOUT_SECONDS = 2.0
+ATOMIC_REPLACE_RETRY_SECONDS = 0.02
 
 PREDICT_OPTION_MAP = {
     "useDocOrientationClassify": "use_doc_orientation_classify",
@@ -97,7 +99,18 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    temporary.replace(path)
+    # Windows denies replacement while another thread has the destination open
+    # for reading. Status polling normally releases it immediately, so tolerate
+    # that transient sharing violation while retaining atomic state updates.
+    deadline = time.monotonic() + ATOMIC_REPLACE_TIMEOUT_SECONDS
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(ATOMIC_REPLACE_RETRY_SECONDS)
 
 
 def prune_result(value: Any) -> Any:
