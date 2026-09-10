@@ -146,6 +146,9 @@ if errorlevel 1 exit /b 1
 call :AuditPortableRuntimes
 if errorlevel 1 exit /b 1
 
+call :PreparePortableSeed
+if errorlevel 1 exit /b 1
+
 call :SealMutableRuntimeTrees
 if errorlevel 1 exit /b 1
 
@@ -1895,6 +1898,16 @@ echo [ERROR] Portability audit failed. See %AUDIT_LOG%
 call :PrintLogTail "%AUDIT_LOG%"
 exit /b 1
 
+:PreparePortableSeed
+echo [STEP] Remove install-local configuration, secrets and logs from the portable seed
+call :RemoveTreeChecked "%APP%\config\runtime"
+if errorlevel 1 exit /b 1
+call :RemoveRegularFileChecked "%RAGFLOW_DIR%\conf\local.service_conf.yaml"
+if errorlevel 1 exit /b 1
+call :RemoveTreeChecked "%RAGFLOW_DIR%\logs"
+if errorlevel 1 exit /b 1
+exit /b 0
+
 :SealMutableRuntimeTrees
 echo [STEP] Seal final Python and RAGFlow trees after all online mutations
 call :SealOneTree "%RAG_PY_DIR%" "%RAG_PY_TREE_MARKER%" "%RAG_PY_TREE_FINGERPRINT%"
@@ -2541,6 +2554,22 @@ for %%I in ("%~1") do set "REGULAR_FILE_ATTRIBUTES=%%~aI"
 if not defined REGULAR_FILE_ATTRIBUTES (endlocal & exit /b 1)
 if /i "%REGULAR_FILE_ATTRIBUTES:~0,1%"=="d" (endlocal & exit /b 1)
 if /i not "%REGULAR_FILE_ATTRIBUTES:l=%"=="%REGULAR_FILE_ATTRIBUTES%" (endlocal & exit /b 1)
+endlocal & exit /b 0
+
+:RemoveRegularFileChecked
+setlocal
+if "%~1"=="" (endlocal & exit /b 1)
+if not exist "%~1" (endlocal & exit /b 0)
+call :IsRegularFile "%~1"
+if errorlevel 1 (
+    echo [ERROR] Refusing to remove a non-regular file: %~1
+    endlocal & exit /b 1
+)
+del /f /q "%~1" >nul 2>&1
+if exist "%~1" (
+    echo [ERROR] Could not remove file: %~1
+    endlocal & exit /b 1
+)
 endlocal & exit /b 0
 
 :DirectoryIsEmpty

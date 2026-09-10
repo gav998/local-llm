@@ -41,7 +41,7 @@ Wheelhouse как переносимый формат сознательно о�
 
 Microsoft VC Redistributable не запускается: из проверенного официального EXE извлекаются app-local DLL, включая `vcomp140.dll` для XGBoost. Системными зависимостями остаются Windows DLL, NVIDIA driver и Vulkan loader.
 
-Path-sensitive файлы находятся в `app\config\runtime` и атомарно регенерируются перед каждой командой. Поэтому перенос всего каталога или смена буквы диска не требует reinstall. Secrets генерируются один раз и не перезаписываются.
+Path-sensitive файлы находятся в `app\config\runtime` и атомарно регенерируются перед каждой командой. Они, включая `secrets.json`, а также сгенерированный `ragflow\conf\local.service_conf.yaml` и runtime-логи RAGFlow удаляются из online build tree до sealing и не попадают в prepared-архивы. Поэтому offline install создаёт новые secrets уже в фактическом месте установки, а перенос всего установленного каталога или смена буквы диска не требует reinstall. В установленном каталоге secrets генерируются один раз и не перезаписываются.
 
 ## Почему два Python
 

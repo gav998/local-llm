@@ -293,6 +293,29 @@ class LauncherContractTest(unittest.TestCase):
             prepare,
         )
 
+    def test_online_prepare_removes_install_local_state_before_sealing(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        cleanup_call = "call :PreparePortableSeed"
+        mutable_seal = "call :SealMutableRuntimeTrees"
+        package = "call :PackagePreparedOutput"
+        cleanup = prepare[
+            prepare.index("\n:PreparePortableSeed") : prepare.index(
+                "\n:SealMutableRuntimeTrees"
+            )
+        ]
+
+        self.assertLess(prepare.index(cleanup_call), prepare.index(mutable_seal))
+        self.assertLess(prepare.index(cleanup_call), prepare.index(package))
+        self.assertIn(
+            'call :RemoveTreeChecked "%APP%\\config\\runtime"', cleanup
+        )
+        self.assertIn(
+            'call :RemoveRegularFileChecked '
+            '"%RAGFLOW_DIR%\\conf\\local.service_conf.yaml"',
+            cleanup,
+        )
+        self.assertIn('call :RemoveTreeChecked "%RAGFLOW_DIR%\\logs"', cleanup)
+
     def test_rehydrate_smoke_does_not_leave_build_path_bytecode(self) -> None:
         prepare = PREPARE.read_text(encoding="utf-8")
         verify = prepare[
