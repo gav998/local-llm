@@ -89,27 +89,33 @@ Vikhr-Nemo-12B-Q4_K_M.gguf
 ```
 
 Если для переноса используется флешка FAT32, целый GGUF на неё не поместится:
-размер одного файла в FAT32 ограничен 4 ГБ. Положите обе модели в одну папку,
-откройте в ней `cmd` и создайте несжатые тома по 3900 МБ (подставьте реальный
+размер одного файла в FAT32 ограничен 4 ГБ. После завершения online-подготовки
+положите обе модели в одну папку, откройте в ней `cmd` и разделите каждый GGUF
+на части размером до 3900 МБ с помощью `llama-gguf-split` (подставьте реальный
 путь к проекту вместо `X:\local_llm`):
 
 ```bat
-"X:\local_llm\_src\prepared\7zr.exe" a -t7z -mx=0 -v3900m Qwen3-Embedding-8B-Q4_K_M.gguf.7z Qwen3-Embedding-8B-Q4_K_M.gguf
-"X:\local_llm\_src\prepared\7zr.exe" a -t7z -mx=0 -v3900m Vikhr-Nemo-12B-Q4_K_M.gguf.7z Vikhr-Nemo-12B-Q4_K_M.gguf
+"X:\local_llm\app\runtime\llama\llama-gguf-split.exe" --split --split-max-size 3900M Qwen3-Embedding-8B-Q4_K_M.gguf Qwen3-Embedding-8B-Q4_K_M
+"X:\local_llm\app\runtime\llama\llama-gguf-split.exe" --split --split-max-size 3900M Vikhr-Nemo-12B-Q4_K_M.gguf Vikhr-Nemo-12B-Q4_K_M
 ```
 
-На флешку скопируйте все получившиеся части `.7z.001`, `.7z.002` и так далее.
-После offline-установки положите части рядом с `LOCAL-LLM.bat` и восстановите
-модели сразу в нужные каталоги:
+На флешку скопируйте все получившиеся части с именами вида
+`Qwen3-Embedding-8B-Q4_K_M-00001-of-00002.gguf` и
+`Vikhr-Nemo-12B-Q4_K_M-00001-of-00002.gguf`. Фактическое количество частей
+указано в их именах. После offline-установки положите все части рядом с
+`LOCAL-LLM.bat`, откройте `cmd` в этой папке и объедините модели сразу в нужных
+каталогах:
 
 ```bat
-7zr.exe x -y Qwen3-Embedding-8B-Q4_K_M.gguf.7z.001 -o"app\models\embed"
-7zr.exe x -y Vikhr-Nemo-12B-Q4_K_M.gguf.7z.001 -o"app\models\llm"
+"app\runtime\llama\llama-gguf-split.exe" --merge Qwen3-Embedding-8B-Q4_K_M-00001-of-00002.gguf "app\models\embed\Qwen3-Embedding-8B-Q4_K_M.gguf"
+"app\runtime\llama\llama-gguf-split.exe" --merge Vikhr-Nemo-12B-Q4_K_M-00001-of-00002.gguf "app\models\llm\Vikhr-Nemo-12B-Q4_K_M.gguf"
 ```
 
-Все части каждого архива должны лежать рядом; указывать в команде нужно только
-первую часть `.001`. Сам целевой диск с установленным `local_llm` должен быть
-NTFS или exFAT — на FAT32 восстановленный GGUF снова не поместится.
+Если в имени первой части указано другое общее количество частей, используйте
+её фактическое имя вместо показанного в примере. Все части каждой модели должны
+лежать рядом; в команде `--merge` нужно указывать только первую часть
+`-00001-of-NNNNN.gguf`. Сам целевой диск с установленным `local_llm` должен быть
+NTFS или exFAT — на FAT32 объединённый GGUF снова не поместится.
 
 ### 4. Перенесите комплект на компьютер без интернета
 
