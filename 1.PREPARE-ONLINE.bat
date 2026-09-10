@@ -2265,6 +2265,7 @@ set "PADDLE_PDX_DISABLE_DEVICE_FALLBACK=1"
 set "NLTK_DATA=%~1\data\nltk"
 set "TIKTOKEN_CACHE_DIR=%~1\ragflow"
 set "PYTHONPYCACHEPREFIX=%~1\cache\python-bytecode"
+set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONNOUSERSITE=1"
 set "PYTHONHOME="
 set "PYTHONPATH="
@@ -2290,6 +2291,8 @@ if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-ocr\python.exe" -c "import sys,paddle,paddleocr,paddlex; print(sys.version); print('paddle='+paddle.__version__); print('paddleocr='+paddleocr.__version__); print('paddlex='+paddlex.__version__)" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-ocr\python.exe" "%~1\services\ocr\test_ocr_job_gateway_contract.py" >>"%~2" 2>&1
+if errorlevel 1 (endlocal & exit /b 1)
+call :RemoveTreeChecked "%~1\cache\python-bytecode"
 if errorlevel 1 (endlocal & exit /b 1)
 "%~1\runtime\python-rag\python.exe" "%~1\config\project\audit_portability.py" --root "%~1" --build-root "%ROOT%" --record "%~3" >>"%~2" 2>&1
 if errorlevel 1 (endlocal & exit /b 1)

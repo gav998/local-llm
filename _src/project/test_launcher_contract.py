@@ -293,6 +293,24 @@ class LauncherContractTest(unittest.TestCase):
             prepare,
         )
 
+    def test_rehydrate_smoke_does_not_leave_build_path_bytecode(self) -> None:
+        prepare = PREPARE.read_text(encoding="utf-8")
+        verify = prepare[
+            prepare.index("\n:VerifyRehydratedPayload") : prepare.index(
+                "\n:ProbeRehydratedBinaries"
+            )
+        ]
+        audit = (
+            '"%~1\\runtime\\python-rag\\python.exe" '
+            '"%~1\\config\\project\\audit_portability.py"'
+        )
+        cleanup = 'call :RemoveTreeChecked "%~1\\cache\\python-bytecode"'
+
+        self.assertIn('set "PYTHONDONTWRITEBYTECODE=1"', verify)
+        self.assertIn(cleanup, verify)
+        self.assertIn(audit, verify)
+        self.assertLess(verify.index(cleanup), verify.index(audit))
+
     def test_portable_policy_has_no_machine_mutations(self) -> None:
         combined = (
             PREPARE.read_text(encoding="utf-8") + LAUNCHER.read_text(encoding="utf-8")

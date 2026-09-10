@@ -167,11 +167,27 @@ def _is_scripts_executable(relative: Path) -> bool:
     )
 
 
+def _io_path(path: Path) -> str:
+    """Return a Win32 extended-length path for filesystem reads.
+
+    The prepared dependency trees contain a few legitimate files whose full
+    names exceed MAX_PATH.  Directory enumeration can still expose those files
+    on Windows even when a subsequent normal ``open`` fails with ENOENT.
+    """
+
+    value = os.path.abspath(os.fspath(path))
+    if os.name != "nt" or value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
 def _is_pe(path: Path) -> bool:
     """Recognize a PE image while still scanning non-PE files named *.exe."""
 
     try:
-        with path.open("rb") as stream:
+        with open(_io_path(path), "rb") as stream:
             header = stream.read(64)
             if len(header) < 64 or header[:2] != b"MZ":
                 return False
@@ -195,7 +211,7 @@ def _scan_for_needles(
     tail = b""
     matched: set[str] = set()
     bytes_read = 0
-    with path.open("rb") as stream:
+    with open(_io_path(path), "rb") as stream:
         while True:
             chunk = stream.read(READ_CHUNK_SIZE)
             if not chunk:
