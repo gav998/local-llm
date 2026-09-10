@@ -1,14 +1,14 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "CONTROL_VERSION=2026.09.10.1"
+set "CONTROL_VERSION=2026.09.10.2"
 set "SCRIPT_RC=0"
 set "LOCK_HELD="
 set "INSTALL_STAGE="
 
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
 set "NOTEST_MODE="
-if exist "%ROOT%\notest" if not exist "%ROOT%\notest\." set "NOTEST_MODE=1"
-if exist "%ROOT%\_src\prepared\notest" if not exist "%ROOT%\_src\prepared\notest\." set "NOTEST_MODE=1"
+if exist "%ROOT%\notest" set "NOTEST_MODE=1"
+if exist "%ROOT%\_src\prepared\notest" set "NOTEST_MODE=1"
 set "APP=%ROOT%\app"
 set "WORK=%ROOT%\_work"
 set "INSTALL_LOCK=%WORK%\offline-install.lock"
@@ -151,7 +151,7 @@ if not exist "%APP%\config\project\local_llm_ctl.py" (
     exit /b 1
 )
 call :SET_PORTABLE_ENV
-if defined NOTEST_MODE if /i "%~1"=="install-finalize" (
+if defined NOTEST_MODE (
     "%APP%\runtime\python-rag\python.exe" "%APP%\config\project\local_llm_ctl.py" --root "%ROOT%" %*
     if errorlevel 1 exit /b 1
     exit /b 0
@@ -214,6 +214,7 @@ if errorlevel 1 (
     set "SCRIPT_RC=1"
     goto :SCRIPT_END
 )
+if exist "%BUNDLE_DIR%\notest" set "NOTEST_MODE=1"
 if not defined NOTEST_MODE (
     call :CHECK_BUNDLES
     if errorlevel 1 (

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-CONTROL_VERSION = "2026.09.10.1"
+CONTROL_VERSION = "2026.09.10.2"
 CREATE_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -1446,13 +1446,13 @@ http://127.0.0.1:{self.port("web")} {{
                 "Installation is not finalized. Run LOCAL-LLM.bat install."
             )
         marker = load_json(self.install_marker)
+        if marker.get("validation_mode") == "notest" and self.notest_enabled():
+            return
         if marker.get("control_version") != CONTROL_VERSION:
             raise ControlError(
                 "Installation marker is obsolete; run install again."
             )
         if marker.get("gpu_e2e") == "passed":
-            return
-        if marker.get("validation_mode") == "notest" and self.notest_enabled():
             return
         raise ControlError(
             "Installation marker is obsolete or lacks the required GPU E2E gate; run install again."

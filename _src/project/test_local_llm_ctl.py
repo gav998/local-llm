@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -488,6 +489,14 @@ class ControllerConfigTest(unittest.TestCase):
         self.assertIn('"gpu_e2e": "skipped"', marker)
         controller.require_installed()
 
+        marker_path = controller.install_marker
+        marker_data = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker_data["control_version"] = "intentionally-mismatched-notest"
+        marker_path.write_text(json.dumps(marker_data), encoding="utf-8")
+        controller.require_installed()
+
+        marker_data["control_version"] = CONTROL_VERSION
+        marker_path.write_text(json.dumps(marker_data), encoding="utf-8")
         (self.root / "notest").unlink()
         with self.assertRaisesRegex(ControlError, "GPU E2E gate"):
             controller.require_installed()

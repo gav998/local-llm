@@ -136,7 +136,12 @@ class LauncherContractTest(unittest.TestCase):
         prepare = PREPARE.read_text(encoding="utf-8")
         launcher = LAUNCHER.read_text(encoding="utf-8")
 
-        self.assertIn('if exist "%ROOT%\\notest" if not exist', prepare)
+        self.assertIn('if exist "%ROOT%\\notest" set "NOTEST_MODE=1"', prepare)
+        self.assertIn(
+            "if not defined NOTEST_MODE (\n"
+            "    call :AuditExistingManagedPaths",
+            prepare,
+        )
         self.assertIn('copy /y "%ROOT%\\notest" "%PACKAGE_STAGE%\\notest"', prepare)
         self.assertIn("if not defined NOTEST_MODE (\n    call :VerifyPreparedStage", prepare)
         self.assertIn('if not defined NOTEST_MODE (\n    "%SEVEN_ZIP%" t', prepare)
@@ -144,12 +149,24 @@ class LauncherContractTest(unittest.TestCase):
         self.assertIn('"-xr!app\\ragflow\\logs\\*"', prepare)
         self.assertIn('"-x!app\\ragflow\\conf\\local.service_conf.yaml"', prepare)
 
-        self.assertIn('if exist "%ROOT%\\notest" if not exist', launcher)
+        self.assertIn('if exist "%ROOT%\\notest" set "NOTEST_MODE=1"', launcher)
+        self.assertIn(
+            'if exist "%BUNDLE_DIR%\\notest" set "NOTEST_MODE=1"', launcher
+        )
         self.assertIn("call :RUN_CONTROL install-finalize --no-test", launcher)
         self.assertIn("if not defined NOTEST_MODE (\n    call :CHECK_BUNDLES", launcher)
         self.assertIn("if not defined NOTEST_MODE (\n        \"%SEVEN_ZIP%\" t", launcher)
         self.assertIn(
-            'if defined NOTEST_MODE if /i "%~1"=="install-finalize"', launcher
+            "if defined NOTEST_MODE (\n"
+            '    "%APP%\\runtime\\python-rag\\python.exe"',
+            launcher,
+        )
+        run_control = launcher[
+            launcher.index("\n:RUN_CONTROL") : launcher.index("\n:INSTALL")
+        ]
+        self.assertLess(
+            run_control.index("if defined NOTEST_MODE ("),
+            run_control.index("version --expect"),
         )
 
     def test_offline_launcher_redirects_bytecode_before_running_sealed_python(

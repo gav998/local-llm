@@ -24,9 +24,10 @@
 
 Отладочный marker `notest` рядом с BAT включает сознательно непроверенный
 короткий путь. Online-сценарий упаковывает уже существующее `app`, не изменяя
-его и не выполняя cleanup/probes/audits/seals/archive-test/rehydration. Приватная
+его и не выполняя recursive tree audit/cleanup/probes/audits/seals/archive-test/rehydration. Приватная
 runtime-конфигурация и логи исключаются фильтрами 7-Zip. Offline-сценарий только
-распаковывает архивы и публикует дерево. Контроллер пишет отдельный `validation_mode=notest`,
+распаковывает архивы и публикует дерево без сверки версии launcher/controller.
+Контроллер пишет отдельный `validation_mode=notest`,
 а не выдаёт пропущенный GPU E2E за успешный. Такой marker принимается при
 старте только пока присутствует сам файл `notest`; конфигурация, инициализация
 MySQL и реальные health checks выполняются при первом запуске профиля.

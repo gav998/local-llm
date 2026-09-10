@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.10.1"
+set "PROJECT_VERSION=2026.09.10.2"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -187,7 +187,7 @@ REM ============================================================================
 :Init
 for %%I in ("%~dp0.") do set "ROOT=%%~fI"
 set "NOTEST_MODE="
-if exist "%ROOT%\notest" if not exist "%ROOT%\notest\." set "NOTEST_MODE=1"
+if exist "%ROOT%\notest" set "NOTEST_MODE=1"
 set "APP=%ROOT%\app"
 set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%POWERSHELL_EXE%" (
@@ -211,8 +211,10 @@ set "POWERSHELL_TELEMETRY_OPTOUT=1"
 set "PSModuleAnalysisCachePath=NUL"
 set "DOTNET_CLI_HOME=%ROOT%"
 set "NUGET_PACKAGES=%ROOT%"
-call :AuditExistingManagedPaths
-if errorlevel 1 exit /b 1
+if not defined NOTEST_MODE (
+    call :AuditExistingManagedPaths
+    if errorlevel 1 exit /b 1
+)
 set "ROOT_TO_VALIDATE=%ROOT%"
 "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -Command "$bad=[char[]](32,33,35,38,40,41,37,59,94,60,62,124); if ($env:ROOT_TO_VALIDATE.IndexOfAny($bad) -ge 0) { exit 1 }" >nul 2>&1
 if errorlevel 1 (
