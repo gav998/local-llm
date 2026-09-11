@@ -319,10 +319,22 @@ class LauncherContractTest(unittest.TestCase):
             ":BootstrapPipForWheelhouse",
             '--no-index --find-links "%RAG_WHEELHOUSE%"',
             '--no-index --find-links "%OCR_WHEELHOUSE%"',
-            'pip download --dest "%RAG_WHEELHOUSE%"',
+            'pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --require-hashes',
+            'prepare_wheelhouse_lock.py',
+            'set "RAG_WHEEL_REQUIREMENTS=%RAG_WHEELHOUSE%\\requirements.lock"',
+            'pip install --dry-run --ignore-installed --no-index',
+            'pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_WHEEL_REQUIREMENTS%"',
             'pip download --dest "%OCR_WHEELHOUSE%"',
         ):
             self.assertIn(required, prepare)
+        self.assertNotIn(
+            'pip download --dest "%RAG_WHEELHOUSE%"',
+            prepare,
+        )
+        self.assertNotIn(
+            'pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_REQUIREMENTS%"',
+            prepare,
+        )
         self.assertNotIn("OCR_WHEEL_STAGE", prepare)
         self.assertNotIn(
             'RemoveTreeChecked "%OCR_WHEELHOUSE%"',

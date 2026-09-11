@@ -37,9 +37,12 @@ MySQL и реальные health checks выполняются при перво
 Wheelhouse не используется как переносимый offline-формат: это перенесло бы
 platform resolution на целевую машину. Но online-сборщик хранит разрешённые
 Windows wheels в `_src\wheelhouse\rag` и `_src\wheelhouse\ocr`, а внутренние
-кэши package managers — в `_src\package-cache`. При пересборке сначала делается
-полностью offline-проба wheelhouse и только недостающие файлы запрашиваются из
-индекса. В prepared-архивы по-прежнему попадают уже установленные и проверенные
+кэши package managers — в `_src\package-cache`. Source-only зависимости RAGFlow
+сначала собираются в wheels из дистрибутивов, проверенных по исходному lock-файлу,
+затем весь локальный набор получает отдельный hash-lock. При пересборке сначала
+делается полностью offline-проба этого wheelhouse; при некомплектности новый
+набор атомарно собирается в staging-каталоге с использованием package-manager
+кэшей. В prepared-архивы по-прежнему попадают уже установленные и проверенные
 runtime trees. GGUF переносятся отдельно.
 
 ## Portable boundary

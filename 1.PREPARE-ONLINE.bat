@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.10.3"
+set "PROJECT_VERSION=2026.09.11.1"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -548,6 +548,7 @@ for %%F in (
     "ragflow-windows-overrides.txt"
     "prepare_ragflow_assets.py"
     "prepare_ragflow_windows.py"
+    "prepare_wheelhouse_lock.py"
     "graphrag_native_adapter.py"
     "verify_ragflow_runtime.py"
     "sanitize_python_runtime.py"
@@ -1335,8 +1336,10 @@ call :FileSha256 "%PROJECT%\ragflow-windows-additions.txt" RAG_ADDITION_HASH
 if errorlevel 1 exit /b 1
 call :FileSha256 "%PROJECT%\ragflow-windows-excludes.txt" RAG_EXCLUDE_HASH
 if errorlevel 1 exit /b 1
+call :FileSha256 "%PROJECT%\prepare_wheelhouse_lock.py" RAG_WHEEL_LOCKER_HASH
+if errorlevel 1 exit /b 1
 set "RAG_MARKER=%APP%\config\ragflow-python.ok"
-set "RAG_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;scikit-learn=%SCIKIT_LEARN_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%"
+set "RAG_FINGERPRINT=project=%RESUME_GRAPH_VERSION%;ragflow=%RAGFLOW_VERSION%;python=%PY_RAG_VERSION%;numpy=%NUMPY_VERSION%;xgboost=%XGBOOST_VERSION%;scikit-learn=%SCIKIT_LEARN_VERSION%;datrie=%DATRIE_VERSION%;graspologic-native=%GRASPOLOGIC_NATIVE_VERSION%;addition=%RAG_ADDITION_HASH%;override=%RAG_OVERRIDE_HASH%;exclude=%RAG_EXCLUDE_HASH%;wheel-locker=%RAG_WHEEL_LOCKER_HASH%"
 call :MarkerMatches "%RAG_MARKER%" "%RAG_FINGERPRINT%"
 if errorlevel 1 goto :RAG_BUILD_RUNTIME
 call :FinalizeRagflowRuntime
@@ -1382,6 +1385,12 @@ if errorlevel 1 (
 )
 popd >nul
 
+call :FileSha256 "%RAG_REQUIREMENTS%" RAG_REQUIREMENTS_HASH
+if errorlevel 1 exit /b 1
+set "RAG_WHEEL_REQUIREMENTS=%RAG_WHEELHOUSE%\requirements.lock"
+set "RAG_WHEEL_MARKER=%RAG_WHEELHOUSE%\.local-llm-wheelhouse.ok"
+set "RAG_WHEEL_FINGERPRINT=source=%RAG_REQUIREMENTS_HASH%;python=%PY_RAG_VERSION%;pip=%PIN_PIP_VERSION%;locker=%RAG_WHEEL_LOCKER_HASH%"
+
 call :RemoveTreeChecked "%RAG_PY_DIR%\Lib\site-packages"
 if errorlevel 1 exit /b 1
 call :MakeDirChecked "%RAG_PY_DIR%\Lib\site-packages"
@@ -1398,32 +1407,78 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "%RAG_WHEELHOUSE%\pip-%PIN_PIP_VERSION%-py3-none-any.whl" (
-    call :AppendLogBanner "%RAG_PREPARE_LOG%" "cache pinned pip wheel for RAGFlow rebuilds"
-    "%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --only-binary=:all: "pip==%PIN_PIP_VERSION%" >>"%RAG_PREPARE_LOG%" 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Could not cache the pinned pip wheel for RAGFlow rebuilds.
-        echo [INFO] See %RAG_PREPARE_LOG%
-        call :PrintLogTail "%RAG_PREPARE_LOG%"
-        exit /b 1
-    )
+call :MarkerMatches "%RAG_WHEEL_MARKER%" "%RAG_WHEEL_FINGERPRINT%"
+if errorlevel 1 goto :RAG_WHEELHOUSE_BUILD
+if not exist "%RAG_WHEEL_REQUIREMENTS%" goto :RAG_WHEELHOUSE_BUILD
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "probe persistent RAGFlow wheelhouse without network"
+"%RAG_PY%" -m pip install --dry-run --ignore-installed --no-index --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_WHEEL_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    echo [INFO] RAGFlow wheelhouse is incomplete or failed hash validation; rebuilding it.
+    goto :RAG_WHEELHOUSE_BUILD
+)
+echo [SKIP] RAGFlow wheelhouse is complete; no package download was needed.
+goto :RAG_WHEELHOUSE_READY
+
+:RAG_WHEELHOUSE_BUILD
+set "RAG_WHEEL_STAGE=%WORK%\rag-wheelhouse-%RANDOM%-%RANDOM%"
+if exist "%RAG_WHEEL_STAGE%" (
+    echo [ERROR] Temporary RAGFlow wheelhouse collision: %RAG_WHEEL_STAGE%
+    exit /b 1
+)
+call :MakeDirChecked "%RAG_WHEEL_STAGE%"
+if errorlevel 1 exit /b 1
+
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "cache pinned pip wheel in staged RAGFlow wheelhouse"
+"%RAG_PY%" -m pip download --dest "%RAG_WHEEL_STAGE%" --only-binary=:all: "pip==%PIN_PIP_VERSION%" >>"%RAG_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not cache the pinned pip wheel for RAGFlow rebuilds."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
 )
 
-call :AppendLogBanner "%RAG_PREPARE_LOG%" "probe persistent RAGFlow wheelhouse without network"
-"%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --no-index --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "build complete binary RAGFlow wheelhouse from hash-locked inputs"
+"%RAG_PY%" -m pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
-    echo [INFO] RAGFlow wheelhouse is incomplete; downloading only missing wheels.
-    call :AppendLogBanner "%RAG_PREPARE_LOG%" "complete persistent RAGFlow wheelhouse from package index"
-    "%RAG_PY%" -m pip download --dest "%RAG_WHEELHOUSE%" --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
-    if errorlevel 1 (
-        echo [ERROR] Could not create the persistent binary RAGFlow wheelhouse.
-        echo [INFO] See %RAG_PREPARE_LOG%
-        call :PrintLogTail "%RAG_PREPARE_LOG%"
-        exit /b 1
-    )
-) else (
-    echo [SKIP] RAGFlow wheelhouse is complete; no package download was needed.
+    set "RAG_WHEELHOUSE_ERROR=Could not build the persistent binary RAGFlow wheelhouse."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
 )
+
+copy /y "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" "%RAG_WHEEL_STAGE%\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >nul 2>&1
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not stage the pinned datrie wheel."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+
+set "RAG_WHEEL_SEED=%RAG_WHEEL_STAGE%\requirements.in"
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "match source lock to locally built RAGFlow wheels"
+"%RAG_PY%" "%PROJECT%\prepare_wheelhouse_lock.py" --requirements "%RAG_REQUIREMENTS%" --wheelhouse "%RAG_WHEEL_STAGE%" --output "%RAG_WHEEL_SEED%" >>"%RAG_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not match the RAGFlow source lock to built wheels."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "compile hash lock for staged RAGFlow wheels"
+"%UV_EXE%" pip compile "%RAG_WHEEL_SEED%" --python "%RAG_PY%" --no-index --find-links "%RAG_WHEEL_STAGE%" --generate-hashes --no-header --no-annotate --output-file "%RAG_WHEEL_STAGE%\requirements.lock" >>"%RAG_PREPARE_LOG%" 2>&1
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not create the hash lock for built RAGFlow wheels."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+call :RemoveRegularFileChecked "%RAG_WHEEL_SEED%"
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not remove the temporary RAGFlow wheel seed."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+call :WriteFingerprintMarker "%RAG_WHEEL_STAGE%\.local-llm-wheelhouse.ok" "%RAG_WHEEL_FINGERPRINT%"
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not seal the staged RAGFlow wheelhouse."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+call :CopyExtractedTree "%RAG_WHEEL_STAGE%" "%RAG_WHEELHOUSE%" "requirements.lock"
+if errorlevel 1 (
+    set "RAG_WHEELHOUSE_ERROR=Could not publish the staged RAGFlow wheelhouse."
+    goto :RAG_WHEELHOUSE_BUILD_FAILED
+)
+
+:RAG_WHEELHOUSE_READY
 
 copy /y "%APP%\build\vendor-wheels\rag\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" "%RAG_WHEELHOUSE%\datrie-%DATRIE_VERSION%-cp313-cp313-win_amd64.whl" >nul 2>&1
 if errorlevel 1 (
@@ -1437,7 +1492,7 @@ if errorlevel 1 (
 )
 
 call :AppendLogBanner "%RAG_PREPARE_LOG%" "uv pip sync RAGFlow runtime from persistent wheelhouse"
-"%UV_EXE%" pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+"%UV_EXE%" pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_WHEEL_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [ERROR] RAGFlow dependency installation failed.
     echo [INFO] Native Windows is not an upstream-supported RAGFlow target.
@@ -1460,6 +1515,13 @@ if errorlevel 1 exit /b 1
 call :WriteFingerprintMarker "%RAG_MARKER%" "%RAG_FINGERPRINT%"
 if errorlevel 1 exit /b 1
 exit /b 0
+
+:RAG_WHEELHOUSE_BUILD_FAILED
+echo [ERROR] %RAG_WHEELHOUSE_ERROR%
+echo [INFO] See %RAG_PREPARE_LOG%
+call :PrintLogTail "%RAG_PREPARE_LOG%"
+if defined RAG_WHEEL_STAGE if exist "%RAG_WHEEL_STAGE%" call :RemoveTreeChecked "%RAG_WHEEL_STAGE%"
+exit /b 1
 
 :FinalizeRagflowRuntime
 if not exist "%RAG_PY_DIR%\Lib\site-packages\xgboost\lib\xgboost.dll" (
