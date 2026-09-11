@@ -1,0 +1,4 @@
+$ErrorActionPreference='Stop';$Root=Split-Path -Parent $PSScriptRoot;$Stage=Join-Path $PSScriptRoot '_build\package';$Out=Join-Path $PSScriptRoot 'prepared\local-llm-stack-2026.09.11.zip'
+if(Test-Path $Stage){Remove-Item $Stage -Recurse -Force}
+New-Item -ItemType Directory -Path $Stage,(Split-Path $Out) -Force|Out-Null
+try{Copy-Item (Join-Path $Root 'LOCAL-LLM.bat'),(Join-Path $Root 'README.md'),(Join-Path $Root 'LICENSE') -Destination $Stage;$StackStage=Join-Path $Stage 'stack';New-Item -ItemType Directory -Path $StackStage|Out-Null;Copy-Item (Join-Path $PSScriptRoot 'control.ps1'),(Join-Path $PSScriptRoot 'README.md') -Destination $StackStage;if(Test-Path $Out){Remove-Item $Out -Force};Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Out -CompressionLevel Optimal;Write-Host "[OK] Prepared orchestrator: $Out"}finally{if(Test-Path $Stage){Remove-Item $Stage -Recurse -Force}}

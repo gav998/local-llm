@@ -1,0 +1,10 @@
+{
+  "schema":1,"name":"web","version":"0.27.1+caddy-2.11.4",
+  "description":"RAGFlow web distribution and Caddy loopback gateway","ports":{"web":9388,"admin":2019},
+  "artifacts":[
+    {"file":"node-v24.20.0-win-x64.zip","url":"https://nodejs.org/dist/v24.20.0/node-v24.20.0-win-x64.zip","kind":"archive","strip_single_root":true,"target":"build/node","key":"build/node/node.exe"},
+    {"file":"ragflow-0.27.1.zip","url":"https://github.com/infiniflow/ragflow/archive/refs/tags/v0.27.1.zip","kind":"archive","strip_single_root":true,"target":"build/ragflow","key":"build/ragflow/web/package-lock.json"},
+    {"file":"caddy_2.11.4_windows_amd64.zip","url":"https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_windows_amd64.zip","kind":"archive","strip_single_root":false,"target":"runtime","key":"runtime/caddy.exe"}
+  ],
+  "runtime_dependencies":["ragflow"]
+}

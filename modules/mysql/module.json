@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "name": "mysql",
+  "version": "8.0.40",
+  "description": "Portable MySQL database for RAGFlow",
+  "ports": {"mysql": 3306},
+  "artifacts": [{
+    "file": "mysql-8.0.40-winx64.zip",
+    "url": "https://cdn.mysql.com/archives/mysql-8.0/mysql-8.0.40-winx64.zip",
+    "kind": "archive", "strip_single_root": true,
+    "target": "runtime", "key": "runtime/bin/mysqld.exe"
+  }],
+  "runtime_dependencies": []
+}

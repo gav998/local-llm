@@ -1,0 +1,17 @@
+{
+  "schema":1,"name":"paddleocr","version":"3.3.1+3.7.0+3.7.2",
+  "description":"Strict-GPU PaddleOCR PP-StructureV3 job API","ports":{"http":9399},
+  "artifacts":[
+    {"file":"uv-x86_64-pc-windows-msvc.zip","url":"https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-pc-windows-msvc.zip","kind":"archive","strip_single_root":false,"target":"build/uv","key":"build/uv/uv.exe"},
+    {"file":"cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","url":"https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","kind":"archive","strip_single_root":true,"target":"runtime/python","key":"runtime/python/python.exe"},
+    {"file":"paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl","url":"https://paddle-whl.cdn.bcebos.com/stable/cu118/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl","kind":"file","strip_single_root":false,"target":"vendor/paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl","key":"vendor/paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl"},
+    {"file":"PP-DocLayout-L_infer.tar","url":"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocLayout-L_infer.tar","kind":"archive","strip_single_root":true,"target":"models/PP-DocLayout-L","key":"models/PP-DocLayout-L/inference.json"},
+    {"file":"PP-DocBlockLayout_infer.tar","url":"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocBlockLayout_infer.tar","kind":"archive","strip_single_root":true,"target":"models/PP-DocBlockLayout","key":"models/PP-DocBlockLayout/inference.json"},
+    {"file":"PP-OCRv6_medium_det_infer.tar","url":"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_infer.tar","kind":"archive","strip_single_root":true,"target":"models/PP-OCRv6_medium_det","key":"models/PP-OCRv6_medium_det/inference.json"},
+    {"file":"eslav_PP-OCRv5_mobile_rec_infer.tar","url":"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/eslav_PP-OCRv5_mobile_rec_infer.tar","kind":"archive","strip_single_root":true,"target":"models/eslav_PP-OCRv5_mobile_rec","key":"models/eslav_PP-OCRv5_mobile_rec/inference.json"},
+    {"file":"SLANet_plus_infer.tar","url":"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_plus_infer.tar","kind":"archive","strip_single_root":true,"target":"models/SLANet_plus","key":"models/SLANet_plus/inference.json"},
+    {"file":"dejavu-sans-ttf-2.37.zip","url":"https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-sans-ttf-2.37.zip","kind":"archive","strip_single_root":true,"target":"font","key":"font/ttf/DejaVuSans.ttf"},
+    {"file":"VC_redist.x64.exe","url":"https://download.visualstudio.microsoft.com/download/pr/9d270333-8b7b-4f96-9458-6fcdb2ec0b25/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe","kind":"file","strip_single_root":false,"target":"vendor/VC_redist.x64.exe","key":"vendor/VC_redist.x64.exe"}
+  ],
+  "runtime_dependencies":[]
+}

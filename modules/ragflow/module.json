@@ -1,0 +1,14 @@
+{
+  "schema":1,"name":"ragflow","version":"0.27.1",
+  "description":"Native Windows RAGFlow API and task executor","ports":{"http":9380},
+  "artifacts":[
+    {"file":"uv-x86_64-pc-windows-msvc.zip","url":"https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-pc-windows-msvc.zip","kind":"archive","strip_single_root":false,"target":"build/uv","key":"build/uv/uv.exe"},
+    {"file":"cpython-3.13.15+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","url":"https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.13.15+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","kind":"archive","strip_single_root":true,"target":"runtime/python","key":"runtime/python/python.exe"},
+    {"file":"MinGit-2.55.0.5-64-bit.zip","url":"https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip","kind":"archive","strip_single_root":false,"target":"build/git","key":"build/git/cmd/git.exe"},
+    {"file":"ragflow-0.27.1.zip","url":"https://github.com/infiniflow/ragflow/archive/refs/tags/v0.27.1.zip","kind":"archive","strip_single_root":true,"target":"ragflow","key":"ragflow/pyproject.toml"},
+    {"file":"datrie-0.8.3-cp313-cp313-win_amd64.whl","url":"https://github.com/gav998/local-llm/releases/download/dependencies-2026.09.03.1/datrie-0.8.3-cp313-cp313-win_amd64.whl","kind":"file","strip_single_root":false,"target":"vendor/datrie-0.8.3-cp313-cp313-win_amd64.whl","key":"vendor/datrie-0.8.3-cp313-cp313-win_amd64.whl"},
+    {"file":"VC_redist.x64.exe","url":"https://download.visualstudio.microsoft.com/download/pr/9d270333-8b7b-4f96-9458-6fcdb2ec0b25/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe","kind":"file","strip_single_root":false,"target":"vendor/VC_redist.x64.exe","key":"vendor/VC_redist.x64.exe"}
+  ],
+  "runtime_dependencies":["mysql","elasticsearch","silo","valkey","llama-cpp","paddleocr"],
+  "mutable_paths":["ragflow/conf/local.service_conf.yaml","ragflow/logs/"]
+}
