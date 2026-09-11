@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Create exact, index-free input requirements from a populated wheelhouse."""
+"""Create an exact hash lock from a populated, already-resolved wheelhouse."""
 
 from __future__ import annotations
 
 import argparse
 import email.parser
+import hashlib
 import re
 import sys
 import urllib.parse
@@ -130,20 +131,30 @@ def wheel_identity(path: Path) -> RequirementPin:
     return RequirementPin(name=canonicalize_name(name), version=version)
 
 
-def create_seed(source_lock: Path, wheelhouse: Path, output: Path) -> int:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def create_lock(source_lock: Path, wheelhouse: Path, output: Path) -> int:
     pins = read_source_pins(source_lock)
-    available: dict[str, set[str]] = {}
+    available: dict[str, dict[str, list[Path]]] = {}
     wheels = sorted(wheelhouse.glob("*.whl"), key=lambda item: item.name.lower())
     if not wheels:
         raise WheelhouseLockError(f"Wheelhouse contains no wheels: {wheelhouse}")
     for wheel in wheels:
         identity = wheel_identity(wheel)
-        available.setdefault(identity.name, set()).add(identity.version)
+        available.setdefault(identity.name, {}).setdefault(identity.version, []).append(
+            wheel
+        )
 
     missing = [
         f"{pin.name}=={pin.version}"
         for pin in pins.values()
-        if pin.version not in available.get(pin.name, set())
+        if pin.version not in available.get(pin.name, {})
     ]
     if missing:
         preview = ", ".join(sorted(missing)[:20])
@@ -152,9 +163,29 @@ def create_seed(source_lock: Path, wheelhouse: Path, output: Path) -> int:
             f"Wheelhouse is missing {len(missing)} locked distributions: {preview}{suffix}"
         )
 
+    duplicates = []
+    selected: list[tuple[RequirementPin, Path]] = []
+    for pin in sorted(pins.values(), key=lambda item: (item.name, item.version)):
+        matches = available[pin.name][pin.version]
+        if len(matches) != 1:
+            duplicates.append(
+                f"{pin.name}=={pin.version}: "
+                + ", ".join(path.name for path in matches)
+            )
+        else:
+            selected.append((pin, matches[0]))
+    if duplicates:
+        preview = "; ".join(duplicates[:10])
+        suffix = "" if len(duplicates) <= 10 else f" (+{len(duplicates) - 10} more)"
+        raise WheelhouseLockError(
+            "Wheelhouse has ambiguous wheels for locked distributions: "
+            f"{preview}{suffix}"
+        )
+
     body = "".join(
-        f"{pin.name}=={pin.version}\n"
-        for pin in sorted(pins.values(), key=lambda item: (item.name, item.version))
+        f"{pin.name}=={pin.version} \\\n"
+        f"    --hash=sha256:{sha256_file(wheel)}\n"
+        for pin, wheel in selected
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f"{output.name}.tmp")
@@ -174,11 +205,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        count = create_seed(args.requirements, args.wheelhouse, args.output)
+        count = create_lock(args.requirements, args.wheelhouse, args.output)
     except (OSError, UnicodeError, WheelhouseLockError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
-    print(f"[OK] Matched {count} locked distributions to local wheels")
+    print(f"[OK] Hash-locked {count} distributions to local wheels")
     return 0
 
 

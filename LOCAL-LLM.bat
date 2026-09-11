@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
-set "CONTROL_VERSION=2026.09.11.1"
+set "CONTROL_VERSION=2026.09.11.2"
 set "SCRIPT_RC=0"
 set "LOCK_HELD="
 set "INSTALL_STAGE="

@@ -14,7 +14,7 @@ REM pip/npm/Hugging Face are used only to resolve transitive dependencies while
 REM this online build is being prepared. Their completed outputs are archived.
 REM ============================================================================
 
-set "PROJECT_VERSION=2026.09.11.1"
+set "PROJECT_VERSION=2026.09.11.2"
 REM Step resume markers intentionally use a component graph version instead of
 REM PROJECT_VERSION so launcher-only fixes do not invalidate completed runtimes.
 set "RESUME_GRAPH_VERSION=2026.09.08.8"
@@ -1411,7 +1411,7 @@ call :MarkerMatches "%RAG_WHEEL_MARKER%" "%RAG_WHEEL_FINGERPRINT%"
 if errorlevel 1 goto :RAG_WHEELHOUSE_BUILD
 if not exist "%RAG_WHEEL_REQUIREMENTS%" goto :RAG_WHEELHOUSE_BUILD
 call :AppendLogBanner "%RAG_PREPARE_LOG%" "probe persistent RAGFlow wheelhouse without network"
-"%RAG_PY%" -m pip install --dry-run --ignore-installed --no-index --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_WHEEL_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+"%RAG_PY%" -m pip install --dry-run --ignore-installed --no-deps --no-index --find-links "%RAG_WHEELHOUSE%" --only-binary=:all: --require-hashes --requirement "%RAG_WHEEL_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     echo [INFO] RAGFlow wheelhouse is incomplete or failed hash validation; rebuilding it.
     goto :RAG_WHEELHOUSE_BUILD
@@ -1436,7 +1436,7 @@ if errorlevel 1 (
 )
 
 call :AppendLogBanner "%RAG_PREPARE_LOG%" "build complete binary RAGFlow wheelhouse from hash-locked inputs"
-"%RAG_PY%" -m pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
+"%RAG_PY%" -m pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --no-deps --require-hashes --requirement "%RAG_REQUIREMENTS%" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
     set "RAG_WHEELHOUSE_ERROR=Could not build the persistent binary RAGFlow wheelhouse."
     goto :RAG_WHEELHOUSE_BUILD_FAILED
@@ -1448,23 +1448,10 @@ if errorlevel 1 (
     goto :RAG_WHEELHOUSE_BUILD_FAILED
 )
 
-set "RAG_WHEEL_SEED=%RAG_WHEEL_STAGE%\requirements.in"
-call :AppendLogBanner "%RAG_PREPARE_LOG%" "match source lock to locally built RAGFlow wheels"
-"%RAG_PY%" "%PROJECT%\prepare_wheelhouse_lock.py" --requirements "%RAG_REQUIREMENTS%" --wheelhouse "%RAG_WHEEL_STAGE%" --output "%RAG_WHEEL_SEED%" >>"%RAG_PREPARE_LOG%" 2>&1
+call :AppendLogBanner "%RAG_PREPARE_LOG%" "hash-lock locally built RAGFlow wheels without dependency re-resolution"
+"%RAG_PY%" "%PROJECT%\prepare_wheelhouse_lock.py" --requirements "%RAG_REQUIREMENTS%" --wheelhouse "%RAG_WHEEL_STAGE%" --output "%RAG_WHEEL_STAGE%\requirements.lock" >>"%RAG_PREPARE_LOG%" 2>&1
 if errorlevel 1 (
-    set "RAG_WHEELHOUSE_ERROR=Could not match the RAGFlow source lock to built wheels."
-    goto :RAG_WHEELHOUSE_BUILD_FAILED
-)
-
-call :AppendLogBanner "%RAG_PREPARE_LOG%" "compile hash lock for staged RAGFlow wheels"
-"%UV_EXE%" pip compile "%RAG_WHEEL_SEED%" --python "%RAG_PY%" --no-index --find-links "%RAG_WHEEL_STAGE%" --generate-hashes --no-header --no-annotate --output-file "%RAG_WHEEL_STAGE%\requirements.lock" >>"%RAG_PREPARE_LOG%" 2>&1
-if errorlevel 1 (
-    set "RAG_WHEELHOUSE_ERROR=Could not create the hash lock for built RAGFlow wheels."
-    goto :RAG_WHEELHOUSE_BUILD_FAILED
-)
-call :RemoveRegularFileChecked "%RAG_WHEEL_SEED%"
-if errorlevel 1 (
-    set "RAG_WHEELHOUSE_ERROR=Could not remove the temporary RAGFlow wheel seed."
+    set "RAG_WHEELHOUSE_ERROR=Could not match and hash-lock the RAGFlow wheels."
     goto :RAG_WHEELHOUSE_BUILD_FAILED
 )
 call :WriteFingerprintMarker "%RAG_WHEEL_STAGE%\.local-llm-wheelhouse.ok" "%RAG_WHEEL_FINGERPRINT%"

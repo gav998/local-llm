@@ -319,14 +319,18 @@ class LauncherContractTest(unittest.TestCase):
             ":BootstrapPipForWheelhouse",
             '--no-index --find-links "%RAG_WHEELHOUSE%"',
             '--no-index --find-links "%OCR_WHEELHOUSE%"',
-            'pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --require-hashes',
+            'pip wheel --wheel-dir "%RAG_WHEEL_STAGE%" --no-deps --require-hashes',
             'prepare_wheelhouse_lock.py',
             'set "RAG_WHEEL_REQUIREMENTS=%RAG_WHEELHOUSE%\\requirements.lock"',
-            'pip install --dry-run --ignore-installed --no-index',
+            'pip install --dry-run --ignore-installed --no-deps --no-index',
             'pip sync --python "%RAG_PY%" --no-index --find-links "%RAG_WHEELHOUSE%" --require-hashes "%RAG_WHEEL_REQUIREMENTS%"',
             'pip download --dest "%OCR_WHEELHOUSE%"',
         ):
             self.assertIn(required, prepare)
+        self.assertNotIn(
+            'pip compile "%RAG_WHEEL_SEED%"',
+            prepare,
+        )
         self.assertNotIn(
             'pip download --dest "%RAG_WHEELHOUSE%"',
             prepare,

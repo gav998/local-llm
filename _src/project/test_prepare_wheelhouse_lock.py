@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from prepare_wheelhouse_lock import WheelhouseLockError, create_seed  # noqa: E402
+from prepare_wheelhouse_lock import WheelhouseLockError, create_lock  # noqa: E402
 
 
 def make_wheel(directory: Path, name: str, version: str) -> Path:
@@ -34,7 +35,7 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         self.wheelhouse = self.root / "wheelhouse"
         self.wheelhouse.mkdir()
         self.requirements = self.root / "source.txt"
-        self.output = self.root / "seed.txt"
+        self.output = self.root / "requirements.lock"
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -52,12 +53,21 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        count = create_seed(self.requirements, self.wheelhouse, self.output)
+        count = create_lock(self.requirements, self.wheelhouse, self.output)
 
         self.assertEqual(count, 2)
+        ja_hash = hashlib.sha256(
+            (self.wheelhouse / "ja_core_news_sm-3.8.0-py3-none-any.whl").read_bytes()
+        ).hexdigest()
+        source_hash = hashlib.sha256(
+            (self.wheelhouse / "source_only-1.0.0-py3-none-any.whl").read_bytes()
+        ).hexdigest()
         self.assertEqual(
             self.output.read_text(encoding="utf-8"),
-            "ja-core-news-sm==3.8.0\nsource-only==1.0.0\n",
+            f"ja-core-news-sm==3.8.0 \\\n"
+            f"    --hash=sha256:{ja_hash}\n"
+            f"source-only==1.0.0 \\\n"
+            f"    --hash=sha256:{source_hash}\n",
         )
 
     def test_rejects_missing_locked_wheel(self) -> None:
@@ -65,7 +75,7 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         self.requirements.write_text("example==1.0\n", encoding="utf-8")
 
         with self.assertRaisesRegex(WheelhouseLockError, "example==1.0"):
-            create_seed(self.requirements, self.wheelhouse, self.output)
+            create_lock(self.requirements, self.wheelhouse, self.output)
 
     def test_rejects_direct_source_archive(self) -> None:
         make_wheel(self.wheelhouse, "example", "1.0")
@@ -75,7 +85,16 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(WheelhouseLockError, "not a wheel"):
-            create_seed(self.requirements, self.wheelhouse, self.output)
+            create_lock(self.requirements, self.wheelhouse, self.output)
+
+    def test_rejects_ambiguous_wheels_for_one_pin(self) -> None:
+        first = make_wheel(self.wheelhouse, "example", "1.0")
+        second = self.wheelhouse / "example-1.0-cp313-cp313-win_amd64.whl"
+        second.write_bytes(first.read_bytes())
+        self.requirements.write_text("example==1.0\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(WheelhouseLockError, "ambiguous wheels"):
+            create_lock(self.requirements, self.wheelhouse, self.output)
 
 
 if __name__ == "__main__":
