@@ -59,7 +59,12 @@ def remove_console_launchers(runtime: Path, site_packages: Path) -> list[str]:
 
     records = sorted(site_packages.glob("*.dist-info/RECORD"))
     removed: list[str] = []
-    for launcher in sorted(scripts.rglob("*.exe")):
+    # uv can install both Windows ``.exe`` shims and POSIX-style text entry
+    # points into Scripts.  The latter retain an absolute build-machine
+    # shebang even on Windows.  Every distribution-owned file below Scripts is
+    # an optional command-line entry point for this runtime, so remove both
+    # forms.  RAGFlow invokes modules through the bundled interpreter instead.
+    for launcher in sorted(path for path in scripts.rglob("*") if path.is_file()):
         if launcher.is_symlink() or not launcher.is_file():
             raise RuntimeError(f"Console launcher is not a regular file: {launcher}")
         record_target = os.path.relpath(launcher, site_packages).replace(os.sep, "/")
@@ -69,9 +74,11 @@ def remove_console_launchers(runtime: Path, site_packages: Path) -> list[str]:
             if remove_record_row(record, record_target)
         ]
         if not owners:
-            raise RuntimeError(
-                f"Console launcher has no owning distribution RECORD: {launcher}"
-            )
+            if launcher.suffix.casefold() == ".exe":
+                raise RuntimeError(
+                    f"Console launcher has no owning distribution RECORD: {launcher}"
+                )
+            continue
         relative = launcher.relative_to(runtime).as_posix()
         launcher.unlink()
         removed.append(relative)
