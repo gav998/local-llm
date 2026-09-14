@@ -24,7 +24,7 @@ function Reset-Directory([string]$Path) {
     if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
 }
-function Expand-Artifact([string]$Archive,[string]$Destination,[bool]$Strip,[string]$SevenZip) {
+function Expand-Artifact([string]$Archive,[string]$Destination,[bool]$Strip,[string]$SevenZip,[string[]]$ExcludeEntries) {
     $Stage = Join-Path $BuildRoot ('extract-' + [guid]::NewGuid().ToString('N'))
     $Content = Join-Path $Stage 'content'
     New-Item -ItemType Directory -Path $Content -Force | Out-Null
@@ -36,7 +36,13 @@ function Expand-Artifact([string]$Archive,[string]$Destination,[bool]$Strip,[str
             $Tar = Get-ChildItem -LiteralPath $Gzip -Filter '*.tar' -File | Select-Object -First 1
             if (-not $Tar) { throw "No tar member in $Archive" }
             & $SevenZip x -y "-o$Content" $Tar.FullName | Out-Null
-        } else { & $SevenZip x -y "-o$Content" $Archive | Out-Null }
+        } else {
+            $ExtractArguments=@('x','-y',"-o$Content",$Archive)
+            foreach($Entry in @($ExcludeEntries)){
+                if(-not [string]::IsNullOrWhiteSpace($Entry)){$ExtractArguments += "-x!$Entry"}
+            }
+            & $SevenZip @ExtractArguments | Out-Null
+        }
         if ($LASTEXITCODE -ne 0) { throw "Cannot expand: $Archive" }
         $CopyRoot = $Content
         if ($Strip) {
@@ -67,7 +73,7 @@ New-Item -ItemType Directory -Path $PayloadRoot | Out-Null
 foreach($Artifact in $Manifest.artifacts){
     $Source=Join-Path $SourceRoot $Artifact.file; $Target=Join-Path $PayloadRoot $Artifact.target
     if($Artifact.kind -eq 'file'){New-Item -ItemType Directory -Path (Split-Path -Parent $Target) -Force|Out-Null; Copy-Item -LiteralPath $Source -Destination $Target -Force}
-    else{Expand-Artifact $Source $Target ([bool]$Artifact.strip_single_root) $SevenZip}
+    else{$ExcludeEntries=@($Artifact.extract_excludes|ForEach-Object{[string]$_});Expand-Artifact -Archive $Source -Destination $Target -Strip ([bool]$Artifact.strip_single_root) -SevenZip $SevenZip -ExcludeEntries $ExcludeEntries}
     if(-not(Test-Path -LiteralPath (Join-Path $PayloadRoot $Artifact.key) -PathType Leaf)){throw "Artifact key missing: $($Artifact.key)"}
 }
 $Hook=Join-Path $PSScriptRoot 'build-hook.ps1'
