@@ -81,5 +81,57 @@ class RemoveConsoleLaunchersTests(unittest.TestCase):
                 )
 
 
+class RemoveNonRuntimeTreeTests(unittest.TestCase):
+    def test_removes_litellm_benchmarks_and_their_record_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            site_packages = Path(temporary) / "site-packages"
+            benchmarks = (
+                site_packages / sanitize_python_runtime.LITELLM_GUARDRAIL_BENCHMARKS
+            )
+            result = benchmarks / "results" / (
+                "block_age_discrimination_-_contentfilter_"
+                "(age_discrimination.yaml).json"
+            )
+            sibling = benchmarks.parent / "content_filter_handler.py"
+            record = site_packages / "litellm-1.0.dist-info" / "RECORD"
+            result.parent.mkdir(parents=True)
+            sibling.parent.mkdir(parents=True, exist_ok=True)
+            record.parent.mkdir(parents=True)
+            result.write_text("{}\n", encoding="utf-8")
+            sibling.write_text("# runtime code\n", encoding="utf-8")
+            with record.open("w", encoding="utf-8", newline="") as stream:
+                csv.writer(stream, lineterminator="\n").writerows(
+                    [
+                        [
+                            result.relative_to(site_packages).as_posix(),
+                            "",
+                            "",
+                        ],
+                        [sibling.relative_to(site_packages).as_posix(), "", ""],
+                    ]
+                )
+
+            removed = sanitize_python_runtime.remove_non_runtime_tree(
+                site_packages,
+                sanitize_python_runtime.LITELLM_GUARDRAIL_BENCHMARKS,
+                "litellm-*.dist-info/RECORD",
+            )
+
+            self.assertEqual(
+                removed,
+                {
+                    "path": sanitize_python_runtime.LITELLM_GUARDRAIL_BENCHMARKS.as_posix(),
+                    "files_removed": 1,
+                },
+            )
+            self.assertFalse(benchmarks.exists())
+            self.assertTrue(sibling.is_file())
+            with record.open("r", encoding="utf-8", newline="") as stream:
+                self.assertEqual(
+                    list(csv.reader(stream)),
+                    [[sibling.relative_to(site_packages).as_posix(), "", ""]],
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ $Manifest = Get-Content -LiteralPath (Join-Path $ModuleRoot 'module.json') -Raw 
 $SourceRoot = Join-Path $ModuleRoot '_src'
 $BuildRoot = Join-Path $ModuleRoot '_build'
 $PayloadRoot = Join-Path $BuildRoot 'payload'
-$PackageRoot = Join-Path $BuildRoot 'package'
+$PackageRoot = Join-Path $BuildRoot 'p'
 $PreparedRoot = Join-Path $ModuleRoot 'prepared'
 
 function Require-Source([string]$Name,[string]$Url) {
@@ -94,5 +94,5 @@ $Archive=Join-Path $PreparedRoot ("local-llm-{0}-{1}.7z" -f $Manifest.name,$Mani
 if(Test-Path $Archive){Remove-Item $Archive -Force}
 Push-Location $PackageRoot
 try{& $SevenZip a -t7z -mx=7 -ms=on -mmt=on $Archive 'modules'|Out-Null;if($LASTEXITCODE -ne 0){throw 'Packaging failed'};& $SevenZip t $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive test failed'}}finally{Pop-Location}
-$Rehydrate=Join-Path $BuildRoot 'rehydrate';New-Item -ItemType Directory -Path $Rehydrate -Force|Out-Null;& $SevenZip x -y "-o$Rehydrate" $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive rehydration failed'};& (Join-Path $Rehydrate "modules\$($Manifest.name)\control.ps1") -CommandName verify-payload;if($LASTEXITCODE -ne 0){throw 'Rehydrated payload verification failed'};Remove-Item $Rehydrate -Recurse -Force
+$Rehydrate=Join-Path $BuildRoot 'r';New-Item -ItemType Directory -Path $Rehydrate -Force|Out-Null;& $SevenZip x -y "-o$Rehydrate" $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive rehydration failed'};& (Join-Path $Rehydrate "modules\$($Manifest.name)\control.ps1") -CommandName verify-payload;if($LASTEXITCODE -ne 0){throw 'Rehydrated payload verification failed'};Remove-Item $Rehydrate -Recurse -Force
 Write-Host "[OK] Prepared: $Archive" -ForegroundColor Green

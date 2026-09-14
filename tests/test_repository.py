@@ -72,6 +72,16 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertIn("$env:PYTHONPYCACHEPREFIX=$PreviousPythonPycCachePrefix", hook)
 
+    def test_module_packaging_uses_short_windows_staging_paths(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for prepare_path in sorted(modules.glob("*/src/prepare.ps1")):
+            with self.subTest(module=prepare_path.parents[1].name):
+                prepare = prepare_path.read_text(encoding="utf-8")
+                self.assertIn("$PackageRoot = Join-Path $BuildRoot 'p'", prepare)
+                self.assertIn("$Rehydrate=Join-Path $BuildRoot 'r'", prepare)
+                self.assertNotIn("Join-Path $BuildRoot 'package'", prepare)
+                self.assertNotIn("Join-Path $BuildRoot 'rehydrate'", prepare)
+
 
 if __name__ == "__main__":
     unittest.main()
