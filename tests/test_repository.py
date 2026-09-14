@@ -26,6 +26,16 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn("$ErrorActionPreference='Continue'", hook)
                 self.assertEqual(hook.count("*>>$Log"), 1)
 
+    def test_python_import_probes_survive_windows_powershell_quoting(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for name in ("paddleocr", "ragflow"):
+            with self.subTest(module=name):
+                control = (modules / name / "control.ps1").read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn('print("', control)
+                self.assertIn("& $Python -c 'import ", control)
+
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
         expected = [
