@@ -20,7 +20,15 @@ Push-Location $Rag
 try{Invoke-LoggedNative $Uv @('export','--frozen','--no-group','test','--no-emit-project','--no-emit-package','numpy','--no-emit-package','xgboost','--no-emit-package','datrie','--no-emit-package','graspologic','--no-emit-package','infinity-emb','--no-emit-package','unclecode-litellm','--no-emit-package','agentrun-mem0ai','--no-header','--no-annotate','--format','requirements-txt','--output-file',$Upstream) 'RAGFlow lock export failed'
 Invoke-LoggedNative $Uv @('pip','compile',(Join-Path $Rag 'pyproject.toml'),(Join-Path $PSScriptRoot 'ragflow-windows-additions.txt'),'--python',$Python,'--constraints',$Upstream,'--overrides',(Join-Path $PSScriptRoot 'ragflow-windows-overrides.txt'),'--excludes',(Join-Path $PSScriptRoot 'ragflow-windows-excludes.txt'),'--generate-hashes','--no-header','--no-annotate','--output-file',$Windows) 'RAGFlow Windows lock compile failed'}finally{Pop-Location}
 Invoke-LoggedNative $Uv @('pip','install','--python',$Python,'pip==26.2.1') 'pip bootstrap failed'
-Invoke-LoggedNative $Python @('-m','pip','wheel','--wheel-dir',$Wheelhouse,'--no-deps','--require-hashes','--requirement',$Windows) 'RAGFlow wheelhouse build failed'
+# Setuptools mirrors absolute source paths below PYTHONPYCACHEPREFIX.  On
+# Windows that makes thrift's temporary optimized-pyc path exceed MAX_PATH.
+$PreviousPythonPycCachePrefix=$env:PYTHONPYCACHEPREFIX
+try{
+    Remove-Item Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue
+    Invoke-LoggedNative $Python @('-m','pip','wheel','--wheel-dir',$Wheelhouse,'--no-deps','--require-hashes','--requirement',$Windows) 'RAGFlow wheelhouse build failed'
+}finally{
+    if($null -eq $PreviousPythonPycCachePrefix){Remove-Item Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue}else{$env:PYTHONPYCACHEPREFIX=$PreviousPythonPycCachePrefix}
+}
 Copy-Item (Join-Path $PayloadRoot 'vendor\datrie-0.8.3-cp313-cp313-win_amd64.whl') $Wheelhouse -Force
 $WheelLock=Join-Path $Wheelhouse 'requirements.lock';Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'prepare_wheelhouse_lock.py'),'--requirements',$Windows,'--wheelhouse',$Wheelhouse,'--output',$WheelLock) 'Wheelhouse lock failed'
 Copy-Item $WheelLock (Join-Path $Locks 'ragflow-wheelhouse.lock') -Force

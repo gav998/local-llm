@@ -26,26 +26,41 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn("$ErrorActionPreference='Continue'", hook)
                 self.assertEqual(hook.count("*>>$Log"), 1)
 
-    def test_ragflow_archive_excludes_upstream_development_symlinks(self) -> None:
+    def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
-        module_root = root / "modules" / "ragflow"
-        manifest = json.loads((module_root / "module.json").read_text(encoding="utf-8"))
-        source = next(
-            artifact
-            for artifact in manifest["artifacts"]
-            if artifact["file"] == "ragflow-0.27.1.zip"
-        )
+        expected = [
+            "ragflow-0.27.1/CLAUDE.md",
+            "ragflow-0.27.1/internal/deepdoc/parser/pdf/tool/testdata",
+        ]
+        for module_name in ("ragflow", "web"):
+            with self.subTest(module=module_name):
+                module_root = root / "modules" / module_name
+                manifest = json.loads(
+                    (module_root / "module.json").read_text(encoding="utf-8")
+                )
+                source = next(
+                    artifact
+                    for artifact in manifest["artifacts"]
+                    if artifact["file"] == "ragflow-0.27.1.zip"
+                )
+                self.assertEqual(source["extract_excludes"], expected)
+                prepare = (module_root / "src" / "prepare.ps1").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("[string[]]$ExcludeEntries", prepare)
+                self.assertIn('"-x!$Entry"', prepare)
 
-        self.assertEqual(
-            source["extract_excludes"],
-            [
-                "ragflow-0.27.1/CLAUDE.md",
-                "ragflow-0.27.1/internal/deepdoc/parser/pdf/tool/testdata",
-            ],
+    def test_ragflow_wheel_build_avoids_prefixed_bytecode_paths(self) -> None:
+        hook = (
+            Path(__file__).parents[1] / "modules" / "ragflow" / "src" / "build-hook.ps1"
+        ).read_text(encoding="utf-8")
+        wheel_command = "@('-m','pip','wheel'"
+        self.assertIn("$PreviousPythonPycCachePrefix=$env:PYTHONPYCACHEPREFIX", hook)
+        self.assertLess(
+            hook.index("Remove-Item Env:PYTHONPYCACHEPREFIX"),
+            hook.index(wheel_command),
         )
-        prepare = (module_root / "src" / "prepare.ps1").read_text(encoding="utf-8")
-        self.assertIn("[string[]]$ExcludeEntries", prepare)
-        self.assertIn('"-x!$Entry"', prepare)
+        self.assertIn("$env:PYTHONPYCACHEPREFIX=$PreviousPythonPycCachePrefix", hook)
 
 
 if __name__ == "__main__":
