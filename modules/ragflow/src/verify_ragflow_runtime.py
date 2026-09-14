@@ -144,6 +144,22 @@ def check_python() -> str:
     return f"CPython {sys.version.split()[0]}"
 
 
+def configure_nltk_data(ragflow_dir: Path) -> str:
+    """Expose only the NLTK data bundled beside the prepared RAGFlow tree."""
+
+    nltk_dir = ragflow_dir.parent / "assets" / "nltk"
+    if nltk_dir.is_symlink() or not nltk_dir.is_dir():
+        raise RuntimeError(
+            f"Missing safe portable NLTK data directory: {nltk_dir}"
+        )
+    # NLTK snapshots its trusted data roots during import.  This must happen
+    # before task_executor (or any of its transitive dependencies) imports it.
+    # Replacing, rather than extending, the variable keeps the smoke isolated
+    # from user-profile and machine-wide downloads.
+    os.environ["NLTK_DATA"] = str(nltk_dir)
+    return f"NLTK_DATA={nltk_dir}"
+
+
 def check_ragflow_source(ragflow_dir: Path) -> str:
     pyproject = ragflow_dir / "pyproject.toml"
     if not pyproject.is_file():
@@ -635,6 +651,10 @@ def main() -> int:
     args = parser.parse_args()
     ragflow_dir = args.ragflow_dir.resolve()
 
+    run_check(
+        "Configure portable NLTK data",
+        lambda: configure_nltk_data(ragflow_dir),
+    )
     run_check("Portable Python", check_python)
     run_check("Pinned RAGFlow source", lambda: check_ragflow_source(ragflow_dir))
     run_check("Pinned native Python distributions", check_distributions)
