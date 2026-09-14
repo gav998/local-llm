@@ -14,6 +14,17 @@ class RepositoryContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertEqual(module.validate(), [])
 
+    def test_native_build_logs_do_not_turn_stderr_into_fatal_errors(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for name in ("paddleocr", "ragflow", "web"):
+            with self.subTest(module=name):
+                hook = (modules / name / "src" / "build-hook.ps1").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("function Invoke-LoggedNative", hook)
+                self.assertIn("$ErrorActionPreference='Continue'", hook)
+                self.assertEqual(hook.count("*>>$Log"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
