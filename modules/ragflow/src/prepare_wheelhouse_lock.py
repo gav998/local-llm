@@ -113,7 +113,7 @@ def wheel_identity(path: Path) -> RequirementPin:
             metadata_names = [
                 name
                 for name in archive.namelist()
-                if name.endswith(".dist-info/METADATA")
+                if name.endswith(".dist-info/METADATA") and name.count("/") == 1
             ]
             if len(metadata_names) != 1:
                 raise WheelhouseLockError(

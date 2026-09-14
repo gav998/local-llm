@@ -87,6 +87,32 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         with self.assertRaisesRegex(WheelhouseLockError, "not a wheel"):
             create_lock(self.requirements, self.wheelhouse, self.output)
 
+    def test_ignores_vendored_dist_info_metadata(self) -> None:
+        wheel = make_wheel(self.wheelhouse, "example", "1.0")
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr(
+                "example/_vendor/dependency-2.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: dependency\nVersion: 2.0\n",
+            )
+        self.requirements.write_text("example==1.0\n", encoding="utf-8")
+
+        count = create_lock(self.requirements, self.wheelhouse, self.output)
+
+        self.assertEqual(count, 1)
+        self.assertIn("example==1.0", self.output.read_text(encoding="utf-8"))
+
+    def test_rejects_multiple_root_dist_info_metadata_files(self) -> None:
+        wheel = make_wheel(self.wheelhouse, "example", "1.0")
+        with zipfile.ZipFile(wheel, "a") as archive:
+            archive.writestr(
+                "other-1.0.dist-info/METADATA",
+                "Metadata-Version: 2.1\nName: other\nVersion: 1.0\n",
+            )
+        self.requirements.write_text("example==1.0\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(WheelhouseLockError, "exactly one METADATA"):
+            create_lock(self.requirements, self.wheelhouse, self.output)
+
     def test_rejects_ambiguous_wheels_for_one_pin(self) -> None:
         first = make_wheel(self.wheelhouse, "example", "1.0")
         second = self.wheelhouse / "example-1.0-cp313-cp313-win_amd64.whl"
