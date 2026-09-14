@@ -10,5 +10,6 @@
     "kind": "archive", "strip_single_root": true,
     "target": "runtime", "key": "runtime/bin/mysqld.exe"
   }],
-  "runtime_dependencies": []
+  "runtime_dependencies": [],
+  "mutable_paths": []
 }

@@ -83,6 +83,11 @@ def validate() -> list[str]:
             errors.append(f"{name}: invalid identity/schema")
         if manifest.get("version") != version:
             errors.append(f"{name}: version changed: {manifest.get('version')} != {version}")
+        mutable_paths = manifest.get("mutable_paths")
+        if not isinstance(mutable_paths, list) or not all(
+            isinstance(path, str) and path for path in mutable_paths
+        ):
+            errors.append(f"{name}: mutable_paths must be an array of non-empty strings")
         for artifact in manifest.get("artifacts", []):
             artifacts.add(str(artifact.get("file", "")))
             for key in ("file", "url", "kind", "target", "key"):

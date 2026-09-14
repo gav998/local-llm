@@ -13,5 +13,6 @@
     {"file":"dejavu-sans-ttf-2.37.zip","url":"https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-sans-ttf-2.37.zip","kind":"archive","strip_single_root":true,"target":"font","key":"font/ttf/DejaVuSans.ttf"},
     {"file":"VC_redist.x64.exe","url":"https://download.visualstudio.microsoft.com/download/pr/9d270333-8b7b-4f96-9458-6fcdb2ec0b25/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe","kind":"file","strip_single_root":false,"target":"vendor/VC_redist.x64.exe","key":"vendor/VC_redist.x64.exe"}
   ],
-  "runtime_dependencies":[]
+  "runtime_dependencies":[],
+  "mutable_paths":[]
 }
