@@ -101,6 +101,24 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertNotIn("Get-Item $p", runtime)
                 self.assertNotIn("Get-FileHash $p", runtime)
 
+    def test_stack_commands_fail_before_using_unsealed_source_modules(self) -> None:
+        root = Path(__file__).parents[1]
+        control = (root / "stack" / "control.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Assert-SealedModules", control)
+        self.assertIn("'install'{Assert-SealedModules $Order", control)
+        self.assertIn("'start'{Assert-SealedModules $Order", control)
+        self.assertIn("'status'{Assert-SealedModules $Order", control)
+        self.assertIn("'verify'{Assert-SealedModules $Order", control)
+        self.assertIn("Run LOCAL-LLM.bat there, not in the source tree", control)
+
+    def test_orchestrator_requires_all_prepared_module_archives(self) -> None:
+        prepare = (
+            Path(__file__).parents[1] / "stack" / "prepare.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("$MissingArchives = @()", prepare)
+        self.assertIn("prepared\\local-llm-{0}-{1}.7z", prepare)
+        self.assertIn("CHECK-SOURCES.bat checks downloads only", prepare)
+
 
 if __name__ == "__main__":
     unittest.main()
