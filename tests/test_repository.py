@@ -36,6 +36,18 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertNotIn('print("', control)
                 self.assertIn("& $Python -c 'import ", control)
 
+    def test_mysql_readiness_probe_tolerates_transient_native_stderr(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        probe = control[control.index("function Probe-MySql{") :]
+        probe = probe[: probe.index("function Start-MySql")]
+        self.assertIn("$ErrorActionPreference='Continue'", probe)
+        self.assertIn("return $LASTEXITCODE -eq 0", probe)
+        self.assertIn(
+            "$ErrorActionPreference=$PreviousErrorActionPreference", probe
+        )
+
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
         expected = [

@@ -40,7 +40,16 @@ user=localadmin
 password=$($Secrets.root_password)
 "@|Set-Content -LiteralPath $AdminIni -Encoding ASCII
 }
-function Probe-MySql{& (Join-Path $Runtime 'bin\mysql.exe') "--defaults-extra-file=$ClientIni" --batch --skip-column-names -e 'SELECT 1' 2>$null|Out-Null;return $LASTEXITCODE -eq 0}
+function Probe-MySql{
+ $PreviousErrorActionPreference=$ErrorActionPreference
+ try{
+  # A refused connection is expected while mysqld is opening its listener. Windows
+  # PowerShell otherwise promotes mysql.exe stderr to a terminating NativeCommandError.
+  $ErrorActionPreference='Continue'
+  & (Join-Path $Runtime 'bin\mysql.exe') "--defaults-extra-file=$ClientIni" --batch --skip-column-names -e 'SELECT 1' 2>$null|Out-Null
+  return $LASTEXITCODE -eq 0
+ }finally{$ErrorActionPreference=$PreviousErrorActionPreference}
+}
 function Start-MySql{$s=Read-Json $SecretsPath;Write-Config $s;Start-OwnedProcess 'mysql' (Join-Path $Runtime 'bin\mysqld.exe') @("--defaults-file=$MyIni") $Runtime;Wait-Healthy 'mysql' {Probe-MySql}}
 function Stop-MySql{if(Get-OwnedProcess 'mysql'){& (Join-Path $Runtime 'bin\mysqladmin.exe') "--defaults-extra-file=$AdminIni" shutdown 2>$null|Out-Null;Start-Sleep 1};if(Get-OwnedProcess 'mysql'){Stop-OwnedProcess 'mysql'}else{Remove-Item (Join-Path $StateRoot 'process-mysql.json') -Force -ErrorAction SilentlyContinue;Write-Host '[OK] mysql stopped'}}
 function Install-MySql{
