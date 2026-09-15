@@ -40,12 +40,31 @@ class RepositoryContractTests(unittest.TestCase):
         control = (
             Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
         ).read_text(encoding="utf-8")
-        probe = control[control.index("function Probe-MySql{") :]
-        probe = probe[: probe.index("function Start-MySql")]
-        self.assertIn("$ErrorActionPreference='Continue'", probe)
-        self.assertIn("return $LASTEXITCODE -eq 0", probe)
+        quiet = control[control.index("function Invoke-MySqlQuietly") :]
+        quiet = quiet[: quiet.index("function Probe-MySql")]
+        self.assertIn("$ErrorActionPreference='Continue'", quiet)
+        self.assertIn("return $LASTEXITCODE", quiet)
         self.assertIn(
-            "$ErrorActionPreference=$PreviousErrorActionPreference", probe
+            "$ErrorActionPreference=$PreviousErrorActionPreference", quiet
+        )
+        self.assertIn(
+            "Invoke-MySqlQuietly",
+            control[control.index("function Probe-MySql") :],
+        )
+
+    def test_mysql_install_replays_bootstrap_after_an_interrupted_attempt(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        install = control[control.index("function Install-MySql{") :]
+        install = install[: install.index("function Verify-Payload")]
+        self.assertIn("if(Get-OwnedProcess 'mysql'){Stop-MySql}", install)
+        self.assertIn(
+            "try{Write-Config $s $sql;Start-OwnedProcess 'mysql'", install
+        )
+        self.assertIn(
+            "finally{if(Get-OwnedProcess 'mysql'){Stop-OwnedProcess 'mysql'}",
+            install,
         )
 
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
