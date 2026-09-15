@@ -91,6 +91,16 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertNotIn("Get-FileHash $_.FullName", prepare)
                 self.assertIn('throw "Cannot hash packaged file:', prepare)
 
+    def test_module_payload_verification_uses_literal_file_paths(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for runtime_path in sorted(modules.glob("*/lib/runtime.ps1")):
+            with self.subTest(module=runtime_path.parents[1].name):
+                runtime = runtime_path.read_text(encoding="utf-8")
+                self.assertIn("Get-Item -LiteralPath $p", runtime)
+                self.assertIn("Get-FileHash -LiteralPath $p", runtime)
+                self.assertNotIn("Get-Item $p", runtime)
+                self.assertNotIn("Get-FileHash $p", runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
