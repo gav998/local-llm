@@ -70,7 +70,7 @@ ALTER USER 'localadmin'@'127.0.0.1' IDENTIFIED BY '$($s.root_password)';
 GRANT SHUTDOWN ON *.* TO 'localadmin'@'127.0.0.1';
 FLUSH PRIVILEGES;
 "@|Set-Content $sql -Encoding ASCII
- try{Write-Config $s $sql;Start-OwnedProcess 'mysql' (Join-Path $Runtime 'bin\mysqld.exe') @("--defaults-file=$MyIni") $Runtime;Wait-Healthy 'mysql-bootstrap' {Probe-MySql};Stop-MySql}
+ try{Write-Config $s $sql;Start-OwnedProcess 'mysql' (Join-Path $Runtime 'bin\mysqld.exe') @("--defaults-file=$MyIni") $Runtime;Wait-Healthy 'mysql' {Probe-MySql};Stop-MySql}
  finally{if(Get-OwnedProcess 'mysql'){Stop-OwnedProcess 'mysql'};Remove-Item $sql -Force -ErrorAction SilentlyContinue;Write-Config $s}
  Write-Connection ([ordered]@{schema=1;module='mysql';host='127.0.0.1';port=$Port;database='rag_flow';username='ragflow';password=$s.ragflow_password});Set-Installed;Write-Host '[OK] mysql installed'
 }

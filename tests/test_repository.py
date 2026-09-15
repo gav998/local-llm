@@ -67,6 +67,16 @@ class RepositoryContractTests(unittest.TestCase):
             install,
         )
 
+    def test_mysql_bootstrap_waits_for_the_owned_mysql_process(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        install = control[control.index("function Install-MySql{") :]
+        install = install[: install.index("function Verify-Payload")]
+        self.assertIn("Start-OwnedProcess 'mysql'", install)
+        self.assertIn("Wait-Healthy 'mysql' {Probe-MySql}", install)
+        self.assertNotIn("Wait-Healthy 'mysql-bootstrap'", install)
+
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
         expected = [
