@@ -92,6 +92,26 @@ class RepositoryContractTests(unittest.TestCase):
             control[control.index("function Probe-MySql") :],
         )
 
+    def test_elasticsearch_runtime_logs_are_declared_mutable(self) -> None:
+        manifest = json.loads(
+            (
+                Path(__file__).parents[1]
+                / "modules"
+                / "elasticsearch"
+                / "module.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertIn("runtime/logs/", manifest["mutable_paths"])
+
+    def test_process_stop_tolerates_exit_between_probe_and_taskkill(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for runtime_path in sorted(modules.glob("*/lib/runtime.ps1")):
+            with self.subTest(module=runtime_path.parents[1].name):
+                runtime = runtime_path.read_text(encoding="utf-8")
+                self.assertIn(
+                    "$LASTEXITCODE -ne 0 -and (Get-OwnedProcess $Name)", runtime
+                )
+
     def test_mysql_install_replays_bootstrap_after_an_interrupted_attempt(self) -> None:
         control = (
             Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
