@@ -10,8 +10,12 @@ function Write-WebConfig{$rag=Read-Json (Join-Path $ModulesRoot 'ragflow\state\c
 http://127.0.0.1:$WebPort {
     root * "$((Join-Path $PSScriptRoot 'web').Replace('\','/'))"
     encode gzip
-    handle /v1/* { reverse_proxy $($rag.url.Replace('http://','')) }
-    handle /api/* { reverse_proxy $($rag.url.Replace('http://','')) }
+    handle /v1/* {
+        reverse_proxy $($rag.url.Replace('http://',''))
+    }
+    handle /api/* {
+        reverse_proxy $($rag.url.Replace('http://',''))
+    }
     handle {
         try_files {path} /index.html
         file_server

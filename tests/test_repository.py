@@ -87,6 +87,20 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Wait-Healthy 'paddleocr' {", start)
         self.assertNotIn("Wait-Healthy 'paddleocr strict GPU API'", start)
 
+    def test_web_caddyfile_uses_multiline_handle_blocks(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "web" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "handle /v1/* {\n        reverse_proxy ",
+            control,
+        )
+        self.assertIn(
+            "handle /api/* {\n        reverse_proxy ",
+            control,
+        )
+        self.assertNotRegex(control, r"handle /(?:v1|api)/\* \{[^\r\n]+\}")
+
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
         expected = [
