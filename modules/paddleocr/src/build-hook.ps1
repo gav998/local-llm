@@ -1,5 +1,5 @@
-[CmdletBinding()]param([string]$ModuleRoot,[string]$PayloadRoot,[string]$SourceRoot,[string]$SevenZip)
-$ErrorActionPreference='Stop';$CacheRoot=Join-Path $SourceRoot 'paddleocr';$Python=Join-Path $PayloadRoot 'runtime\python\python.exe';$Uv=Join-Path $PayloadRoot 'build\uv\uv.exe';$Wheel=Join-Path $PayloadRoot 'vendor\paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl';$Wheelhouse=Join-Path $CacheRoot 'wheelhouse';$Log=Join-Path $CacheRoot 'build.log'
+[CmdletBinding()]param([string]$ModuleRoot,[string]$PayloadRoot,[string]$SourceRoot,[string]$CacheRoot,[string]$SevenZip)
+$ErrorActionPreference='Stop';$Python=Join-Path $PayloadRoot 'runtime\python\python.exe';$Uv=Join-Path $PayloadRoot 'build\uv\uv.exe';$Wheel=Join-Path $PayloadRoot 'vendor\paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl';$Wheelhouse=Join-Path $CacheRoot 'wheelhouse';$Log=Join-Path $CacheRoot 'build-ocr.log'
 $env:PIP_CACHE_DIR=Join-Path $CacheRoot 'cache\pip';$env:UV_CACHE_DIR=Join-Path $CacheRoot 'cache\uv';$env:UV_NO_CONFIG='1';$env:UV_LINK_MODE='copy';$env:PYTHONNOUSERSITE='1'
 function Invoke-LoggedNative([string]$Executable,[object[]]$Arguments,[string]$FailureMessage){
     if(-not(Test-Path -LiteralPath $Executable -PathType Leaf)){throw "Native executable is missing: $Executable"}

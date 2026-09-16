@@ -1,5 +1,5 @@
-[CmdletBinding()]param([string]$ModuleRoot,[string]$PayloadRoot,[string]$SourceRoot,[string]$SevenZip)
-$ErrorActionPreference='Stop';$CacheRoot=Join-Path $SourceRoot 'web';$Node=Join-Path $PayloadRoot 'build\node';$Source=Join-Path $PayloadRoot 'build\ragflow\web';$Log=Join-Path $CacheRoot 'build.log';$env:PATH=$Node+';'+$env:PATH;$env:npm_config_cache=Join-Path $CacheRoot 'npm-cache';$env:NODE_OPTIONS='--max-old-space-size=6144';$env:VITE_BUILD_SOURCEMAP='false';$env:VITE_MINIFY='esbuild'
+[CmdletBinding()]param([string]$ModuleRoot,[string]$PayloadRoot,[string]$SourceRoot,[string]$CacheRoot,[string]$SevenZip)
+$ErrorActionPreference='Stop';$Node=Join-Path $PayloadRoot 'build\node';$Source=Join-Path $PayloadRoot 'build\ragflow\web';$Log=Join-Path $CacheRoot 'build-web.log';$env:PATH=$Node+';'+$env:PATH;$env:npm_config_cache=Join-Path $CacheRoot 'npm-cache';$env:NODE_OPTIONS='--max-old-space-size=6144';$env:VITE_BUILD_SOURCEMAP='false';$env:VITE_MINIFY='esbuild'
 New-Item -ItemType Directory -Path $CacheRoot -Force|Out-Null
 function Invoke-LoggedNative([string]$Executable,[object[]]$Arguments,[string]$FailureMessage){
     if(-not(Test-Path -LiteralPath $Executable -PathType Leaf)){throw "Native executable is missing: $Executable"}

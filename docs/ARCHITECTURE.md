@@ -1,12 +1,14 @@
 # Архитектура модульной сборки
 
-Online-входы и результаты сборки вынесены в общие корневые каталоги:
+Исходные установочные архивы и результаты сборки вынесены в общие корневые
+каталоги, а рабочие online-кэши остаются внутри модулей:
 
 ```text
 1.PREPARE-ONLINE.bat     меню выбора модуля
-_src/                    общие online-входы и раздельные cache модулей
+_src/                    общие исходные установочные архивы
 prepared/                восемь архивов модулей и ZIP оболочки stack
 modules/                 исходники независимых модулей
+modules/<name>/_src/     wheelhouse, online-cache, логи и прочие cache модуля
 stack/                   исходники оболочки управления
 ```
 
@@ -20,6 +22,7 @@ src/build-hook.ps1       только модульная сборка Python/web
 MODULE.bat               offline install/start/stop/status/verify
 control.ps1              конфигурация и health-check конкретного компонента
 lib/runtime.ps1          локальная копия portable/process/seal primitives
+_src/                    сохраняемый рабочий cache online-сборки модуля
 ```
 
 Внутри переносимого архива всегда один путь `modules/<name>`. Поэтому архивы

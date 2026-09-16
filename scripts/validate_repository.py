@@ -49,6 +49,7 @@ REQUIRED = (
     "control.ps1",
     "src/prepare.ps1",
     "lib/runtime.ps1",
+    "_src/.gitkeep",
 )
 
 
@@ -127,9 +128,8 @@ def validate() -> list[str]:
             if dependency not in EXPECTED or dependency == name:
                 errors.append(f"{name}: invalid dependency {dependency}")
     for name in EXPECTED:
-        for obsolete in ("_src", "prepared"):
-            if (MODULES / name / obsolete).exists():
-                errors.append(f"{name}: module-local {obsolete} directory remains")
+        if (MODULES / name / "prepared").exists():
+            errors.append(f"{name}: module-local prepared directory remains")
     if (ROOT / "stack" / "prepared").exists():
         errors.append("stack-local prepared directory remains")
     for obsolete in ("_src/project", "app"):

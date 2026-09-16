@@ -33,27 +33,32 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn(f'set "MODULE={name}"', launcher)
         self.assertIn('call "%~dp0modules\\%MODULE%\\PREPARE-ONLINE.bat"', launcher)
 
-    def test_build_inputs_and_outputs_use_shared_root_directories(self) -> None:
+    def test_source_archives_are_shared_but_build_caches_stay_module_local(self) -> None:
         root = Path(__file__).parents[1]
         for prepare_path in sorted((root / "modules").glob("*/src/prepare.ps1")):
             with self.subTest(module=prepare_path.parents[1].name):
                 prepare = prepare_path.read_text(encoding="utf-8")
                 self.assertIn("$SourceRoot = Join-Path $Root '_src'", prepare)
+                self.assertIn("$CacheRoot = Join-Path $ModuleRoot '_src'", prepare)
                 self.assertIn("$PreparedRoot = Join-Path $Root 'prepared'", prepare)
-                self.assertIn(
-                    "$OnlineRoot=Join-Path (Join-Path $SourceRoot '_online') $Manifest.name",
-                    prepare,
-                )
-                self.assertFalse((prepare_path.parents[1] / "_src").exists())
+                self.assertIn("$OnlineRoot=Join-Path $CacheRoot '_online'", prepare)
+                self.assertIn("-SourceRoot $SourceRoot -CacheRoot $CacheRoot", prepare)
+                self.assertTrue((prepare_path.parents[1] / "_src" / ".gitkeep").is_file())
                 self.assertFalse((prepare_path.parents[1] / "prepared").exists())
         self.assertFalse((root / "stack" / "prepared").exists())
 
-        for name in ("paddleocr", "ragflow", "web"):
+        expected_logs = {
+            "paddleocr": "build-ocr.log",
+            "ragflow": "build-ragflow.log",
+            "web": "build-web.log",
+        }
+        for name, log_name in expected_logs.items():
             with self.subTest(cache=name):
                 hook = (root / "modules" / name / "src" / "build-hook.ps1").read_text(
                     encoding="utf-8"
                 )
-                self.assertIn(f"$CacheRoot=Join-Path $SourceRoot '{name}'", hook)
+                self.assertIn("[string]$CacheRoot", hook)
+                self.assertIn(f"$Log=Join-Path $CacheRoot '{log_name}'", hook)
 
     def test_native_build_logs_do_not_turn_stderr_into_fatal_errors(self) -> None:
         modules = Path(__file__).parents[1] / "modules"

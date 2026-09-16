@@ -1,7 +1,9 @@
 _src/*
+modules/*/_src/*
 modules/*/_build/
 prepared/*
 !_src/.gitkeep
+!modules/*/_src/.gitkeep
 !prepared/.gitkeep
 modules/*/config/runtime/
 modules/*/data/

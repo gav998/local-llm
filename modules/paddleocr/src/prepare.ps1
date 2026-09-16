@@ -5,6 +5,7 @@ $ModuleRoot = Split-Path -Parent $PSScriptRoot
 $Manifest = Get-Content -LiteralPath (Join-Path $ModuleRoot 'module.json') -Raw | ConvertFrom-Json
 $Root = Split-Path -Parent (Split-Path -Parent $ModuleRoot)
 $SourceRoot = Join-Path $Root '_src'
+$CacheRoot = Join-Path $ModuleRoot '_src'
 $BuildRoot = Join-Path $ModuleRoot '_build'
 $PayloadRoot = Join-Path $BuildRoot 'payload'
 $PackageRoot = Join-Path $BuildRoot 'p'
@@ -76,8 +77,8 @@ function Expand-Artifact([string]$Archive,[string]$Destination,[bool]$Strip,[str
 }
 
 if ($ModuleRoot.IndexOfAny([char[]]'!%&^<>|') -ge 0) { throw "Unsafe build path: $ModuleRoot" }
-New-Item -ItemType Directory -Path $SourceRoot,$PreparedRoot -Force | Out-Null
-$OnlineRoot=Join-Path (Join-Path $SourceRoot '_online') $Manifest.name;$OnlineProfile=Join-Path $OnlineRoot 'profile';$OnlineTemp=Join-Path $OnlineRoot 'temp';New-Item -ItemType Directory -Path $OnlineProfile,$OnlineTemp -Force|Out-Null
+New-Item -ItemType Directory -Path $SourceRoot,$CacheRoot,$PreparedRoot -Force | Out-Null
+$OnlineRoot=Join-Path $CacheRoot '_online';$OnlineProfile=Join-Path $OnlineRoot 'profile';$OnlineTemp=Join-Path $OnlineRoot 'temp';New-Item -ItemType Directory -Path $OnlineProfile,$OnlineTemp -Force|Out-Null
 $env:HOME=$OnlineProfile;$env:USERPROFILE=$OnlineProfile;$env:APPDATA=Join-Path $OnlineProfile 'AppData\Roaming';$env:LOCALAPPDATA=Join-Path $OnlineProfile 'AppData\Local';$env:TEMP=$OnlineTemp;$env:TMP=$OnlineTemp;$env:PSModuleAnalysisCachePath=Join-Path $OnlineRoot 'powershell\ModuleAnalysisCache';$env:DOTNET_CLI_HOME=$OnlineProfile;$env:NUGET_PACKAGES=Join-Path $OnlineRoot 'nuget';$env:PIP_CACHE_DIR=Join-Path $OnlineRoot 'pip';$env:UV_CACHE_DIR=Join-Path $OnlineRoot 'uv';$env:npm_config_cache=Join-Path $OnlineRoot 'npm';$env:GIT_CONFIG_GLOBAL=Join-Path $OnlineRoot 'gitconfig';$env:GIT_CONFIG_NOSYSTEM='1';$env:PYTHONNOUSERSITE='1';$env:PYTHONPYCACHEPREFIX=Join-Path $OnlineRoot 'python-bytecode'
 $SevenZipVersion='26.02'; $SevenZipTag='2602'
 $Bootstrap=Require-Source '7zr.exe' "https://github.com/ip7z/7zip/releases/download/$SevenZipVersion/7zr.exe"
@@ -98,7 +99,7 @@ foreach($Artifact in $Manifest.artifacts){
     if(-not(Test-Path -LiteralPath (Join-Path $PayloadRoot $Artifact.key) -PathType Leaf)){throw "Artifact key missing: $($Artifact.key)"}
 }
 $Hook=Join-Path $PSScriptRoot 'build-hook.ps1'
-if(Test-Path -LiteralPath $Hook){& $Hook -ModuleRoot $ModuleRoot -PayloadRoot $PayloadRoot -SourceRoot $SourceRoot -SevenZip $SevenZip; if($LASTEXITCODE -ne 0){throw 'Build hook failed'}}
+if(Test-Path -LiteralPath $Hook){& $Hook -ModuleRoot $ModuleRoot -PayloadRoot $PayloadRoot -SourceRoot $SourceRoot -CacheRoot $CacheRoot -SevenZip $SevenZip; if($LASTEXITCODE -ne 0){throw 'Build hook failed'}}
 
 $Packaged=Join-Path $PackageRoot (Join-Path 'modules' $Manifest.name)
 New-Item -ItemType Directory -Path $Packaged -Force|Out-Null
