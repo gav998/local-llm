@@ -3,11 +3,12 @@ param([switch]$CheckOnly, [switch]$NonInteractive)
 $ErrorActionPreference = 'Stop'
 $ModuleRoot = Split-Path -Parent $PSScriptRoot
 $Manifest = Get-Content -LiteralPath (Join-Path $ModuleRoot 'module.json') -Raw | ConvertFrom-Json
-$SourceRoot = Join-Path $ModuleRoot '_src'
+$Root = Split-Path -Parent (Split-Path -Parent $ModuleRoot)
+$SourceRoot = Join-Path $Root '_src'
 $BuildRoot = Join-Path $ModuleRoot '_build'
 $PayloadRoot = Join-Path $BuildRoot 'payload'
 $PackageRoot = Join-Path $BuildRoot 'p'
-$PreparedRoot = Join-Path $ModuleRoot 'prepared'
+$PreparedRoot = Join-Path $Root 'prepared'
 
 function Remove-DirectoryWithRetry([string]$Path,[int]$Attempts=20) {
     for ($Attempt=1; $Attempt -le $Attempts; $Attempt++) {
@@ -76,7 +77,7 @@ function Expand-Artifact([string]$Archive,[string]$Destination,[bool]$Strip,[str
 
 if ($ModuleRoot.IndexOfAny([char[]]'!%&^<>|') -ge 0) { throw "Unsafe build path: $ModuleRoot" }
 New-Item -ItemType Directory -Path $SourceRoot,$PreparedRoot -Force | Out-Null
-$OnlineRoot=Join-Path $SourceRoot '_online';$OnlineProfile=Join-Path $OnlineRoot 'profile';$OnlineTemp=Join-Path $OnlineRoot 'temp';New-Item -ItemType Directory -Path $OnlineProfile,$OnlineTemp -Force|Out-Null
+$OnlineRoot=Join-Path (Join-Path $SourceRoot '_online') $Manifest.name;$OnlineProfile=Join-Path $OnlineRoot 'profile';$OnlineTemp=Join-Path $OnlineRoot 'temp';New-Item -ItemType Directory -Path $OnlineProfile,$OnlineTemp -Force|Out-Null
 $env:HOME=$OnlineProfile;$env:USERPROFILE=$OnlineProfile;$env:APPDATA=Join-Path $OnlineProfile 'AppData\Roaming';$env:LOCALAPPDATA=Join-Path $OnlineProfile 'AppData\Local';$env:TEMP=$OnlineTemp;$env:TMP=$OnlineTemp;$env:PSModuleAnalysisCachePath=Join-Path $OnlineRoot 'powershell\ModuleAnalysisCache';$env:DOTNET_CLI_HOME=$OnlineProfile;$env:NUGET_PACKAGES=Join-Path $OnlineRoot 'nuget';$env:PIP_CACHE_DIR=Join-Path $OnlineRoot 'pip';$env:UV_CACHE_DIR=Join-Path $OnlineRoot 'uv';$env:npm_config_cache=Join-Path $OnlineRoot 'npm';$env:GIT_CONFIG_GLOBAL=Join-Path $OnlineRoot 'gitconfig';$env:GIT_CONFIG_NOSYSTEM='1';$env:PYTHONNOUSERSITE='1';$env:PYTHONPYCACHEPREFIX=Join-Path $OnlineRoot 'python-bytecode'
 $SevenZipVersion='26.02'; $SevenZipTag='2602'
 $Bootstrap=Require-Source '7zr.exe' "https://github.com/ip7z/7zip/releases/download/$SevenZipVersion/7zr.exe"

@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Stage = Join-Path $PSScriptRoot '_build\package'
-$Out = Join-Path $PSScriptRoot 'prepared\local-llm-stack-2026.09.11.zip'
+$PreparedRoot = Join-Path $Root 'prepared'
+$Out = Join-Path $PreparedRoot 'local-llm-stack-2026.09.11.zip'
 $ModuleNames = @('mysql','elasticsearch','silo','valkey','llama-cpp','paddleocr','ragflow','web')
 $SevenZipVersion = '26.02'
 $SevenZipTag = '2602'
@@ -15,7 +16,7 @@ foreach ($Name in $ModuleNames) {
         throw "Module manifest is missing: $ManifestPath"
     }
     $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
-    $Archive = Join-Path $ModuleRoot ("prepared\local-llm-{0}-{1}.7z" -f $Manifest.name,$Manifest.version)
+    $Archive = Join-Path $PreparedRoot ("local-llm-{0}-{1}.7z" -f $Manifest.name,$Manifest.version)
     if (-not (Test-Path -LiteralPath $Archive -PathType Leaf) -or (Get-Item -LiteralPath $Archive).Length -eq 0) {
         Write-Host "[MISSING] $Archive" -ForegroundColor Yellow
         $MissingArchives += $Name
@@ -30,14 +31,14 @@ foreach ($Name in $ModuleNames) {
     }
 }
 if ($MissingArchives.Count -gt 0) {
-    throw "Module archives are not prepared: $($MissingArchives -join ', '). CHECK-SOURCES.bat checks downloads only; run modules\<name>\PREPARE-ONLINE.bat for every missing module, then run PREPARE-STACK.bat again."
+    throw "Module archives are not prepared: $($MissingArchives -join ', '). CHECK-SOURCES.bat checks downloads only; run 1.PREPARE-ONLINE.bat and prepare every missing module, then run PREPARE-STACK.bat again."
 }
 
 $SevenZip = Join-Path $Root 'modules\mysql\_build\tools\x64\7za.exe'
 $SevenZipLicense = Join-Path $Root 'modules\mysql\_build\tools\License.txt'
 if (-not (Test-Path -LiteralPath $SevenZip -PathType Leaf)) {
-    $Bootstrap = Join-Path $Root 'modules\mysql\_src\7zr.exe'
-    $Extra = Join-Path $Root "modules\mysql\_src\7z$SevenZipTag-extra.7z"
+    $Bootstrap = Join-Path $Root '_src\7zr.exe'
+    $Extra = Join-Path $Root "_src\7z$SevenZipTag-extra.7z"
     if (-not (Test-Path -LiteralPath $Bootstrap -PathType Leaf) -or -not (Test-Path -LiteralPath $Extra -PathType Leaf)) {
         throw "Cannot bundle the matching 7-Zip extractor. Expected $SevenZip or the pinned bootstrap inputs $Bootstrap and $Extra."
     }

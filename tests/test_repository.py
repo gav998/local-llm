@@ -15,6 +15,46 @@ class RepositoryContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         self.assertEqual(module.validate(), [])
 
+    def test_root_prepare_menu_dispatches_to_every_module_launcher(self) -> None:
+        root = Path(__file__).parents[1]
+        launcher = (root / "1.PREPARE-ONLINE.bat").read_text(encoding="utf-8")
+        self.assertIn("choice /C 123456780", launcher)
+        for name in (
+            "mysql",
+            "elasticsearch",
+            "silo",
+            "valkey",
+            "llama-cpp",
+            "paddleocr",
+            "ragflow",
+            "web",
+        ):
+            with self.subTest(module=name):
+                self.assertIn(f'set "MODULE={name}"', launcher)
+        self.assertIn('call "%~dp0modules\\%MODULE%\\PREPARE-ONLINE.bat"', launcher)
+
+    def test_build_inputs_and_outputs_use_shared_root_directories(self) -> None:
+        root = Path(__file__).parents[1]
+        for prepare_path in sorted((root / "modules").glob("*/src/prepare.ps1")):
+            with self.subTest(module=prepare_path.parents[1].name):
+                prepare = prepare_path.read_text(encoding="utf-8")
+                self.assertIn("$SourceRoot = Join-Path $Root '_src'", prepare)
+                self.assertIn("$PreparedRoot = Join-Path $Root 'prepared'", prepare)
+                self.assertIn(
+                    "$OnlineRoot=Join-Path (Join-Path $SourceRoot '_online') $Manifest.name",
+                    prepare,
+                )
+                self.assertFalse((prepare_path.parents[1] / "_src").exists())
+                self.assertFalse((prepare_path.parents[1] / "prepared").exists())
+        self.assertFalse((root / "stack" / "prepared").exists())
+
+        for name in ("paddleocr", "ragflow", "web"):
+            with self.subTest(cache=name):
+                hook = (root / "modules" / name / "src" / "build-hook.ps1").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(f"$CacheRoot=Join-Path $SourceRoot '{name}'", hook)
+
     def test_native_build_logs_do_not_turn_stderr_into_fatal_errors(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
         for name in ("paddleocr", "ragflow", "web"):
@@ -193,7 +233,7 @@ class RepositoryContractTests(unittest.TestCase):
             Path(__file__).parents[1] / "stack" / "prepare.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn("$MissingArchives = @()", prepare)
-        self.assertIn("prepared\\local-llm-{0}-{1}.7z", prepare)
+        self.assertIn("$Archive = Join-Path $PreparedRoot", prepare)
         self.assertIn("CHECK-SOURCES.bat checks downloads only", prepare)
 
     def test_module_archives_target_legacy_7zip_decoders(self) -> None:

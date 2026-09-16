@@ -1,17 +1,25 @@
 # Архитектура модульной сборки
 
-Каждый каталог `modules/<name>` является самостоятельной единицей поставки:
+Online-входы и результаты сборки вынесены в общие корневые каталоги:
+
+```text
+1.PREPARE-ONLINE.bat     меню выбора модуля
+_src/                    общие online-входы и раздельные cache модулей
+prepared/                восемь архивов модулей и ZIP оболочки stack
+modules/                 исходники независимых модулей
+stack/                   исходники оболочки управления
+```
+
+Каждый каталог `modules/<name>` остаётся самостоятельной единицей поставки:
 
 ```text
 module.json              фиксированные версии, URL, порты и зависимости
-PREPARE-ONLINE.bat       единственная online-точка входа модуля
+PREPARE-ONLINE.bat       online-точка входа модуля, вызываемая общим меню
 src/prepare.ps1          staging, проверка ключевых файлов, sealing, упаковка
 src/build-hook.ps1       только модульная сборка Python/web (если нужна)
 MODULE.bat               offline install/start/stop/status/verify
 control.ps1              конфигурация и health-check конкретного компонента
 lib/runtime.ps1          локальная копия portable/process/seal primitives
-_src/                    только online-входы и cache этого модуля
-prepared/                только архив этого модуля
 ```
 
 Внутри переносимого архива всегда один путь `modules/<name>`. Поэтому архивы

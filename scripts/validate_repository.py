@@ -49,8 +49,6 @@ REQUIRED = (
     "control.ps1",
     "src/prepare.ps1",
     "lib/runtime.ps1",
-    "_src/.gitkeep",
-    "prepared/.gitkeep",
 )
 
 
@@ -60,6 +58,9 @@ def digest(path: Path) -> str:
 
 def validate() -> list[str]:
     errors: list[str] = []
+    for relative in ("1.PREPARE-ONLINE.bat", "_src/.gitkeep", "prepared/.gitkeep"):
+        if not (ROOT / relative).is_file():
+            errors.append(f"shared build path is missing: {relative}")
     actual = {path.name for path in MODULES.iterdir() if path.is_dir()}
     if actual != set(EXPECTED):
         errors.append(f"module set: expected {sorted(EXPECTED)}, found {sorted(actual)}")
@@ -125,7 +126,13 @@ def validate() -> list[str]:
         for dependency in manifest.get("runtime_dependencies", []):
             if dependency not in EXPECTED or dependency == name:
                 errors.append(f"{name}: invalid dependency {dependency}")
-    for obsolete in ("1.PREPARE-ONLINE.bat", "_src/project", "app"):
+    for name in EXPECTED:
+        for obsolete in ("_src", "prepared"):
+            if (MODULES / name / obsolete).exists():
+                errors.append(f"{name}: module-local {obsolete} directory remains")
+    if (ROOT / "stack" / "prepared").exists():
+        errors.append("stack-local prepared directory remains")
+    for obsolete in ("_src/project", "app"):
         if (ROOT / obsolete).exists():
             errors.append(f"obsolete monolithic path remains: {obsolete}")
     return errors

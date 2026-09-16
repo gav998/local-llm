@@ -1,8 +1,8 @@
-modules/*/_src/*
+_src/*
 modules/*/_build/
-modules/*/prepared/*
-!modules/*/_src/.gitkeep
-!modules/*/prepared/.gitkeep
+prepared/*
+!_src/.gitkeep
+!prepared/.gitkeep
 modules/*/config/runtime/
 modules/*/data/
 modules/*/logs/
@@ -10,8 +10,6 @@ modules/*/state/
 modules/*/temp/
 stack/state/
 stack/logs/
-stack/prepared/*
-!stack/prepared/.gitkeep
 stack/_build/
 __pycache__/
 *.py[cod]
