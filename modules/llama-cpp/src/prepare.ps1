@@ -112,6 +112,6 @@ foreach($relative in @($Manifest.mutable_paths)){$mutableItem=Join-Path $Package
 $Archive=Join-Path $PreparedRoot ("local-llm-{0}-{1}.7z" -f $Manifest.name,$Manifest.version)
 if(Test-Path $Archive){Remove-Item $Archive -Force}
 Push-Location $PackageRoot
-try{& $SevenZip a -t7z -mx=7 -ms=on -mmt=on $Archive 'modules'|Out-Null;if($LASTEXITCODE -ne 0){throw 'Packaging failed'};& $SevenZip t $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive test failed'}}finally{Pop-Location}
+try{& $SevenZip a -t7z -mx=7 -ms=on -mmt=on -myv=1900 $Archive 'modules'|Out-Null;if($LASTEXITCODE -ne 0){throw 'Packaging failed'};& $SevenZip t $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive test failed'}}finally{Pop-Location}
 $Rehydrate=Join-Path $BuildRoot 'r';New-Item -ItemType Directory -Path $Rehydrate -Force|Out-Null;& $SevenZip x -y "-o$Rehydrate" $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive rehydration failed'};Invoke-PayloadVerification (Join-Path $Rehydrate "modules\$($Manifest.name)\control.ps1") 'Rehydrated payload verification failed';Remove-DirectoryWithRetry $Rehydrate
 Write-Host "[OK] Prepared: $Archive" -ForegroundColor Green

@@ -161,7 +161,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("'start'{Assert-SealedModules $Order", control)
         self.assertIn("'status'{Assert-SealedModules $Order", control)
         self.assertIn("'verify'{Assert-SealedModules $Order", control)
-        self.assertIn("Run LOCAL-LLM.bat there, not in the source tree", control)
+        self.assertIn("run EXTRACT-MODULES.bat", control)
+        self.assertIn("not from the source tree", control)
 
     def test_orchestrator_requires_all_prepared_module_archives(self) -> None:
         prepare = (
@@ -170,6 +171,43 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("$MissingArchives = @()", prepare)
         self.assertIn("prepared\\local-llm-{0}-{1}.7z", prepare)
         self.assertIn("CHECK-SOURCES.bat checks downloads only", prepare)
+
+    def test_module_archives_target_legacy_7zip_decoders(self) -> None:
+        modules = Path(__file__).parents[1] / "modules"
+        for prepare_path in sorted(modules.glob("*/src/prepare.ps1")):
+            with self.subTest(module=prepare_path.parents[1].name):
+                prepare = prepare_path.read_text(encoding="utf-8")
+                self.assertIn("-myv=1900", prepare)
+
+    def test_stack_bundles_and_drives_the_matching_extractor(self) -> None:
+        root = Path(__file__).parents[1]
+        prepare = (root / "stack" / "prepare.ps1").read_text(encoding="utf-8")
+        extract = (root / "stack" / "extract.ps1").read_text(encoding="utf-8")
+        launcher = (root / "EXTRACT-MODULES.bat").read_text(encoding="utf-8")
+
+        self.assertIn("$SevenZipVersion = '26.02'", prepare)
+        self.assertIn("Get-FileHash -LiteralPath $Archive", prepare)
+        self.assertIn("sha256 = (Get-FileHash -LiteralPath $SevenZip", prepare)
+        self.assertIn("module-archives.json", prepare)
+        self.assertIn("7zip-LICENSE.txt", prepare)
+        self.assertIn("tools\\7za.exe", extract)
+        self.assertIn("Bundled 7-Zip extractor hash mismatch", extract)
+        self.assertIn("Get-FileHash -LiteralPath $Archive", extract)
+        self.assertIn("@('t','-bd',$Item.path)", extract)
+        self.assertIn("@('x','-y','-aoa','-bd'", extract)
+        self.assertLess(extract.index("@('t','-bd'"), extract.index("@('x','-y','-aoa'"))
+        self.assertIn("@('verify-payload')", extract)
+        self.assertIn("Refusing to extract module payloads into the online source tree", extract)
+        self.assertNotIn("Tee-Object -FilePath $Log -Append", extract)
+        self.assertIn("Add-Content -LiteralPath $Log", extract)
+        self.assertIn("stack\\extract.ps1", launcher)
+
+    def test_stack_commands_write_a_transcript(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "stack" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Start-Transcript -Path $StackLog -Append -Force", control)
+        self.assertIn("Stop-Transcript", control)
 
 
 if __name__ == "__main__":

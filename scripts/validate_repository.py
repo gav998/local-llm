@@ -116,6 +116,11 @@ def validate() -> list[str]:
     prepare_text = (MODULES / "mysql" / "src/prepare.ps1").read_text(encoding="utf-8")
     if "26.02" not in prepare_text or "2602" not in prepare_text:
         errors.append("7-Zip 26.02 bootstrap pins changed")
+    if "-myv=1900" not in prepare_text:
+        errors.append("module archives are not pinned to 7-Zip 19.00 decoder compatibility")
+    for relative in ("EXTRACT-MODULES.bat", "stack/extract.ps1"):
+        if not (ROOT / relative).is_file():
+            errors.append(f"deployment extractor is missing: {relative}")
     for name, manifest in manifests.items():
         for dependency in manifest.get("runtime_dependencies", []):
             if dependency not in EXPECTED or dependency == name:
