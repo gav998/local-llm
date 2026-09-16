@@ -77,6 +77,16 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Wait-Healthy 'mysql' {Probe-MySql}", install)
         self.assertNotIn("Wait-Healthy 'mysql-bootstrap'", install)
 
+    def test_paddleocr_readiness_waits_for_the_owned_process(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "paddleocr" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        start = control[control.index("function Start-Ocr{") :]
+        start = start[: start.index("switch($CommandName")]
+        self.assertIn("Start-OwnedProcess 'paddleocr'", start)
+        self.assertIn("Wait-Healthy 'paddleocr' {", start)
+        self.assertNotIn("Wait-Healthy 'paddleocr strict GPU API'", start)
+
     def test_ragflow_archives_exclude_upstream_development_symlinks(self) -> None:
         root = Path(__file__).parents[1]
         expected = [
