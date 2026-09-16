@@ -122,7 +122,7 @@ class RepositoryContractTests(unittest.TestCase):
             Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
         ).read_text(encoding="utf-8")
         install = control[control.index("function Install-MySql{") :]
-        install = install[: install.index("function Verify-Payload")]
+        install = install[: install.index("switch($CommandName")]
         self.assertIn("if(Get-OwnedProcess 'mysql'){Stop-MySql}", install)
         self.assertIn(
             "try{Write-Config $s $sql;Start-OwnedProcess 'mysql'", install
@@ -137,7 +137,7 @@ class RepositoryContractTests(unittest.TestCase):
             Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"
         ).read_text(encoding="utf-8")
         install = control[control.index("function Install-MySql{") :]
-        install = install[: install.index("function Verify-Payload")]
+        install = install[: install.index("switch($CommandName")]
         self.assertIn("Start-OwnedProcess 'mysql'", install)
         self.assertIn("Wait-Healthy 'mysql' {Probe-MySql}", install)
         self.assertNotIn("Wait-Healthy 'mysql-bootstrap'", install)
@@ -208,49 +208,48 @@ class RepositoryContractTests(unittest.TestCase):
             with self.subTest(module=prepare_path.parents[1].name):
                 prepare = prepare_path.read_text(encoding="utf-8")
                 self.assertIn("$PackageRoot = Join-Path $BuildRoot 'p'", prepare)
-                self.assertIn("$Rehydrate=Join-Path $BuildRoot 'r'", prepare)
                 self.assertNotIn("Join-Path $BuildRoot 'package'", prepare)
                 self.assertNotIn("Join-Path $BuildRoot 'rehydrate'", prepare)
+                self.assertNotIn("$Rehydrate", prepare)
 
-    def test_module_packaging_isolates_probes_and_retries_cleanup(self) -> None:
+    def test_module_packaging_skips_sealing_and_archive_tests(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
+        hash_command = "Get-" "FileHash"
+        seal_manifest = "payload." "sha256.json"
+        payload_command = "verify-" "payload"
+        payload_function = "Test-" "Payload"
         for prepare_path in sorted(modules.glob("*/src/prepare.ps1")):
             with self.subTest(module=prepare_path.parents[1].name):
                 prepare = prepare_path.read_text(encoding="utf-8")
                 self.assertIn("function Remove-DirectoryWithRetry", prepare)
-                self.assertIn("function Invoke-PayloadVerification", prepare)
-                self.assertIn("-NonInteractive -ExecutionPolicy Bypass", prepare)
-                self.assertIn("Remove-DirectoryWithRetry $Rehydrate", prepare)
-                self.assertNotIn("Remove-Item $Rehydrate -Recurse -Force", prepare)
+                self.assertNotIn(hash_command, prepare)
+                self.assertNotIn(seal_manifest, prepare)
+                self.assertNotIn(payload_command, prepare)
+                self.assertNotIn("$SevenZip t $Archive", prepare)
+                self.assertNotIn("$Rehydrate", prepare)
 
-    def test_module_packaging_hashes_literal_file_paths(self) -> None:
-        modules = Path(__file__).parents[1] / "modules"
-        for prepare_path in sorted(modules.glob("*/src/prepare.ps1")):
-            with self.subTest(module=prepare_path.parents[1].name):
-                prepare = prepare_path.read_text(encoding="utf-8")
-                self.assertIn("Get-FileHash -LiteralPath $File.FullName", prepare)
-                self.assertNotIn("Get-FileHash $_.FullName", prepare)
-                self.assertIn('throw "Cannot hash packaged file:', prepare)
-
-    def test_module_payload_verification_uses_literal_file_paths(self) -> None:
-        modules = Path(__file__).parents[1] / "modules"
         for runtime_path in sorted(modules.glob("*/lib/runtime.ps1")):
             with self.subTest(module=runtime_path.parents[1].name):
                 runtime = runtime_path.read_text(encoding="utf-8")
-                self.assertIn("Get-Item -LiteralPath $p", runtime)
-                self.assertIn("Get-FileHash -LiteralPath $p", runtime)
-                self.assertNotIn("Get-Item $p", runtime)
-                self.assertNotIn("Get-FileHash $p", runtime)
+                self.assertNotIn(payload_function, runtime)
+                self.assertNotIn(hash_command, runtime)
+                self.assertNotIn(seal_manifest, runtime)
 
-    def test_stack_commands_fail_before_using_unsealed_source_modules(self) -> None:
+        for control_path in sorted(modules.glob("*/control.ps1")):
+            with self.subTest(module=control_path.parent.name):
+                control = control_path.read_text(encoding="utf-8")
+                self.assertNotIn(payload_function, control)
+                self.assertNotIn(payload_command, control)
+
+    def test_stack_commands_reject_the_online_source_tree(self) -> None:
         root = Path(__file__).parents[1]
         control = (root / "stack" / "control.ps1").read_text(encoding="utf-8")
-        self.assertIn("function Assert-SealedModules", control)
-        self.assertIn("'install'{Assert-SealedModules $Order", control)
-        self.assertIn("'start'{Assert-SealedModules $Order", control)
-        self.assertIn("'status'{Assert-SealedModules $Order", control)
-        self.assertIn("'verify'{Assert-SealedModules $Order", control)
-        self.assertIn("run EXTRACT-MODULES.bat", control)
+        self.assertIn("function Assert-Deployment", control)
+        self.assertIn("(Join-Path $Root 'PREPARE-STACK.bat')", control)
+        self.assertIn("'install'{Assert-Deployment", control)
+        self.assertIn("'start'{Assert-Deployment", control)
+        self.assertIn("'status'{Assert-Deployment", control)
+        self.assertIn("'verify'{Assert-Deployment", control)
         self.assertIn("not from the source tree", control)
 
     def test_orchestrator_requires_all_prepared_module_archives(self) -> None:
@@ -273,19 +272,18 @@ class RepositoryContractTests(unittest.TestCase):
         prepare = (root / "stack" / "prepare.ps1").read_text(encoding="utf-8")
         extract = (root / "stack" / "extract.ps1").read_text(encoding="utf-8")
         launcher = (root / "EXTRACT-MODULES.bat").read_text(encoding="utf-8")
+        hash_command = "Get-" "FileHash"
+        payload_command = "verify-" "payload"
 
         self.assertIn("$SevenZipVersion = '26.02'", prepare)
-        self.assertIn("Get-FileHash -LiteralPath $Archive", prepare)
-        self.assertIn("sha256 = (Get-FileHash -LiteralPath $SevenZip", prepare)
+        self.assertNotIn(hash_command, prepare)
         self.assertIn("module-archives.json", prepare)
         self.assertIn("7zip-LICENSE.txt", prepare)
         self.assertIn("tools\\7za.exe", extract)
-        self.assertIn("Bundled 7-Zip extractor hash mismatch", extract)
-        self.assertIn("Get-FileHash -LiteralPath $Archive", extract)
-        self.assertIn("@('t','-bd',$Item.path)", extract)
+        self.assertNotIn(hash_command, extract)
+        self.assertNotIn("archive " "test", extract.lower())
         self.assertIn("@('x','-y','-aoa','-bd'", extract)
-        self.assertLess(extract.index("@('t','-bd'"), extract.index("@('x','-y','-aoa'"))
-        self.assertIn("@('verify-payload')", extract)
+        self.assertNotIn(payload_command, extract)
         self.assertIn("Refusing to extract module payloads into the online source tree", extract)
         self.assertNotIn("Tee-Object -FilePath $Log -Append", extract)
         self.assertIn("Add-Content -LiteralPath $Log", extract)

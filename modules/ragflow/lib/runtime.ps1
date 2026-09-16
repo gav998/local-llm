@@ -9,13 +9,6 @@ function Initialize-Module([string]$Root){
 function New-HexSecret([int]$Bytes=32){$b=New-Object byte[] $Bytes;[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b);return -join($b|ForEach-Object{$_.ToString('x2')})}
 function Write-JsonAtomic([string]$Path,$Value){$t="$Path.tmp";$Value|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $t -Encoding UTF8;Move-Item -LiteralPath $t -Destination $Path -Force}
 function Read-Json([string]$Path){if(-not(Test-Path -LiteralPath $Path -PathType Leaf)){throw "Required state is missing: $Path"};Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json}
-function Test-Payload([string]$Root=$script:ModuleRoot){
- $r=Read-Json (Join-Path $Root 'payload.sha256.json');$expected=@{}
- foreach($e in $r.files){$expected[[string]$e.path]=$true;$p=Join-Path $Root $e.path;if(-not(Test-Path -LiteralPath $p -PathType Leaf)){throw "Missing payload: $($e.path)"};$File=Get-Item -LiteralPath $p;if($File.Length -ne [int64]$e.bytes){throw "Size mismatch: $($e.path)"};if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $e.sha256){throw "Hash mismatch: $($e.path)"}}
- $mutable=@('config/runtime/','data/','logs/','state/','temp/');$m=Read-Json (Join-Path $Root 'module.json');if($m.mutable_paths){$mutable+=@($m.mutable_paths)}
- Get-ChildItem -LiteralPath $Root -File -Recurse|ForEach-Object{$rel=$_.FullName.Substring($Root.Length+1).Replace('\','/');$skip=($rel -eq 'payload.sha256.json');foreach($prefix in $mutable){$rule=[string]$prefix;if(($rule.EndsWith('/') -and $rel.StartsWith($rule,[StringComparison]::OrdinalIgnoreCase)) -or ($rel.Equals($rule,[StringComparison]::OrdinalIgnoreCase))){$skip=$true}};if(-not $skip -and -not $expected.ContainsKey($rel)){throw "Unexpected static payload file: $rel"}}
- Write-Host "[OK] $($r.module) $($r.version): payload verified"
-}
 function Get-ProcessRecord([string]$Name){$p=Join-Path $StateRoot "process-$Name.json";if(-not(Test-Path $p)){return $null};try{Read-Json $p}catch{return $null}}
 function Get-OwnedProcess([string]$Name){$r=Get-ProcessRecord $Name;if(-not $r){return $null};$p=Get-Process -Id ([int]$r.pid) -ErrorAction SilentlyContinue;if(-not $p){return $null};try{$ticks=$p.StartTime.ToUniversalTime().Ticks}catch{return $null};if([string]$ticks -ne [string]$r.start_ticks){return $null};return $p}
 function Quote-Arg([string]$v){if($v -notmatch '[\s"]'){return $v};return '"'+$v.Replace('"','\"')+'"'}
@@ -28,4 +21,4 @@ function Write-Connection([hashtable]$Connection){Write-JsonAtomic (Join-Path $S
 function Show-ModuleStatus([string[]]$Names){foreach($n in $Names){if(Get-OwnedProcess $n){Write-Host "$n`tRUNNING"}else{Write-Host "$n`tSTOPPED"}}}
 function Set-Installed{$m=Read-Json (Join-Path $ModuleRoot 'module.json');Write-JsonAtomic (Join-Path $StateRoot 'install.ok.json') ([ordered]@{schema=1;module=$m.name;version=$m.version;path=$ModuleRoot;installed_at=[DateTime]::UtcNow.ToString('o')})}
 function Begin-Install{Remove-Item (Join-Path $StateRoot 'install.ok.json') -Force -ErrorAction SilentlyContinue}
-function Assert-Installed{$m=Read-Json (Join-Path $ModuleRoot 'module.json');$r=Read-Json (Join-Path $StateRoot 'install.ok.json');if($r.module -ne $m.name -or $r.version -ne $m.version){throw "Module must be installed again: $($m.name)"};Test-Payload}
+function Assert-Installed{$m=Read-Json (Join-Path $ModuleRoot 'module.json');$r=Read-Json (Join-Path $StateRoot 'install.ok.json');if($r.module -ne $m.name -or $r.version -ne $m.version){throw "Module must be installed again: $($m.name)"}}

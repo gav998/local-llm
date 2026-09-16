@@ -54,7 +54,7 @@ function Probe-MySql{return (Invoke-MySqlQuietly (Join-Path $Runtime 'bin\mysql.
 function Start-MySql{$s=Read-Json $SecretsPath;Write-Config $s;Start-OwnedProcess 'mysql' (Join-Path $Runtime 'bin\mysqld.exe') @("--defaults-file=$MyIni") $Runtime;Wait-Healthy 'mysql' {Probe-MySql}}
 function Stop-MySql{if(Get-OwnedProcess 'mysql'){$code=Invoke-MySqlQuietly (Join-Path $Runtime 'bin\mysqladmin.exe') @("--defaults-extra-file=$AdminIni",'shutdown');if($code -eq 0){Start-Sleep 1}};if(Get-OwnedProcess 'mysql'){Stop-OwnedProcess 'mysql'}else{Remove-Item (Join-Path $StateRoot 'process-mysql.json') -Force -ErrorAction SilentlyContinue;Write-Host '[OK] mysql stopped'}}
 function Install-MySql{
- Begin-Install;Test-Payload;if(Test-Path $SecretsPath){$s=Read-Json $SecretsPath}else{$s=[ordered]@{root_password=New-HexSecret 24;ragflow_password=New-HexSecret 24};Write-JsonAtomic $SecretsPath $s};Write-Config $s
+ Begin-Install;if(Test-Path $SecretsPath){$s=Read-Json $SecretsPath}else{$s=[ordered]@{root_password=New-HexSecret 24;ragflow_password=New-HexSecret 24};Write-JsonAtomic $SecretsPath $s};Write-Config $s
  if(Get-OwnedProcess 'mysql'){Stop-MySql}
  $db=Join-Path $DataRoot 'mysql';if(-not(Test-Path (Join-Path $db 'mysql') -PathType Container)){
   if(Test-Path $db){Remove-Item $db -Recurse -Force};& (Join-Path $Runtime 'bin\mysqld.exe') "--defaults-file=$MyIni" --initialize-insecure;if($LASTEXITCODE -ne 0){throw 'MySQL initialization failed'}
@@ -74,5 +74,4 @@ FLUSH PRIVILEGES;
  finally{if(Get-OwnedProcess 'mysql'){Stop-OwnedProcess 'mysql'};Remove-Item $sql -Force -ErrorAction SilentlyContinue;Write-Config $s}
  Write-Connection ([ordered]@{schema=1;module='mysql';host='127.0.0.1';port=$Port;database='rag_flow';username='ragflow';password=$s.ragflow_password});Set-Installed;Write-Host '[OK] mysql installed'
 }
-function Verify-Payload{Test-Payload;& (Join-Path $Runtime 'bin\mysqld.exe') --version;if($LASTEXITCODE -ne 0){throw 'mysqld version probe failed'}}
-switch($CommandName.ToLowerInvariant()){'install'{Install-MySql}'start'{Assert-Installed;Start-MySql}'stop'{Stop-MySql}'status'{Show-ModuleStatus @('mysql')}'verify'{Test-Payload;if((Get-OwnedProcess 'mysql')-and -not(Probe-MySql)){throw 'MySQL health failed'};Write-Host '[OK] mysql verified'}'verify-payload'{Verify-Payload}default{Write-Host 'Usage: MODULE.bat install|start|stop|status|verify';if($CommandName -ne 'help' -and $CommandName){exit 2}}}
+switch($CommandName.ToLowerInvariant()){'install'{Install-MySql}'start'{Assert-Installed;Start-MySql}'stop'{Stop-MySql}'status'{Show-ModuleStatus @('mysql')}'verify'{if((Get-OwnedProcess 'mysql')-and -not(Probe-MySql)){throw 'MySQL health failed'};Write-Host '[OK] mysql verified'}default{Write-Host 'Usage: MODULE.bat install|start|stop|status|verify';if($CommandName -ne 'help' -and $CommandName){exit 2}}}

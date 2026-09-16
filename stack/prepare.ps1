@@ -21,12 +21,9 @@ foreach ($Name in $ModuleNames) {
         Write-Host "[MISSING] $Archive" -ForegroundColor Yellow
         $MissingArchives += $Name
     } else {
-        $ArchiveFile = Get-Item -LiteralPath $Archive
         $ArchiveEntries += [ordered]@{
             name = $Name
-            file = $ArchiveFile.Name
-            bytes = $ArchiveFile.Length
-            sha256 = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            file = (Get-Item -LiteralPath $Archive).Name
         }
     }
 }
@@ -56,13 +53,6 @@ $SevenZipInfo = (& $SevenZip i | Out-String)
 if ($LASTEXITCODE -ne 0 -or $SevenZipInfo -notmatch [regex]::Escape($SevenZipVersion)) {
     throw "Expected 7-Zip $SevenZipVersion deployment extractor: $SevenZip"
 }
-$SevenZipFile = Get-Item -LiteralPath $SevenZip
-$SevenZipEntry = [ordered]@{
-    version = $SevenZipVersion
-    bytes = $SevenZipFile.Length
-    sha256 = (Get-FileHash -LiteralPath $SevenZip -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-
 if (Test-Path -LiteralPath $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
 New-Item -ItemType Directory -Path $Stage,(Split-Path $Out) -Force | Out-Null
 try {
@@ -70,7 +60,7 @@ try {
     $StackStage = Join-Path $Stage 'stack'
     New-Item -ItemType Directory -Path $StackStage | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'control.ps1'),(Join-Path $PSScriptRoot 'extract.ps1'),(Join-Path $PSScriptRoot 'README.md') -Destination $StackStage
-    [ordered]@{schema=1;seven_zip=$SevenZipEntry;archives=$ArchiveEntries}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $StackStage 'module-archives.json') -Encoding UTF8
+    [ordered]@{schema=1;archives=$ArchiveEntries}|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $StackStage 'module-archives.json') -Encoding UTF8
     $ToolsStage = Join-Path $Stage 'tools'
     New-Item -ItemType Directory -Path $ToolsStage | Out-Null
     Copy-Item -LiteralPath $SevenZip -Destination (Join-Path $ToolsStage '7za.exe')

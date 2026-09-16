@@ -34,41 +34,23 @@ try{
     if(-not(Test-Path -LiteralPath $ArchiveRoot -PathType Container)){throw "Archive directory is not a directory: $ArchiveRoot"}
     $Manifest=Get-Content -LiteralPath $ManifestPath -Raw|ConvertFrom-Json
     $Archives=@($Manifest.archives)
-    if($Manifest.schema -ne 1 -or $Archives.Count -ne 8 -or $null -eq $Manifest.seven_zip){throw 'Archive manifest must describe the deployment extractor and exactly eight module archives'}
-
-    $SevenZipFile=Get-Item -LiteralPath $SevenZip
-    if($SevenZipFile.Length -ne [int64]$Manifest.seven_zip.bytes){throw 'Bundled 7-Zip extractor size mismatch'}
-    $SevenZipHash=(Get-FileHash -LiteralPath $SevenZip -Algorithm SHA256).Hash.ToLowerInvariant()
-    if($SevenZipHash -ne [string]$Manifest.seven_zip.sha256){throw 'Bundled 7-Zip extractor hash mismatch'}
-    Write-Logged "[OK] Bundled 7-Zip $($Manifest.seven_zip.version) hash verified" Green
+    if($Manifest.schema -ne 1 -or $Archives.Count -ne 8){throw 'Archive manifest must describe exactly eight module archives'}
 
     Write-Logged "[INFO] Archive directory: $ArchiveRoot" Cyan
-    Write-Logged '[WAIT] Verifying module archive sizes and SHA-256 hashes' Yellow
     $Resolved=@()
     foreach($Entry in $Archives){
         $Archive=Join-Path $ArchiveRoot ([string]$Entry.file)
         if(-not(Test-Path -LiteralPath $Archive -PathType Leaf)){throw "Module archive is missing: $Archive"}
-        $File=Get-Item -LiteralPath $Archive
-        if($File.Length -ne [int64]$Entry.bytes){throw "Module archive size mismatch: $($Entry.file)"}
-        $Hash=(Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if($Hash -ne [string]$Entry.sha256){throw "Module archive hash mismatch: $($Entry.file)"}
         $Resolved += [pscustomobject]@{name=[string]$Entry.name;path=$Archive}
-        Write-Logged "[OK] $($Entry.name): archive hash verified" Green
     }
 
-    Write-Logged '[WAIT] Testing all module archives with bundled 7-Zip 26.02' Yellow
-    foreach($Item in $Resolved){Invoke-LoggedNative $SevenZip @('t','-bd',$Item.path) "$($Item.name) archive test failed"}
     foreach($Item in $Resolved){
         Write-Logged "[WAIT] Extracting $($Item.name)" Yellow
         Invoke-LoggedNative $SevenZip @('x','-y','-aoa','-bd',"-o$Root",$Item.path) "$($Item.name) extraction failed"
-    }
-    foreach($Item in $Resolved){
         $ModuleBat=Join-Path $Root "modules\$($Item.name)\MODULE.bat"
         if(-not(Test-Path -LiteralPath $ModuleBat -PathType Leaf)){throw "Extracted module entry point is missing: $ModuleBat"}
-        Write-Logged "[WAIT] Verifying extracted $($Item.name) payload" Yellow
-        Invoke-LoggedNative $ModuleBat @('verify-payload') "$($Item.name) payload verification failed"
     }
-    Write-Logged '[OK] All module archives were extracted and verified; run LOCAL-LLM.bat install' Green
+    Write-Logged '[OK] All module archives were extracted; run LOCAL-LLM.bat install' Green
 }catch{
     $Message="[ERROR] $($_.Exception.Message)"
     Write-Host $Message -ForegroundColor Red

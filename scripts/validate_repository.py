@@ -103,9 +103,6 @@ def validate() -> list[str]:
                 errors.append(f"port {port} collision: {owner}, {name}.{label}")
         prepare_hashes.add(digest(root / "src/prepare.ps1"))
         runtime_hashes.add(digest(root / "lib/runtime.ps1"))
-        control = (root / "control.ps1").read_text(encoding="utf-8")
-        if "verify-payload" not in control:
-            errors.append(f"{name}: controller has no verify-payload command")
     if len(prepare_hashes) != 1:
         errors.append("module-local prepare engines diverged")
     if len(runtime_hashes) != 1:

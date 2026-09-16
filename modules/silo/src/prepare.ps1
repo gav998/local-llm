@@ -26,11 +26,6 @@ function Remove-DirectoryWithRetry([string]$Path,[int]$Attempts=20) {
         }
     }
 }
-function Invoke-PayloadVerification([string]$ControlPath,[string]$FailureMessage) {
-    $WindowsPowerShell=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    & $WindowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ControlPath -CommandName verify-payload
-    if($LASTEXITCODE -ne 0){throw $FailureMessage}
-}
 function Require-Source([string]$Name,[string]$Url) {
     $Path = Join-Path $SourceRoot $Name
     while (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -106,14 +101,10 @@ New-Item -ItemType Directory -Path $Packaged -Force|Out-Null
 Copy-Item -Path (Join-Path $PayloadRoot '*') -Destination $Packaged -Recurse -Force
 foreach($Name in @('MODULE.bat','control.ps1','module.json','README.md')){Copy-Item -LiteralPath (Join-Path $ModuleRoot $Name) -Destination $Packaged -Force}
 Copy-Item -LiteralPath (Join-Path $ModuleRoot 'lib') -Destination (Join-Path $Packaged 'lib') -Recurse -Force
-$Entries=@();$Mutable=@($Manifest.mutable_paths);Get-ChildItem -LiteralPath $Packaged -File -Recurse|Sort-Object FullName|ForEach-Object{$File=$_;$relative=$File.FullName.Substring($Packaged.Length+1).Replace('\','/');$skip=$false;foreach($prefix in $Mutable){$rule=[string]$prefix;if(($rule.EndsWith('/') -and $relative.StartsWith($rule,[StringComparison]::OrdinalIgnoreCase)) -or $relative.Equals($rule,[StringComparison]::OrdinalIgnoreCase)){$skip=$true}};if(-not $skip){$Hash=(Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash;if([string]::IsNullOrWhiteSpace($Hash)){throw "Cannot hash packaged file: $($File.FullName)"};$Entries += [ordered]@{path=$relative;bytes=$File.Length;sha256=$Hash.ToLowerInvariant()}}}
-[ordered]@{schema=1;module=$Manifest.name;version=$Manifest.version;files=$Entries}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $Packaged 'payload.sha256.json') -Encoding UTF8
-Invoke-PayloadVerification (Join-Path $Packaged 'control.ps1') 'Payload verification failed'
 foreach($relative in @('config\runtime','data','logs','state','temp')){$mutableRoot=Join-Path $Packaged $relative;if(Test-Path -LiteralPath $mutableRoot){Remove-Item -LiteralPath $mutableRoot -Recurse -Force}}
 foreach($relative in @($Manifest.mutable_paths)){$mutableItem=Join-Path $Packaged ([string]$relative);if(Test-Path -LiteralPath $mutableItem){Remove-Item -LiteralPath $mutableItem -Recurse -Force}}
 $Archive=Join-Path $PreparedRoot ("local-llm-{0}-{1}.7z" -f $Manifest.name,$Manifest.version)
 if(Test-Path $Archive){Remove-Item $Archive -Force}
 Push-Location $PackageRoot
-try{& $SevenZip a -t7z -mx=7 -ms=on -mmt=on -myv=1900 $Archive 'modules'|Out-Null;if($LASTEXITCODE -ne 0){throw 'Packaging failed'};& $SevenZip t $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive test failed'}}finally{Pop-Location}
-$Rehydrate=Join-Path $BuildRoot 'r';New-Item -ItemType Directory -Path $Rehydrate -Force|Out-Null;& $SevenZip x -y "-o$Rehydrate" $Archive|Out-Null;if($LASTEXITCODE -ne 0){throw 'Archive rehydration failed'};Invoke-PayloadVerification (Join-Path $Rehydrate "modules\$($Manifest.name)\control.ps1") 'Rehydrated payload verification failed';Remove-DirectoryWithRetry $Rehydrate
+try{& $SevenZip a -t7z -mx=7 -ms=on -mmt=on -myv=1900 $Archive 'modules'|Out-Null;if($LASTEXITCODE -ne 0){throw 'Packaging failed'}}finally{Pop-Location}
 Write-Host "[OK] Prepared: $Archive" -ForegroundColor Green

@@ -17,19 +17,19 @@ stack/                   исходники оболочки управлени�
 ```text
 module.json              фиксированные версии, URL, порты и зависимости
 PREPARE-ONLINE.bat       online-точка входа модуля, вызываемая общим меню
-src/prepare.ps1          staging, проверка ключевых файлов, sealing, упаковка
+src/prepare.ps1          staging, проверка ключевых файлов и упаковка
 src/build-hook.ps1       только модульная сборка Python/web (если нужна)
 MODULE.bat               offline install/start/stop/status/verify
 control.ps1              конфигурация и health-check конкретного компонента
-lib/runtime.ps1          локальная копия portable/process/seal primitives
+lib/runtime.ps1          локальная копия portable/process primitives
 _src/                    сохраняемый рабочий cache online-сборки модуля
 ```
 
 Внутри переносимого архива всегда один путь `modules/<name>`. Поэтому архивы
 можно распаковать вручную в любом порядке и они не перезаписывают друг друга.
-`payload.sha256.json` создаётся после сборки и проверяется до упаковки, при
-offline install и по команде verify. Изменяемые `config/runtime`, `data`,
-`logs`, `state`, `temp` не входят в seal.
+После сборки модуль сразу упаковывается в `.7z`: отдельные SHA-манифесты,
+тестовое распаковывание и повторная проверка содержимого не выполняются.
+Команда `verify` оставляет только профильные runtime/health-проверки модуля.
 
 ## Граф runtime-зависимостей
 
