@@ -211,19 +211,26 @@ runtime. Сам проект драйверы не устанавливает и
 
 ### 7. Первый запуск
 
-Проверьте нумерацию Vulkan-устройств:
+Проверьте нумерацию Vulkan-устройств llama.cpp и CUDA-устройств PaddleOCR:
 
 ```bat
 LOCAL-LLM.bat devices
 ```
 
-На проверенной конфигурации OCR использует первую GTX 1080, embedding в
-профилях chat и ingestion запускается на той же Vulkan-карте через
-`embedding_gpu_chat`, а chat LLM распределяется между картами. Если номера
-устройств отличаются, сначала выполните `LOCAL-LLM.bat stop`, затем исправьте
-`embedding_gpu_chat`, `chat_main_gpu` и `chat_tensor_split` в
-`modules\llama-cpp\config\runtime\settings.json`, а для OCR отдельно
-исправьте `gpu_index` в `modules\paddleocr\state\secrets.json`.
+На проверенной конфигурации embedding в профилях chat и ingestion запускается
+на стабильной Vulkan-карте через `embedding_gpu_chat`, а OCR в профиле
+ingestion выбирает отдельную CUDA-карту через `ingestion_gpu_index: "auto"`.
+При двух видимых CUDA GPU режим `auto` предпочитает `gpu:1`, чтобы не сажать
+Qwen3-Embedding и PP-StructureV3 в одни 8 ГБ видеопамяти.
+
+Если номера устройств отличаются, сначала выполните `LOCAL-LLM.bat stop`,
+затем исправьте `embedding_gpu_chat`, `chat_main_gpu` и `chat_tensor_split` в
+`modules\llama-cpp\config\runtime\settings.json`. Для OCR отдельно используйте
+`modules\paddleocr\state\secrets.json`: `ingestion_gpu_index` задаёт CUDA GPU
+для профиля ingestion, `gpu_index` задаёт GPU для ручного
+`modules\paddleocr\MODULE.bat start`, `prefer_gpu_index` задаёт предпочтение
+для режима `auto`, а `text_recognition_batch_size` управляет размером batch
+распознавания строк.
 
 Для первоначальной настройки моделей запустите:
 
@@ -286,9 +293,16 @@ Qwen3-Embedding — как default embedding model.
 LOCAL-LLM.bat start ingestion
 ```
 
-Launcher сам остановит Vikhr, освободит видеопамять и запустит OCR, embeddings
-и обработчик очереди. В **Model providers** найдите provider **PaddleOCR** и
-создайте instance:
+Launcher сам остановит Vikhr, освободит видеопамять и запустит embeddings,
+OCR и обработчик очереди. В ingestion embedding остаётся на своей Vulkan GPU,
+а OCR по умолчанию уходит на отдельную CUDA GPU и поднимает batch
+распознавания строк до `8`. CPU при этом всё равно будет заметно занят
+чтением PDF, растеризацией, подготовкой изображений, post-processing,
+chunking и записью в индексы; это нормально, но `/health` OCR должен
+показывать `strict_gpu: true`, `gpu_device: "gpu:N"` и
+`text_recognition_batch_size: 8`.
+
+В **Model providers** найдите provider **PaddleOCR** и создайте instance:
 
 | Поле | Значение |
 |---|---|
@@ -503,7 +517,7 @@ Windows и не умеет автоматически сохранять рез�
 | `LOCAL-LLM.bat start chat` | core + embeddings + Vikhr | поиск, Chat и Agents |
 | `LOCAL-LLM.bat status` | состояние процессов | убедиться, что сервисы запущены |
 | `LOCAL-LLM.bat verify` | целостность модулей и health | диагностика повреждений |
-| `LOCAL-LLM.bat devices` | Vulkan-устройства llama.cpp | проверить нумерацию GPU |
+| `LOCAL-LLM.bat devices` | Vulkan-устройства llama.cpp и CUDA-устройства PaddleOCR | проверить нумерацию GPU |
 | `LOCAL-LLM.bat stop` | корректная остановка всего стека | перед переносом или резервной копией |
 
 Не запускайте внутренние EXE вручную. Переключайте профили через

@@ -205,6 +205,46 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Wait-Healthy 'paddleocr' {", start)
         self.assertNotIn("Wait-Healthy 'paddleocr strict GPU API'", start)
 
+    def test_ingestion_uses_separate_ocr_gpu_profile(self) -> None:
+        stack = (
+            Path(__file__).parents[1] / "stack" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Run 'llama-cpp' 'start' 'ingestion'", stack)
+        self.assertIn("Run 'paddleocr' 'start' 'ingestion'", stack)
+        self.assertIn(
+            "'devices'{Assert-Deployment;Run 'llama-cpp' 'devices';Run 'paddleocr' 'devices'}",
+            stack,
+        )
+
+    def test_paddleocr_ingestion_prefers_second_cuda_gpu(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "paddleocr" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("gpu_index='auto'", control)
+        self.assertIn("prefer_gpu_index=1", control)
+        self.assertIn("ingestion_gpu_index='auto'", control)
+        self.assertIn("text_recognition_batch_size=8", control)
+        self.assertIn("if($Target -eq 'ingestion')", control)
+        self.assertIn("$env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuSetting $s $Target", control)
+        self.assertIn("$env:LOCAL_OCR_TEXT_REC_BATCH_SIZE", control)
+        self.assertIn("'devices'{Show-OcrDevices}", control)
+
+    def test_paddleocr_gateway_resolves_auto_gpu_and_recognition_batch(self) -> None:
+        gateway = (
+            Path(__file__).parents[1]
+            / "modules"
+            / "paddleocr"
+            / "src"
+            / "ocr_job_gateway.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("DEFAULT_TEXT_RECOGNITION_BATCH_SIZE = 8", gateway)
+        self.assertIn('LOCAL_OCR_GPU_INDEX", "auto"', gateway)
+        self.assertIn('LOCAL_OCR_PREFER_GPU_INDEX", "1"', gateway)
+        self.assertIn("return preferred, f\"auto-prefer-{preferred}\"", gateway)
+        self.assertIn("return 0, \"auto-fallback-0\"", gateway)
+        self.assertIn('"text_recognition_batch_size": text_recognition_batch_size', gateway)
+        self.assertIn('parser.add_argument("--list-devices", action="store_true")', gateway)
+
     def test_web_caddyfile_uses_multiline_handle_blocks(self) -> None:
         control = (
             Path(__file__).parents[1] / "modules" / "web" / "control.ps1"

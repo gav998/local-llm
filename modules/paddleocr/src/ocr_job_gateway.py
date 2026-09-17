@@ -4,7 +4,8 @@
 The stock Python RAGFlow parser calls ``/api/v2/ocr/jobs``. PaddleX basic
 serving exposes a different synchronous endpoint, so this small loopback-only
 gateway owns one strict-GPU PP-StructureV3 pipeline and adapts the protocol.
-``LOCAL_OCR_GPU_INDEX`` selects the board and defaults to GPU 0.
+``LOCAL_OCR_GPU_INDEX`` selects the board. Use ``auto`` to prefer GPU 1 when
+two boards are visible, keeping GPU 0 free for embeddings by default.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ MODEL_NAMES = (
     "SLANet_plus",
 )
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
+DEFAULT_TEXT_RECOGNITION_BATCH_SIZE = 8
 ATOMIC_REPLACE_TIMEOUT_SECONDS = 2.0
 ATOMIC_REPLACE_RETRY_SECONDS = 0.02
 
@@ -218,6 +220,71 @@ def validate_pipeline_profile(config: dict[str, Any]) -> None:
         raise RuntimeError("Table recognition must reuse the page-wide OCR result")
 
 
+def parse_positive_int(value: str, name: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a positive integer, got {value!r}") from exc
+    if parsed < 1:
+        raise RuntimeError(f"{name} must be a positive integer, got {value!r}")
+    return parsed
+
+
+def parse_non_negative_int(value: str, name: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a non-negative integer, got {value!r}") from exc
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer, got {value!r}")
+    return parsed
+
+
+def resolve_gpu_index(device_count: int) -> tuple[int, str]:
+    gpu_index_text = os.environ.get("LOCAL_OCR_GPU_INDEX", "auto").strip().lower()
+    if gpu_index_text == "":
+        gpu_index_text = "auto"
+    if gpu_index_text == "auto":
+        prefer_text = os.environ.get("LOCAL_OCR_PREFER_GPU_INDEX", "1").strip()
+        preferred = parse_non_negative_int(prefer_text, "LOCAL_OCR_PREFER_GPU_INDEX")
+        if preferred < device_count:
+            return preferred, f"auto-prefer-{preferred}"
+        return 0, "auto-fallback-0"
+
+    try:
+        gpu_index = int(gpu_index_text)
+    except ValueError as exc:
+        raise RuntimeError(
+            "LOCAL_OCR_GPU_INDEX must be an integer or 'auto', "
+            f"got {gpu_index_text!r}"
+        ) from exc
+    return gpu_index, "explicit"
+
+
+def list_cuda_devices() -> int:
+    import paddle
+
+    report: dict[str, Any] = {
+        "paddle_version": paddle.__version__,
+        "compiled_with_cuda": bool(paddle.is_compiled_with_cuda()),
+        "paddle_cuda_version": str(paddle.version.cuda),
+        "devices": [],
+    }
+    if paddle.is_compiled_with_cuda():
+        count = paddle.device.cuda.device_count()
+        report["cuda_device_count"] = count
+        for index in range(count):
+            try:
+                capability = paddle.device.cuda.get_device_capability(index)
+            except Exception as exc:  # keep diagnostics best-effort
+                capability = f"error: {exc}"
+            report["devices"].append({"index": index, "capability": capability})
+    else:
+        report["cuda_device_count"] = 0
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     if os.environ.get("PADDLE_PDX_DISABLE_DEVICE_FALLBACK") != "1":
         raise RuntimeError("PADDLE_PDX_DISABLE_DEVICE_FALLBACK must be 1")
@@ -243,13 +310,7 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     if count < 1:
         raise RuntimeError("No CUDA device is visible to PaddlePaddle")
 
-    gpu_index_text = os.environ.get("LOCAL_OCR_GPU_INDEX", "0").strip()
-    try:
-        gpu_index = int(gpu_index_text)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"LOCAL_OCR_GPU_INDEX must be an integer, got {gpu_index_text!r}"
-        ) from exc
+    gpu_index, gpu_selection = resolve_gpu_index(count)
     if gpu_index < 0 or gpu_index >= count:
         raise RuntimeError(
             f"LOCAL_OCR_GPU_INDEX={gpu_index} is outside the visible GPU range 0..{count - 1}"
@@ -276,6 +337,13 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     validate_pipeline_profile(config)
+    text_recognition_batch_size = parse_positive_int(
+        os.environ.get(
+            "LOCAL_OCR_TEXT_REC_BATCH_SIZE",
+            str(DEFAULT_TEXT_RECOGNITION_BATCH_SIZE),
+        ).strip(),
+        "LOCAL_OCR_TEXT_REC_BATCH_SIZE",
+    )
     table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
     config["SubModules"]["LayoutDetection"]["model_dir"] = str(
         model_root / "PP-DocLayout-L"
@@ -289,6 +357,9 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"]["model_dir"] = str(
         model_root / "eslav_PP-OCRv5_mobile_rec"
     )
+    config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"][
+        "batch_size"
+    ] = text_recognition_batch_size
     table_config["SubModules"]["TableStructureRecognition"]["model_dir"] = str(
         model_root / "SLANet_plus"
     )
@@ -303,9 +374,11 @@ def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
         "cuda_device_count": count,
         "gpu_index": gpu_index,
         "gpu_device": device,
+        "gpu_selection": gpu_selection,
         "gpu_capability": ".".join(str(part) for part in capability),
         "compiled_cuda_arches": compiled_arches,
         "cuda_tensor_checksum": checksum,
+        "text_recognition_batch_size": text_recognition_batch_size,
         "table_recognition": True,
         "table_structure_model": "SLANet_plus",
     }
@@ -331,7 +404,10 @@ class JobManager:
         )
         self._closed = False
         self._recover_interrupted_jobs()
-        self._worker = threading.Thread(target=self._run, name="ocr-gpu-0", daemon=True)
+        gpu_index = gpu_info.get("gpu_index", 0)
+        self._worker = threading.Thread(
+            target=self._run, name=f"ocr-gpu-{gpu_index}", daemon=True
+        )
         self._worker.start()
 
     def _state_path(self, job_id: str) -> Path:
@@ -527,13 +603,19 @@ def create_app(manager: JobManager, token: str) -> FastAPI:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--model-root", required=True, type=Path)
-    parser.add_argument("--jobs-root", required=True, type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--model-root", type=Path)
+    parser.add_argument("--jobs-root", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=9399, type=int)
     parser.add_argument("--token", default=os.environ.get("LOCAL_OCR_TOKEN", "local"))
+    parser.add_argument("--list-devices", action="store_true")
     args = parser.parse_args()
+    if args.list_devices:
+        return list_cuda_devices()
+    for name in ("config", "model_root", "jobs_root"):
+        if getattr(args, name) is None:
+            raise SystemExit(f"--{name.replace('_', '-')} is required")
     if args.host != "127.0.0.1":
         raise SystemExit("The local OCR gateway may bind only to 127.0.0.1")
 

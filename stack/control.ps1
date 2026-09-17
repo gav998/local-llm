@@ -8,7 +8,7 @@ function Run([string]$Name,[string]$Command,[string]$Target=''){Write-Host "`n==
 function Assert-Deployment{if(Test-Path -LiteralPath (Join-Path $Root 'PREPARE-STACK.bat') -PathType Leaf){throw 'Run LOCAL-LLM.bat only from the extracted offline deployment, not from the source tree.'}}
 function Start-Data{foreach($m in @('mysql','elasticsearch','silo','valkey')){Run $m 'start'}}
 function Start-Core{Run 'ragflow' 'stop' 'task-executor';Run 'paddleocr' 'stop';Run 'llama-cpp' 'stop';Start-Data;Run 'ragflow' 'start' 'api';Run 'web' 'start'}
-function Start-Ingestion{Run 'ragflow' 'stop' 'task-executor';Run 'llama-cpp' 'stop' 'chat';Run 'llama-cpp' 'stop' 'embedding';try{Start-Data;Run 'llama-cpp' 'start' 'ingestion';Run 'paddleocr' 'start';Run 'ragflow' 'start' 'api';Run 'ragflow' 'start' 'worker';Run 'web' 'start'}catch{Run 'ragflow' 'stop' 'task-executor';Run 'paddleocr' 'stop';Run 'llama-cpp' 'stop' 'embedding';throw};Write-Host '`n[OK] ingestion profile ready: http://127.0.0.1:9388' -ForegroundColor Green}
+function Start-Ingestion{Run 'ragflow' 'stop' 'task-executor';Run 'llama-cpp' 'stop' 'chat';Run 'llama-cpp' 'stop' 'embedding';try{Start-Data;Run 'llama-cpp' 'start' 'ingestion';Run 'paddleocr' 'start' 'ingestion';Run 'ragflow' 'start' 'api';Run 'ragflow' 'start' 'worker';Run 'web' 'start'}catch{Run 'ragflow' 'stop' 'task-executor';Run 'paddleocr' 'stop';Run 'llama-cpp' 'stop' 'embedding';throw};Write-Host '`n[OK] ingestion profile ready: http://127.0.0.1:9388' -ForegroundColor Green}
 function Start-Chat{Run 'ragflow' 'stop' 'task-executor';Run 'paddleocr' 'stop';Run 'llama-cpp' 'stop' 'embedding';try{Start-Data;Run 'llama-cpp' 'start' 'embedding';Run 'llama-cpp' 'start' 'chat';Run 'ragflow' 'start' 'api';Run 'web' 'start'}catch{Run 'llama-cpp' 'stop';throw};Write-Host '`n[OK] chat profile ready: http://127.0.0.1:9388' -ForegroundColor Green}
 function Stop-All{foreach($m in @('web','ragflow','paddleocr','llama-cpp','valkey','silo','elasticsearch','mysql')){try{Run $m 'stop'}catch{Write-Warning $_}}}
 try{switch($CommandName.ToLowerInvariant()){
@@ -17,7 +17,7 @@ try{switch($CommandName.ToLowerInvariant()){
  'stop'{Stop-All}
  'status'{Assert-Deployment;foreach($m in $Order){Run $m 'status'}}
  'verify'{Assert-Deployment;foreach($m in $Order){Run $m 'verify'}}
- 'devices'{Assert-Deployment;Run 'llama-cpp' 'devices'}
+ 'devices'{Assert-Deployment;Run 'llama-cpp' 'devices';Run 'paddleocr' 'devices'}
  default{Write-Host @'
 Usage:
   LOCAL-LLM.bat install
