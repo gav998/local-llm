@@ -232,6 +232,11 @@ Qwen3-Embedding и PP-StructureV3 в одни 8 ГБ видеопамяти.
 для режима `auto`, а `text_recognition_batch_size` управляет размером batch
 распознавания строк.
 
+Для проверки скорости OCR на CPU есть отдельный диагностический профиль:
+`LOCAL-LLM.bat start ingestion-cpu`. Он запускает тот же ingestion stack, но
+передаёт OCR явный `device: "cpu"`. Обычный `start ingestion` остаётся
+strict-GPU и не делает скрытый CPU fallback.
+
 Для первоначальной настройки моделей запустите:
 
 ```bat
@@ -299,8 +304,25 @@ OCR и обработчик очереди. В ingestion embedding остаёт�
 распознавания строк до `8`. CPU при этом всё равно будет заметно занят
 чтением PDF, растеризацией, подготовкой изображений, post-processing,
 chunking и записью в индексы; это нормально, но `/health` OCR должен
-показывать `strict_gpu: true`, `gpu_device: "gpu:N"` и
-`text_recognition_batch_size: 8`.
+показывать `strict_gpu: true`, `device: "gpu:N"`, `runtime_device: "gpu:N"`
+и `text_recognition_batch_size: 8`.
+
+Если кажется, что GPU простаивает, проверьте именно CUDA-график, а не общий
+3D-график Windows Task Manager. Надёжнее открыть отдельный `cmd.exe` и во
+время распознавания выполнить:
+
+```bat
+nvidia-smi -l 1
+```
+
+В процессе OCR у выбранной карты должен быть виден процесс
+`python.exe`, занятая VRAM и периодические скачки `GPU-Util`. Низкий средний
+процент возможен даже при рабочей CUDA, потому что PDF rasterize, подготовка
+изображений, сборка результатов, chunks и запись в индексы выполняются на CPU.
+Для честного сравнения прогоните один и тот же документ сначала через
+`LOCAL-LLM.bat start ingestion`, затем после `LOCAL-LLM.bat stop` через
+`LOCAL-LLM.bat start ingestion-cpu`; в `/health` во втором случае должно быть
+`strict_gpu: false` и `device: "cpu"`.
 
 В **Model providers** найдите provider **PaddleOCR** и создайте instance:
 
@@ -514,6 +536,7 @@ Windows и не умеет автоматически сохранять рез�
 |---|---|---|
 | `LOCAL-LLM.bat start core` | базы, хранилище, RAGFlow API и web | настройки и просмотр без OCR/LLM |
 | `LOCAL-LLM.bat start ingestion` | core + OCR + embeddings + worker | загрузка, OCR, chunks и индексация |
+| `LOCAL-LLM.bat start ingestion-cpu` | ingestion, но OCR явно на CPU | диагностика и сравнение скорости |
 | `LOCAL-LLM.bat start chat` | core + embeddings + Vikhr | поиск, Chat и Agents |
 | `LOCAL-LLM.bat status` | состояние процессов | убедиться, что сервисы запущены |
 | `LOCAL-LLM.bat verify` | целостность модулей и health | диагностика повреждений |

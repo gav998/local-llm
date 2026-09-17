@@ -4,13 +4,27 @@ $Python=Join-Path $PSScriptRoot 'runtime\python\python.exe';$Gateway=Join-Path $
 function Has-Setting($Object,[string]$Name){return $Object.PSObject.Properties.Name -contains $Name}
 function Setting($Object,[string]$Name,$Default){if(Has-Setting $Object $Name){return $Object.PSObject.Properties[$Name].Value};return $Default}
 function Default-Secrets{return [ordered]@{token=New-HexSecret 32;gpu_index='auto';prefer_gpu_index=1;ingestion_gpu_index='auto';text_recognition_batch_size=8}}
+function Sync-OcrServiceSource{
+ $SrcDir=Join-Path $PSScriptRoot 'src';$SvcDir=Join-Path $PSScriptRoot 'service'
+ if(-not(Test-Path $SrcDir -PathType Container)){return}
+ New-Item -ItemType Directory -Path $SvcDir -Force|Out-Null
+ foreach($Name in @('ocr_job_gateway.py','test_ocr_job_gateway_contract.py','pp-structure-v3-8gb.yaml')){
+  $Src=Join-Path $SrcDir $Name
+  if(Test-Path $Src -PathType Leaf){Copy-Item -LiteralPath $Src -Destination (Join-Path $SvcDir $Name) -Force}
+ }
+}
 function Resolve-OcrGpuSetting($s,[string]$Target){
  if($Target -match '^(auto|[0-9]+)$'){return $Target}
  if($Target -eq 'ingestion'){return [string](Setting $s 'ingestion_gpu_index' 'auto')}
  return [string](Setting $s 'gpu_index' 'auto')
 }
+function Resolve-OcrRequestedDevice($s,[string]$Target){
+ if($Target -eq 'cpu'){return 'cpu'}
+ return Resolve-OcrGpuSetting $s $Target
+}
 function Resolve-OcrGpuRuntimeIndex($s,[string]$Target){
- $Requested=(Resolve-OcrGpuSetting $s $Target).Trim().ToLowerInvariant()
+ $Requested=(Resolve-OcrRequestedDevice $s $Target).Trim().ToLowerInvariant()
+ if($Requested -eq 'cpu'){return 'cpu'}
  if($Requested -match '^[0-9]+$'){return $Requested}
  if($Requested -ne 'auto'){throw "OCR GPU index must be 'auto' or a non-negative integer, got '$Requested'"}
  $Code=@'
@@ -47,13 +61,15 @@ function Set-OcrEnvironment($s,[string]$Target){
  $env:PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK='1'
  $env:PADDLE_PDX_CACHE_HOME=Join-Path $PSScriptRoot 'models'
  $env:LOCAL_OCR_PREFER_GPU_INDEX=[string](Setting $s 'prefer_gpu_index' 1)
- $env:LOCAL_OCR_REQUESTED_GPU_INDEX=Resolve-OcrGpuSetting $s $Target
+ $env:LOCAL_OCR_REQUESTED_DEVICE=Resolve-OcrRequestedDevice $s $Target
+ $env:LOCAL_OCR_REQUESTED_GPU_INDEX=$env:LOCAL_OCR_REQUESTED_DEVICE
  $env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuRuntimeIndex $s $Target
+ $env:LOCAL_OCR_DEVICE=$env:LOCAL_OCR_GPU_INDEX
  $env:LOCAL_OCR_TEXT_REC_BATCH_SIZE=[string](Setting $s 'text_recognition_batch_size' 8)
  $env:LOCAL_OCR_TOKEN=$s.token
 }
-function Install-Ocr{Begin-Install;if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets;Write-JsonAtomic $Secrets $s};& $Python (Join-Path $PSScriptRoot 'service\test_ocr_job_gateway_contract.py');if($LASTEXITCODE -ne 0){throw 'OCR API contract failed'};Write-Connection ([ordered]@{schema=1;module='paddleocr';url="http://127.0.0.1:$Port";token=$s.token;strict_gpu=$true});Start-Ocr 'install';Stop-OwnedProcess 'paddleocr';Set-Installed;Write-Host '[OK] paddleocr installed; strict GPU pipeline passed'}
-function Start-Ocr{param([string]$Target='');$s=Read-Json $Secrets;Set-OcrEnvironment $s $Target;Start-OwnedProcess 'paddleocr' $Python @($Gateway,'--config',(Join-Path $PSScriptRoot 'service\pp-structure-v3-8gb.yaml'),'--model-root',(Join-Path $PSScriptRoot 'models'),'--jobs-root',(Join-Path $DataRoot 'jobs'),'--host','127.0.0.1','--port',$Port,'--token',$s.token) (Join-Path $PSScriptRoot 'service');Wait-Healthy 'paddleocr' {Test-Http "http://127.0.0.1:$Port/health"}}
+function Install-Ocr{Begin-Install;Sync-OcrServiceSource;if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets;Write-JsonAtomic $Secrets $s};& $Python (Join-Path $PSScriptRoot 'service\test_ocr_job_gateway_contract.py');if($LASTEXITCODE -ne 0){throw 'OCR API contract failed'};Write-Connection ([ordered]@{schema=1;module='paddleocr';url="http://127.0.0.1:$Port";token=$s.token;strict_gpu=$true});Start-Ocr 'install';Stop-OwnedProcess 'paddleocr';Set-Installed;Write-Host '[OK] paddleocr installed; strict GPU pipeline passed'}
+function Start-Ocr{param([string]$Target='');Sync-OcrServiceSource;$s=Read-Json $Secrets;Set-OcrEnvironment $s $Target;Start-OwnedProcess 'paddleocr' $Python @($Gateway,'--config',(Join-Path $PSScriptRoot 'service\pp-structure-v3-8gb.yaml'),'--model-root',(Join-Path $PSScriptRoot 'models'),'--jobs-root',(Join-Path $DataRoot 'jobs'),'--host','127.0.0.1','--port',$Port,'--token',$s.token) (Join-Path $PSScriptRoot 'service');Wait-Healthy 'paddleocr' {Test-Http "http://127.0.0.1:$Port/health"}}
 function Show-OcrDevices{if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets};Set-OcrEnvironment $s 'ingestion';$Code=@'
 import json
 import os
@@ -70,7 +86,9 @@ def parse_non_negative(value, name):
     return parsed
 
 def resolve_gpu_index(count):
-    requested = os.environ.get("LOCAL_OCR_REQUESTED_GPU_INDEX", os.environ.get("LOCAL_OCR_GPU_INDEX", "auto")).strip().lower() or "auto"
+    requested = os.environ.get("LOCAL_OCR_REQUESTED_DEVICE", os.environ.get("LOCAL_OCR_REQUESTED_GPU_INDEX", os.environ.get("LOCAL_OCR_GPU_INDEX", "auto"))).strip().lower() or "auto"
+    if requested == "cpu":
+        return None, "cpu-explicit"
     if requested == "auto":
         preferred = parse_non_negative(os.environ.get("LOCAL_OCR_PREFER_GPU_INDEX", "1").strip(), "LOCAL_OCR_PREFER_GPU_INDEX")
         if preferred < count:
@@ -101,4 +119,4 @@ for index in range(count):
     report["devices"].append({"index": index, "capability": capability})
 print(json.dumps(report, ensure_ascii=False, indent=2))
 '@;$Code | & $Python -;exit $LASTEXITCODE}
-switch($CommandName.ToLowerInvariant()){'install'{Install-Ocr}'start'{Assert-Installed;Start-Ocr $Target}'stop'{Stop-OwnedProcess 'paddleocr'}'status'{Show-ModuleStatus @('paddleocr')}'devices'{Show-OcrDevices}'verify'{& $Python -c 'import paddle,paddleocr,paddlex';if($LASTEXITCODE -ne 0){throw 'OCR imports failed'};if($Target -eq 'gpu'){Start-Ocr};Write-Host '[OK] paddleocr verified'}default{Write-Host 'Usage: MODULE.bat install|start [ingestion|auto|gpu-index]|stop|status|devices|verify [gpu]';if($CommandName -ne 'help' -and $CommandName){exit 2}}}
+switch($CommandName.ToLowerInvariant()){'install'{Install-Ocr}'start'{Assert-Installed;Start-Ocr $Target}'stop'{Stop-OwnedProcess 'paddleocr'}'status'{Show-ModuleStatus @('paddleocr')}'devices'{Show-OcrDevices}'verify'{& $Python -c 'import paddle,paddleocr,paddlex';if($LASTEXITCODE -ne 0){throw 'OCR imports failed'};if($Target -eq 'gpu'){Start-Ocr};Write-Host '[OK] paddleocr verified'}default{Write-Host 'Usage: MODULE.bat install|start [ingestion|cpu|auto|gpu-index]|stop|status|devices|verify [gpu]';if($CommandName -ne 'help' -and $CommandName){exit 2}}}
