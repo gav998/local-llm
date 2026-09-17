@@ -228,6 +228,13 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("$env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuSetting $s $Target", control)
         self.assertIn("$env:LOCAL_OCR_TEXT_REC_BATCH_SIZE", control)
         self.assertIn("'devices'{Show-OcrDevices}", control)
+        show_devices = control[control.index("function Show-OcrDevices{") :]
+        show_devices = show_devices[: show_devices.index("switch($CommandName")]
+        self.assertIn("Set-OcrEnvironment $s 'ingestion'", show_devices)
+        self.assertIn("'--config' (Join-Path $PSScriptRoot 'service\\pp-structure-v3-8gb.yaml')", show_devices)
+        self.assertIn("'--model-root' (Join-Path $PSScriptRoot 'models')", show_devices)
+        self.assertIn("'--jobs-root' (Join-Path $DataRoot 'jobs')", show_devices)
+        self.assertIn("'--list-devices'", show_devices)
 
     def test_paddleocr_gateway_resolves_auto_gpu_and_recognition_batch(self) -> None:
         gateway = (
