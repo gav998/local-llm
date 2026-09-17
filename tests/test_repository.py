@@ -133,6 +133,21 @@ class RepositoryContractTests(unittest.TestCase):
             install,
         )
 
+    def test_elasticsearch_starts_from_runtime_with_gc_log_directory(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "elasticsearch" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("$EsRuntimeLogs=Join-Path $Runtime 'logs'", control)
+        write_config = control[control.index("function Write-ElasticConfig{") :]
+        write_config = write_config[: write_config.index("function Install-Elastic")]
+        self.assertIn("$EsRuntimeLogs", write_config)
+        start = control[control.index("function Start-Elastic{") :]
+        start = start[: start.index("switch($CommandName")]
+        self.assertIn(
+            "Start-OwnedProcess 'elasticsearch' $env:ComSpec @('/d','/c',(Join-Path $Runtime 'bin\\elasticsearch.bat')) $Runtime",
+            start,
+        )
+
     def test_process_stop_tolerates_exit_between_probe_and_taskkill(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
         for runtime_path in sorted(modules.glob("*/lib/runtime.ps1")):
