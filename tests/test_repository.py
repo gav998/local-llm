@@ -231,10 +231,11 @@ class RepositoryContractTests(unittest.TestCase):
         show_devices = control[control.index("function Show-OcrDevices{") :]
         show_devices = show_devices[: show_devices.index("switch($CommandName")]
         self.assertIn("Set-OcrEnvironment $s 'ingestion'", show_devices)
-        self.assertIn("'--config' (Join-Path $PSScriptRoot 'service\\pp-structure-v3-8gb.yaml')", show_devices)
-        self.assertIn("'--model-root' (Join-Path $PSScriptRoot 'models')", show_devices)
-        self.assertIn("'--jobs-root' (Join-Path $DataRoot 'jobs')", show_devices)
-        self.assertIn("'--list-devices'", show_devices)
+        self.assertIn("import paddle", show_devices)
+        self.assertIn("resolved_gpu_index", show_devices)
+        self.assertIn("$Python -c $Code", show_devices)
+        self.assertNotIn("$Gateway", show_devices)
+        self.assertNotIn("'--list-devices'", show_devices)
 
     def test_paddleocr_gateway_resolves_auto_gpu_and_recognition_batch(self) -> None:
         gateway = (
