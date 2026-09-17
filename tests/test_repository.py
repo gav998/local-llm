@@ -81,6 +81,19 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertNotIn('print("', control)
                 self.assertIn("& $Python -c 'import ", control)
 
+    def test_llama_embedding_uses_same_gpu_for_chat_and_ingestion(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "llama-cpp" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        install = control[control.index("function Install-Llama{") :]
+        install = install[: install.index("function Model")]
+        start = control[control.index("function Start-Embedding") :]
+        start = start[: start.index("function Start-Chat")]
+        self.assertIn("embedding_gpu_chat=0", install)
+        self.assertNotIn("embedding_gpu_ingestion", install)
+        self.assertIn("$gpu=$s.embedding_gpu_chat", start)
+        self.assertNotIn("embedding_gpu_ingestion", start)
+
     def test_mysql_readiness_probe_tolerates_transient_native_stderr(self) -> None:
         control = (
             Path(__file__).parents[1] / "modules" / "mysql" / "control.ps1"

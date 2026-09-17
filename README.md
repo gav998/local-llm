@@ -217,12 +217,13 @@ runtime. Сам проект драйверы не устанавливает и
 LOCAL-LLM.bat devices
 ```
 
-На проверенной конфигурации OCR использует первую GTX 1080, ingestion
-embeddings — вторую, а профиль chat распределяет LLM между картами. Если
-номера устройств отличаются, сначала выполните `LOCAL-LLM.bat stop`, затем
-исправьте GPU-поля в
-`modules\llama-cpp\config\runtime\settings.json` и `gpu_index` в
-`modules\paddleocr\state\secrets.json`.
+На проверенной конфигурации OCR использует первую GTX 1080, embedding в
+профилях chat и ingestion запускается на той же Vulkan-карте через
+`embedding_gpu_chat`, а chat LLM распределяется между картами. Если номера
+устройств отличаются, сначала выполните `LOCAL-LLM.bat stop`, затем исправьте
+`embedding_gpu_chat`, `chat_main_gpu` и `chat_tensor_split` в
+`modules\llama-cpp\config\runtime\settings.json`, а для OCR отдельно
+исправьте `gpu_index` в `modules\paddleocr\state\secrets.json`.
 
 Для первоначальной настройки моделей запустите:
 
