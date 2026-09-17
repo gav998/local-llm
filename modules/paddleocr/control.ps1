@@ -63,8 +63,16 @@ function Set-OcrEnvironment($s,[string]$Target){
  $env:LOCAL_OCR_PREFER_GPU_INDEX=[string](Setting $s 'prefer_gpu_index' 1)
  $env:LOCAL_OCR_REQUESTED_DEVICE=Resolve-OcrRequestedDevice $s $Target
  $env:LOCAL_OCR_REQUESTED_GPU_INDEX=$env:LOCAL_OCR_REQUESTED_DEVICE
- $env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuRuntimeIndex $s $Target
- $env:LOCAL_OCR_DEVICE=$env:LOCAL_OCR_GPU_INDEX
+ $RuntimeDevice=Resolve-OcrGpuRuntimeIndex $s $Target
+ if($RuntimeDevice -eq 'cpu'){
+  $env:LOCAL_OCR_ALLOW_CPU='1'
+  $env:LOCAL_OCR_GPU_INDEX='cpu'
+  $env:LOCAL_OCR_DEVICE='cpu'
+ }else{
+  Remove-Item Env:\LOCAL_OCR_ALLOW_CPU -ErrorAction SilentlyContinue
+  $env:LOCAL_OCR_GPU_INDEX=$RuntimeDevice
+  $env:LOCAL_OCR_DEVICE="gpu:$RuntimeDevice"
+ }
  $env:LOCAL_OCR_TEXT_REC_BATCH_SIZE=[string](Setting $s 'text_recognition_batch_size' 8)
  $env:LOCAL_OCR_TOKEN=$s.token
 }

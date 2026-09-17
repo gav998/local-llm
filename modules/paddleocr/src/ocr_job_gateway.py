@@ -262,6 +262,10 @@ def resolve_device(device_count: int) -> tuple[str, int | None, str, str]:
         if preferred < device_count:
             return f"gpu:{preferred}", preferred, requested, f"auto-prefer-{preferred}"
         return "gpu:0", 0, requested, "auto-fallback-0"
+    if requested.startswith("gpu:"):
+        gpu_index_text = requested.removeprefix("gpu:")
+        gpu_index = parse_non_negative_int(gpu_index_text, "LOCAL_OCR_DEVICE")
+        return f"gpu:{gpu_index}", gpu_index, requested, "explicit"
 
     try:
         gpu_index = int(requested)
@@ -327,6 +331,11 @@ def load_pipeline(config_path: Path, model_root: Path):
     if strict_gpu and (gpu_index is None or gpu_index < 0 or gpu_index >= count):
         raise RuntimeError(
             f"LOCAL_OCR_GPU_INDEX={gpu_index} is outside the visible GPU range 0..{count - 1}"
+        )
+    if not strict_gpu and os.environ.get("LOCAL_OCR_ALLOW_CPU") != "1":
+        raise RuntimeError(
+            "OCR resolved to CPU, but CPU mode is allowed only for "
+            "LOCAL-LLM.bat start ingestion-cpu"
         )
 
     paddle.set_device(device)
