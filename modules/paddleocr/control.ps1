@@ -9,13 +9,46 @@ function Resolve-OcrGpuSetting($s,[string]$Target){
  if($Target -eq 'ingestion'){return [string](Setting $s 'ingestion_gpu_index' 'auto')}
  return [string](Setting $s 'gpu_index' 'auto')
 }
+function Resolve-OcrGpuRuntimeIndex($s,[string]$Target){
+ $Requested=(Resolve-OcrGpuSetting $s $Target).Trim().ToLowerInvariant()
+ if($Requested -match '^[0-9]+$'){return $Requested}
+ if($Requested -ne 'auto'){throw "OCR GPU index must be 'auto' or a non-negative integer, got '$Requested'"}
+ $Code=@'
+import os
+
+import paddle
+
+def parse_non_negative(value, name):
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be a non-negative integer, got {value!r}") from exc
+    if parsed < 0:
+        raise SystemExit(f"{name} must be a non-negative integer, got {value!r}")
+    return parsed
+
+if not paddle.is_compiled_with_cuda():
+    raise SystemExit("PaddlePaddle runtime is not compiled with CUDA")
+count = paddle.device.cuda.device_count()
+if count < 1:
+    raise SystemExit("PaddlePaddle sees no CUDA devices")
+preferred = parse_non_negative(os.environ.get("LOCAL_OCR_PREFER_GPU_INDEX", "1").strip(), "LOCAL_OCR_PREFER_GPU_INDEX")
+print(preferred if preferred < count else 0)
+'@
+ $Resolved=($Code | & $Python - | Select-Object -Last 1)
+ if($LASTEXITCODE -ne 0){throw "Cannot resolve OCR GPU index from '$Requested'"}
+ $ResolvedText=([string]$Resolved).Trim()
+ if($ResolvedText -notmatch '^[0-9]+$'){throw "Cannot resolve OCR GPU index from '$Requested': $ResolvedText"}
+ return $ResolvedText
+}
 function Set-OcrEnvironment($s,[string]$Target){
  $env:PATH=(Join-Path $PSScriptRoot 'runtime\vc')+';'+(Split-Path $Python)+';'+$env:SystemRoot+'\System32'
  $env:PADDLE_PDX_DISABLE_DEVICE_FALLBACK='1'
  $env:PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK='1'
  $env:PADDLE_PDX_CACHE_HOME=Join-Path $PSScriptRoot 'models'
- $env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuSetting $s $Target
  $env:LOCAL_OCR_PREFER_GPU_INDEX=[string](Setting $s 'prefer_gpu_index' 1)
+ $env:LOCAL_OCR_REQUESTED_GPU_INDEX=Resolve-OcrGpuSetting $s $Target
+ $env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuRuntimeIndex $s $Target
  $env:LOCAL_OCR_TEXT_REC_BATCH_SIZE=[string](Setting $s 'text_recognition_batch_size' 8)
  $env:LOCAL_OCR_TOKEN=$s.token
 }
@@ -37,7 +70,7 @@ def parse_non_negative(value, name):
     return parsed
 
 def resolve_gpu_index(count):
-    requested = os.environ.get("LOCAL_OCR_GPU_INDEX", "auto").strip().lower() or "auto"
+    requested = os.environ.get("LOCAL_OCR_REQUESTED_GPU_INDEX", os.environ.get("LOCAL_OCR_GPU_INDEX", "auto")).strip().lower() or "auto"
     if requested == "auto":
         preferred = parse_non_negative(os.environ.get("LOCAL_OCR_PREFER_GPU_INDEX", "1").strip(), "LOCAL_OCR_PREFER_GPU_INDEX")
         if preferred < count:
@@ -54,7 +87,7 @@ report = {
     "compiled_with_cuda": compiled,
     "paddle_cuda_version": str(paddle.version.cuda),
     "cuda_device_count": count,
-    "requested_gpu": os.environ.get("LOCAL_OCR_GPU_INDEX", "auto"),
+    "requested_gpu": os.environ.get("LOCAL_OCR_REQUESTED_GPU_INDEX", os.environ.get("LOCAL_OCR_GPU_INDEX", "auto")),
     "prefer_gpu_index": os.environ.get("LOCAL_OCR_PREFER_GPU_INDEX", "1"),
     "resolved_gpu_index": selected,
     "gpu_selection": selection,

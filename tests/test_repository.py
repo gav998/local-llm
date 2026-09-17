@@ -225,13 +225,16 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("ingestion_gpu_index='auto'", control)
         self.assertIn("text_recognition_batch_size=8", control)
         self.assertIn("if($Target -eq 'ingestion')", control)
-        self.assertIn("$env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuSetting $s $Target", control)
+        self.assertIn("$env:LOCAL_OCR_REQUESTED_GPU_INDEX=Resolve-OcrGpuSetting $s $Target", control)
+        self.assertIn("$env:LOCAL_OCR_GPU_INDEX=Resolve-OcrGpuRuntimeIndex $s $Target", control)
+        self.assertIn("print(preferred if preferred < count else 0)", control)
         self.assertIn("$env:LOCAL_OCR_TEXT_REC_BATCH_SIZE", control)
         self.assertIn("'devices'{Show-OcrDevices}", control)
         show_devices = control[control.index("function Show-OcrDevices{") :]
         show_devices = show_devices[: show_devices.index("switch($CommandName")]
         self.assertIn("Set-OcrEnvironment $s 'ingestion'", show_devices)
         self.assertIn("import paddle", show_devices)
+        self.assertIn("LOCAL_OCR_REQUESTED_GPU_INDEX", show_devices)
         self.assertIn("resolved_gpu_index", show_devices)
         self.assertIn("$Code | & $Python -", show_devices)
         self.assertNotIn("$Python -c $Code", show_devices)
