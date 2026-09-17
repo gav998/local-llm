@@ -67,5 +67,5 @@ for index in range(count):
         capability = f"error: {exc}"
     report["devices"].append({"index": index, "capability": capability})
 print(json.dumps(report, ensure_ascii=False, indent=2))
-'@;& $Python -c $Code;exit $LASTEXITCODE}
+'@;$Code | & $Python -;exit $LASTEXITCODE}
 switch($CommandName.ToLowerInvariant()){'install'{Install-Ocr}'start'{Assert-Installed;Start-Ocr $Target}'stop'{Stop-OwnedProcess 'paddleocr'}'status'{Show-ModuleStatus @('paddleocr')}'devices'{Show-OcrDevices}'verify'{& $Python -c 'import paddle,paddleocr,paddlex';if($LASTEXITCODE -ne 0){throw 'OCR imports failed'};if($Target -eq 'gpu'){Start-Ocr};Write-Host '[OK] paddleocr verified'}default{Write-Host 'Usage: MODULE.bat install|start [ingestion|auto|gpu-index]|stop|status|devices|verify [gpu]';if($CommandName -ne 'help' -and $CommandName){exit 2}}}

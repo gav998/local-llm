@@ -233,7 +233,8 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Set-OcrEnvironment $s 'ingestion'", show_devices)
         self.assertIn("import paddle", show_devices)
         self.assertIn("resolved_gpu_index", show_devices)
-        self.assertIn("$Python -c $Code", show_devices)
+        self.assertIn("$Code | & $Python -", show_devices)
+        self.assertNotIn("$Python -c $Code", show_devices)
         self.assertNotIn("$Gateway", show_devices)
         self.assertNotIn("'--list-devices'", show_devices)
 
