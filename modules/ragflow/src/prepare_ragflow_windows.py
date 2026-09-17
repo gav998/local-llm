@@ -62,6 +62,28 @@ LEIDEN_ADAPTER_SHA256 = (
     "b833c729a3329a704d39c09dc06002857a99cf72b84956dba99c762d49e0919b"
 )
 
+TENANT_LLM_SERVICE_RELATIVE = Path("api/db/services/tenant_llm_service.py")
+TENANT_LLM_SERVICE_ORIGINAL_SHA256 = (
+    "48f12dd2ee9678d13e615d04fed7e00f40c1ea787d9348398cbd8ba5aa6262d7"
+)
+TENANT_LLM_SERVICE_PATCHED_SHA256 = (
+    "ff915625164b3bfee5397a28e6f434f14c7bf6afbfedf65bff4e2c4154913907"
+)
+TENANT_LLM_MAX_LENGTH_LINE = (
+    b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n\n"
+)
+TENANT_LLM_LOCAL_EMBEDDING_LIMIT = (
+    b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n"
+    b"        if model_config.get(\"model_type\") == LLMType.EMBEDDING.value:\n"
+    b"            local_limit = os.environ.get(\"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS\", \"\").strip()\n"
+    b"            if local_limit:\n"
+    b"                try:\n"
+    b"                    self.max_length = min(self.max_length, max(32, int(local_limit)))\n"
+    b"                except ValueError:\n"
+    b"                    logging.warning(\"Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r\", local_limit)\n"
+    b"\n"
+)
+
 GRAPH_IMPORT = b"from rag.graphrag.general.index import run_graphrag_for_kb\n"
 GRAPH_METHOD_HEADER = (
     b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n"
@@ -335,6 +357,53 @@ def install_graphrag_native_adapter(ragflow_dir: Path) -> tuple[Path, Path]:
         raise RuntimeError(f"GraphRAG Leiden verification failed: {leiden_target}")
     print(f"[OK  ] Routed GraphRAG Leiden through graspologic-native: {LEIDEN_RELATIVE}")
     return leiden_target, adapter_target
+
+
+def patch_local_embedding_context_limit(ragflow_dir: Path) -> Path:
+    target = ragflow_dir / TENANT_LLM_SERVICE_RELATIVE
+    if target.is_symlink():
+        raise RuntimeError(f"RAGFlow tenant LLM service must not be a symlink: {target}")
+    if not target.is_file():
+        raise RuntimeError(f"RAGFlow tenant LLM service is missing: {target}")
+
+    original = target.read_bytes()
+    current_hash = sha256_bytes(original)
+    if current_hash == TENANT_LLM_SERVICE_PATCHED_SHA256:
+        if original.count(TENANT_LLM_LOCAL_EMBEDDING_LIMIT) != 1:
+            raise RuntimeError("Patched local embedding context limit is not unique")
+        print(
+            "[OK  ] Local embedding context limit is already enforced: "
+            f"{TENANT_LLM_SERVICE_RELATIVE}"
+        )
+        return target
+    if current_hash != TENANT_LLM_SERVICE_ORIGINAL_SHA256:
+        raise RuntimeError(
+            f"Refusing to patch unknown RAGFlow tenant LLM service: {target}\n"
+            f"Expected SHA256 {TENANT_LLM_SERVICE_ORIGINAL_SHA256} (original) or "
+            f"{TENANT_LLM_SERVICE_PATCHED_SHA256} (patched), found {current_hash}."
+        )
+    if original.count(TENANT_LLM_MAX_LENGTH_LINE) != 1:
+        raise RuntimeError("The audited tenant LLM max_length line is not unique")
+
+    patched = original.replace(
+        TENANT_LLM_MAX_LENGTH_LINE,
+        TENANT_LLM_LOCAL_EMBEDDING_LIMIT,
+        1,
+    )
+    patched_hash = sha256_bytes(patched)
+    if patched_hash != TENANT_LLM_SERVICE_PATCHED_SHA256:
+        raise RuntimeError(
+            "Internal tenant LLM service patch result did not match the audited SHA256: "
+            f"expected {TENANT_LLM_SERVICE_PATCHED_SHA256}, got {patched_hash}"
+        )
+    atomic_write(target, patched)
+    if sha256_bytes(target.read_bytes()) != TENANT_LLM_SERVICE_PATCHED_SHA256:
+        raise RuntimeError(f"Tenant LLM service verification failed: {target}")
+    print(
+        "[OK  ] Enforced local embedding context limit from "
+        f"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS: {TENANT_LLM_SERVICE_RELATIVE}"
+    )
+    return target
 
 
 def locate_infinity_metadata() -> tuple[Path, Path, str]:
@@ -1035,6 +1104,16 @@ def expected_record() -> dict[str, object]:
                 "connected component uses NetworkX"
             ),
         },
+        "local_embedding_context_limit": {
+            "target": TENANT_LLM_SERVICE_RELATIVE.as_posix(),
+            "original_sha256": TENANT_LLM_SERVICE_ORIGINAL_SHA256,
+            "patched_sha256": TENANT_LLM_SERVICE_PATCHED_SHA256,
+            "env": "LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS",
+            "change": (
+                "embedding LLMBundle max_length is capped to the local "
+                "llama.cpp embedding context"
+            ),
+        },
         "infinity_sdk": {
             "version": INFINITY_VERSION,
             "metadata_path": f"{INFINITY_DIST_INFO}/METADATA",
@@ -1128,6 +1207,8 @@ def main() -> int:
     patch_task_handler(ragflow_dir)
     print("[STEP] Enable GraphRAG through the audited graspologic-native adapter")
     install_graphrag_native_adapter(ragflow_dir)
+    print("[STEP] Cap embedding input length to the local llama.cpp context")
+    patch_local_embedding_context_limit(ragflow_dir)
     print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
     patch_infinity_metadata()
     print("[STEP] Repair moodlepy metadata for the pinned attrs runtime")

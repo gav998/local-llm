@@ -2,8 +2,17 @@
 . (Join-Path $PSScriptRoot 'lib\runtime.ps1');Initialize-Module $PSScriptRoot
 $Python=Join-Path $PSScriptRoot 'runtime\python\python.exe';$Rag=Join-Path $PSScriptRoot 'ragflow';$Port=9380;$ModulesRoot=Split-Path -Parent $PSScriptRoot;$Secrets=Join-Path $StateRoot 'secrets.json'
 function Connection([string]$Name){Read-Json (Join-Path $ModulesRoot "$Name\state\connection.json")}
+function Ensure-EmbeddingContextPatch{
+ $Path=Join-Path $Rag 'api\db\services\tenant_llm_service.py';if(-not(Test-Path $Path)){return}
+ $Text=Get-Content -LiteralPath $Path -Raw -Encoding UTF8;if($Text.Contains('LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS')){return}
+ $Needle="        self.max_length = model_config.get(`"max_tokens`") or 8192`n`n";if(-not $Text.Contains($Needle)){$Needle="        self.max_length = model_config.get(`"max_tokens`") or 8192`r`n`r`n"}
+ if(-not $Text.Contains($Needle)){throw 'Cannot patch RAGFlow embedding max_length guard: audited line not found'}
+ $Replacement="        self.max_length = model_config.get(`"max_tokens`") or 8192`n        if model_config.get(`"model_type`") == LLMType.EMBEDDING.value:`n            local_limit = os.environ.get(`"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS`", `"`").strip()`n            if local_limit:`n                try:`n                    self.max_length = min(self.max_length, max(32, int(local_limit)))`n                except ValueError:`n                    logging.warning(`"Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r`", local_limit)`n`n"
+ if($Needle.Contains("`r`n")){$Replacement=$Replacement.Replace("`n","`r`n")}
+ [IO.File]::WriteAllText($Path,$Text.Replace($Needle,$Replacement),[Text.UTF8Encoding]::new($false))
+}
 function Set-RagEnvironment{
- $ocr=Connection 'paddleocr';$env:PYTHONPATH=$Rag;$env:PATH=(Join-Path $PSScriptRoot 'runtime\vc')+';'+(Split-Path $Python)+';'+$env:SystemRoot+'\System32';$env:NLTK_DATA=Join-Path $PSScriptRoot 'assets\nltk';$env:TIKTOKEN_CACHE_DIR=$Rag;$env:TIKA_SERVER_JAR='file:///'+((Join-Path $Rag 'tika-server-standard-3.3.0.jar').Replace('\','/'));$env:PADDLEOCR_BASE_URL=$ocr.url;$env:PADDLEOCR_API_URL=$ocr.url;$env:PADDLEOCR_ACCESS_TOKEN=$ocr.token;$env:HF_HUB_OFFLINE='1';$env:TRANSFORMERS_OFFLINE='1'
+ Ensure-EmbeddingContextPatch;$ocr=Connection 'paddleocr';$llamaSettings=Read-Json (Join-Path $ModulesRoot 'llama-cpp\config\runtime\settings.json');$env:PYTHONPATH=$Rag;$env:PATH=(Join-Path $PSScriptRoot 'runtime\vc')+';'+(Split-Path $Python)+';'+$env:SystemRoot+'\System32';$env:NLTK_DATA=Join-Path $PSScriptRoot 'assets\nltk';$env:TIKTOKEN_CACHE_DIR=$Rag;$env:TIKA_SERVER_JAR='file:///'+((Join-Path $Rag 'tika-server-standard-3.3.0.jar').Replace('\','/'));$env:PADDLEOCR_BASE_URL=$ocr.url;$env:PADDLEOCR_API_URL=$ocr.url;$env:PADDLEOCR_ACCESS_TOKEN=$ocr.token;$env:LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=[string]$llamaSettings.embedding_context;$env:HF_HUB_OFFLINE='1';$env:TRANSFORMERS_OFFLINE='1'
 }
 function Assert-CoreDependencies{$mysql=Connection 'mysql';$es=Connection 'elasticsearch';$silo=Connection 'silo';$valkey=Connection 'valkey';if(-not(Test-Tcp ([int]$mysql.port))){throw 'MySQL endpoint is not ready'};if(-not(Test-Http $es.url)){throw 'Elasticsearch endpoint is not ready'};if(-not(Test-Http ("http://$($silo.endpoint)/minio/health/ready"))){throw 'Silo endpoint is not ready'};if(-not(Test-Tcp ([int]$valkey.port))){throw 'Valkey endpoint is not ready'}}
 function Assert-IngestionDependencies{$llama=Connection 'llama-cpp';$ocr=Connection 'paddleocr';if(-not(Test-Http ($llama.embedding_url.Replace('/v1','/health')))){throw 'Embedding endpoint is not ready'};if(-not(Test-Http ($ocr.url+'/health'))){throw 'PaddleOCR endpoint is not ready'}}

@@ -268,6 +268,30 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn('"text_recognition_batch_size": text_recognition_batch_size', gateway)
         self.assertIn('parser.add_argument("--list-devices", action="store_true")', gateway)
 
+    def test_ragflow_worker_caps_embedding_to_llama_context(self) -> None:
+        root = Path(__file__).parents[1]
+        control = (root / "modules" / "ragflow" / "control.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("function Ensure-EmbeddingContextPatch", control)
+        self.assertIn("Ensure-EmbeddingContextPatch;$ocr=Connection", control)
+        self.assertIn("LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", control)
+        self.assertIn(
+            "llama-cpp\\config\\runtime\\settings.json",
+            control,
+        )
+        self.assertIn(
+            "$env:LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=[string]$llamaSettings.embedding_context",
+            control,
+        )
+
+        prepare = (
+            root / "modules" / "ragflow" / "src" / "prepare_ragflow_windows.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def patch_local_embedding_context_limit", prepare)
+        self.assertIn("LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", prepare)
+        self.assertIn("LLMType.EMBEDDING.value", prepare)
+
     def test_web_caddyfile_uses_multiline_handle_blocks(self) -> None:
         control = (
             Path(__file__).parents[1] / "modules" / "web" / "control.ps1"

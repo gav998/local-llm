@@ -17,7 +17,9 @@ from prepare_ragflow_windows import (
     MOODLE_DIST_INFO,
     MOODLE_REQUIREMENT_ORIGINAL,
     MOODLE_REQUIREMENT_PATCHED,
+    TENANT_LLM_SERVICE_RELATIVE,
     patch_moodle_metadata,
+    patch_local_embedding_context_limit,
     record_digest,
     validate_datrie_direct_url,
 )
@@ -166,6 +168,53 @@ class MoodleMetadataRepairTest(unittest.TestCase):
                     f"{len(patched)}"
                 ),
             )
+
+
+class LocalEmbeddingContextLimitPatchTest(unittest.TestCase):
+    def test_caps_embedding_max_length_from_runtime_env(self) -> None:
+        original = b"".join(
+            [
+                b"import logging\n",
+                b"import os\n",
+                b"from common.constants import LLMType\n",
+                b"\n",
+                b"class LLM4Tenant:\n",
+                b"    def __init__(self, model_config):\n",
+                b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n",
+                b"\n",
+                b"        self.is_tools = model_config.get(\"is_tools\", False)\n",
+            ]
+        )
+        patched = original.replace(
+            b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n\n",
+            (
+                b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n"
+                b"        if model_config.get(\"model_type\") == LLMType.EMBEDDING.value:\n"
+                b"            local_limit = os.environ.get(\"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS\", \"\").strip()\n"
+                b"            if local_limit:\n"
+                b"                try:\n"
+                b"                    self.max_length = min(self.max_length, max(32, int(local_limit)))\n"
+                b"                except ValueError:\n"
+                b"                    logging.warning(\"Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r\", local_limit)\n"
+                b"\n"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / TENANT_LLM_SERVICE_RELATIVE
+            target.parent.mkdir(parents=True)
+            target.write_bytes(original)
+
+            with mock.patch.multiple(
+                "prepare_ragflow_windows",
+                TENANT_LLM_SERVICE_ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
+                TENANT_LLM_SERVICE_PATCHED_SHA256=hashlib.sha256(patched).hexdigest(),
+            ):
+                patch_local_embedding_context_limit(root)
+                patch_local_embedding_context_limit(root)
+
+            self.assertEqual(target.read_bytes(), patched)
+            self.assertIn(b"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", target.read_bytes())
 
 
 if __name__ == "__main__":
