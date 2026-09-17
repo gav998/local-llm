@@ -108,6 +108,31 @@ class RepositoryContractTests(unittest.TestCase):
         )
         self.assertIn("runtime/logs/", manifest["mutable_paths"])
 
+    def test_elasticsearch_readiness_failure_prints_log_excerpts(self) -> None:
+        runtime = (
+            Path(__file__).parents[1]
+            / "modules"
+            / "elasticsearch"
+            / "lib"
+            / "runtime.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn("function Write-ProcessDiagnostics", runtime)
+        self.assertIn("Get-Content -LiteralPath $Path -Tail $Lines", runtime)
+        self.assertIn("Write-ProcessDiagnostics $Name;throw", runtime)
+        self.assertIn("see log excerpts above", runtime)
+
+    def test_elasticsearch_install_smoke_starts_runtime(self) -> None:
+        control = (
+            Path(__file__).parents[1] / "modules" / "elasticsearch" / "control.ps1"
+        ).read_text(encoding="utf-8")
+        install = control[control.index("function Install-Elastic{") :]
+        install = install[: install.index("function Start-Elastic")]
+        self.assertIn("try{Start-Elastic}", install)
+        self.assertIn(
+            "finally{if(Get-OwnedProcess 'elasticsearch'){Stop-OwnedProcess 'elasticsearch'}}",
+            install,
+        )
+
     def test_process_stop_tolerates_exit_between_probe_and_taskkill(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
         for runtime_path in sorted(modules.glob("*/lib/runtime.ps1")):
