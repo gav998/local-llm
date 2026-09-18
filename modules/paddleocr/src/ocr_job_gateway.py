@@ -573,7 +573,7 @@ def load_pipeline(config_path: Path, model_root: Path):
     paddle.set_device(device)
     capability: tuple[int, int] | None = None
     compiled_arches: tuple[int, ...] = ()
-    checksum_tensor_device = paddle.device.get_device()
+    probe_tensor_device = paddle.device.get_device()
     if strict_gpu:
         assert gpu_index is not None
         capability = tuple(paddle.device.cuda.get_device_capability(gpu_index))
@@ -591,7 +591,7 @@ def load_pipeline(config_path: Path, model_root: Path):
 
     left = paddle.randn([256, 256], dtype="float32")
     right = paddle.randn([256, 256], dtype="float32")
-    checksum = float(paddle.sum(paddle.matmul(left, right)).numpy().item())
+    probe_value = float(paddle.sum(paddle.matmul(left, right)).numpy().item())
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     validate_pipeline_profile(config)
@@ -642,8 +642,8 @@ def load_pipeline(config_path: Path, model_root: Path):
         if capability is not None
         else None,
         "compiled_cuda_arches": compiled_arches,
-        "cuda_tensor_checksum": checksum,
-        "checksum_tensor_device": checksum_tensor_device,
+        "cuda_tensor_probe_value": probe_value,
+        "probe_tensor_device": probe_tensor_device,
         "text_recognition_batch_size": text_recognition_batch_size,
         "table_recognition": True,
         "table_structure_model": "SLANet_plus",

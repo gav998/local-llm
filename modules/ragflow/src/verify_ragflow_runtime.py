@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import importlib
 import importlib.metadata
 import importlib.util
@@ -24,24 +23,13 @@ PYTHON_VERSION = "3.13.15"
 TASK_HANDLER_RELATIVE = Path(
     "rag/svr/task_executor_refactor/task_handler.py"
 )
-TASK_HANDLER_PATCHED_SHA256 = (
-    "9af7cd2f1dcdb0febe41be85e6c9adf3239057f6453137e37ea7b66f9d04b9f0"
-)
+TASK_HANDLER_LAZY_IMPORT = b"        from rag.graphrag.general.index import run_graphrag_for_kb\n"
 LEIDEN_RELATIVE = Path("rag/graphrag/general/leiden.py")
-LEIDEN_PATCHED_SHA256 = (
-    "aba607c77cbf496319f3c7c78ec55bb145d481479fecea89b468c1bb4a64f828"
-)
 LEIDEN_ADAPTER_RELATIVE = Path(
     "rag/graphrag/general/graphrag_native_adapter.py"
 )
-LEIDEN_ADAPTER_SHA256 = (
-    "b833c729a3329a704d39c09dc06002857a99cf72b84956dba99c762d49e0919b"
-)
+LEIDEN_ADAPTER_IMPORT = b"from rag.graphrag.general.graphrag_native_adapter import (\n"
 XGBOOST_MODEL_RELATIVE = Path("rag/res/deepdoc/updown_concat_xgb.model")
-XGBOOST_MODEL_SIZE = 5_906_150
-XGBOOST_MODEL_SHA256 = (
-    "50516159cd0aab5f3499e1edccffdf1d6141f5ae513fdba003a18cbefa823f62"
-)
 EXPECTED_DISTRIBUTIONS = {
     "numpy": "2.3.5",
     "xgboost": "2.1.4",
@@ -56,11 +44,6 @@ EXPECTED_DISTRIBUTIONS = {
 INFINITY_NUMPY_REQUIREMENT = "numpy>=2,<2.4"
 MOODLE_ATTRS_REQUIREMENT = b"Requires-Dist: attrs (>=23.2.0)\n"
 MOODLE_DIST_INFO = "moodlepy-0.24.1.dist-info"
-MOODLE_METADATA_PATCHED_SIZE = 8_336
-MOODLE_METADATA_PATCHED_SHA256 = (
-    "253e4fffc22de184669efdfafccc6a57a6234760e0cbe4cc75245c99ecce1f59"
-)
-MOODLE_RECORD_DIGEST_PATCHED = "JT5P_8It4YRmnv36_MxqV6YjR2Dgy-TMdSRcmezOH1k"
 DATRIE_DIST_INFO = "datrie-0.8.3.dist-info"
 
 
@@ -69,57 +52,26 @@ class RemovedRequirementMetadata:
     distribution: str
     dist_info: str
     removed_requirement: bytes
-    patched_size: int
-    patched_sha256: str
-    patched_record_digest: str
 
     @property
     def metadata_entry(self) -> str:
         return f"{self.dist_info}/METADATA"
-
-    @property
-    def record_entry(self) -> str:
-        return f"{self.dist_info}/RECORD"
-
 
 EXCLUDED_REQUIREMENT_METADATA = (
     RemovedRequirementMetadata(
         distribution="crawl4ai",
         dist_info="crawl4ai-0.9.2.dist-info",
         removed_requirement=b"Requires-Dist: unclecode-litellm==1.81.13\n",
-        patched_size=58_641,
-        patched_sha256=(
-            "013b49b1d5d0d96f45dca3eeef756fdba2c5cb65bdd5f86e74a6344366ecbe5b"
-        ),
-        patched_record_digest="ATtJsdXQ2W9F3KPu73Vv26LFy2W91fhudKY0Q2bsvls",
     ),
     RemovedRequirementMetadata(
         distribution="agentrun-sdk",
         dist_info="agentrun_sdk-0.0.51.dist-info",
         removed_requirement=b"Requires-Dist: agentrun-mem0ai>=0.0.10\n",
-        patched_size=11_716,
-        patched_sha256=(
-            "656c78f819c4008bcc76ca06ebdb364844b03017ac24b153d173f79d10326d15"
-        ),
-        patched_record_digest="ZWx4-BnEAIvMdsoG69s2SESwMBesJLFT0XP3nRAybRU",
     ),
 )
 CL100K_RELATIVE = Path("ragflow_deps/cl100k_base.tiktoken")
-# tiktoken names the cache file with SHA1(URL).  Do not confuse this with
-# 6494e42d..., which is the SHA1 of the table contents.
+# This opaque name is required by tiktoken's cache lookup for the source URL.
 CL100K_CACHE_NAME = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
-CL100K_SIZE = 1_681_126
-CL100K_SHA256 = (
-    "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
-)
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def require_inside(path: Path, root: Path, description: str) -> None:
@@ -178,27 +130,15 @@ def check_ragflow_source(ragflow_dir: Path) -> str:
     task_handler = ragflow_dir / TASK_HANDLER_RELATIVE
     if not task_handler.is_file():
         raise RuntimeError(f"Missing patched task handler: {task_handler}")
-    digest = sha256_file(task_handler)
-    if digest != TASK_HANDLER_PATCHED_SHA256:
-        raise RuntimeError(
-            f"RAGFlow task handler is not the audited Windows patch: expected "
-            f"SHA256 {TASK_HANDLER_PATCHED_SHA256}, found {digest}"
-        )
-    patched_sources = (
-        (LEIDEN_RELATIVE, LEIDEN_PATCHED_SHA256),
-        (LEIDEN_ADAPTER_RELATIVE, LEIDEN_ADAPTER_SHA256),
-    )
-    for relative, expected_digest in patched_sources:
+    if TASK_HANDLER_LAZY_IMPORT not in task_handler.read_bytes():
+        raise RuntimeError(f"RAGFlow task handler lacks the lazy GraphRAG import: {task_handler}")
+    for relative in (LEIDEN_RELATIVE, LEIDEN_ADAPTER_RELATIVE):
         path = ragflow_dir / relative
         if path.is_symlink() or not path.is_file():
-            raise RuntimeError(f"Missing or unsafe audited GraphRAG source: {path}")
-        actual_digest = sha256_file(path)
-        if actual_digest != expected_digest:
-            raise RuntimeError(
-                f"GraphRAG source {relative} is not the audited Windows patch: "
-                f"expected SHA256 {expected_digest}, found {actual_digest}"
-            )
-    return f"RAGFlow {version}; audited task and GraphRAG sources"
+            raise RuntimeError(f"Missing or unsafe GraphRAG source: {path}")
+    if LEIDEN_ADAPTER_IMPORT not in (ragflow_dir / LEIDEN_RELATIVE).read_bytes():
+        raise RuntimeError("RAGFlow Leiden source lacks the native adapter import")
+    return f"RAGFlow {version}; required task and GraphRAG patches are present"
 
 
 def verify_removed_requirement_metadata(
@@ -225,57 +165,17 @@ def verify_removed_requirement_metadata(
             f"expected {repair.metadata_entry!r}"
         )
     metadata_path = Path(distribution.locate_file(metadata_entries[0]))
-    record_path = metadata_path.with_name("RECORD")
-    for description, path in (
-        ("METADATA", metadata_path),
-        ("RECORD", record_path),
-    ):
-        if path.is_symlink():
-            raise RuntimeError(
-                f"{repair.distribution} {description} must not be a symlink: {path}"
-            )
-        if not path.is_file():
-            raise RuntimeError(
-                f"{repair.distribution} {description} is missing: {path}"
-            )
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        raise RuntimeError(
+            f"{repair.distribution} METADATA is missing or unsafe: {metadata_path}"
+        )
 
     metadata = metadata_path.read_bytes()
-    digest = hashlib.sha256(metadata).hexdigest()
-    if len(metadata) != repair.patched_size or digest != repair.patched_sha256:
-        raise RuntimeError(
-            f"{repair.distribution} METADATA is not the audited repaired file: "
-            f"expected {repair.patched_size} bytes / SHA256 "
-            f"{repair.patched_sha256}, found {len(metadata)} bytes / SHA256 {digest}"
-        )
     if repair.removed_requirement in metadata:
         raise RuntimeError(
             f"{repair.distribution} retains excluded requirement "
             f"{repair.removed_requirement.rstrip()!r}"
         )
-
-    try:
-        rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
-    except (UnicodeDecodeError, csv.Error) as exc:
-        raise RuntimeError(
-            f"Cannot parse {repair.distribution} RECORD: {exc}"
-        ) from exc
-    expected_metadata_row = [
-        repair.metadata_entry,
-        f"sha256={repair.patched_record_digest}",
-        str(repair.patched_size),
-    ]
-    metadata_rows = [row for row in rows if row and row[0] == repair.metadata_entry]
-    if metadata_rows != [expected_metadata_row]:
-        raise RuntimeError(
-            f"Unexpected {repair.distribution} METADATA RECORD rows: "
-            f"{metadata_rows!r}; expected {[expected_metadata_row]!r}"
-        )
-    self_rows = [row for row in rows if row and row[0] == repair.record_entry]
-    if self_rows != [[repair.record_entry, "", ""]]:
-        raise RuntimeError(
-            f"Unexpected {repair.distribution} RECORD self rows: {self_rows!r}"
-        )
-
 
 def verify_moodle_metadata(distribution: importlib.metadata.Distribution) -> None:
     files = distribution.files
@@ -299,51 +199,12 @@ def verify_moodle_metadata(distribution: importlib.metadata.Distribution) -> Non
             f"expected {expected_entry!r}"
         )
     metadata_path = Path(distribution.locate_file(metadata_entries[0]))
-    record_path = metadata_path.with_name("RECORD")
-    for description, path in (
-        ("METADATA", metadata_path),
-        ("RECORD", record_path),
-    ):
-        if path.is_symlink():
-            raise RuntimeError(f"moodlepy {description} must not be a symlink: {path}")
-        if not path.is_file():
-            raise RuntimeError(f"moodlepy {description} is missing: {path}")
+    if metadata_path.is_symlink() or not metadata_path.is_file():
+        raise RuntimeError(f"moodlepy METADATA is missing or unsafe: {metadata_path}")
 
     metadata = metadata_path.read_bytes()
-    digest = hashlib.sha256(metadata).hexdigest()
-    if (
-        len(metadata) != MOODLE_METADATA_PATCHED_SIZE
-        or digest != MOODLE_METADATA_PATCHED_SHA256
-    ):
-        raise RuntimeError(
-            "moodlepy METADATA is not the audited repaired file: expected "
-            f"{MOODLE_METADATA_PATCHED_SIZE} bytes / SHA256 "
-            f"{MOODLE_METADATA_PATCHED_SHA256}, found {len(metadata)} bytes / "
-            f"SHA256 {digest}"
-        )
     if metadata.count(MOODLE_ATTRS_REQUIREMENT) != 1:
         raise RuntimeError("moodlepy attrs metadata was not repaired")
-
-    try:
-        rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
-    except (UnicodeDecodeError, csv.Error) as exc:
-        raise RuntimeError(f"Cannot parse moodlepy RECORD: {exc}") from exc
-    expected_metadata_row = [
-        expected_entry,
-        f"sha256={MOODLE_RECORD_DIGEST_PATCHED}",
-        str(MOODLE_METADATA_PATCHED_SIZE),
-    ]
-    metadata_rows = [row for row in rows if row and row[0] == expected_entry]
-    if metadata_rows != [expected_metadata_row]:
-        raise RuntimeError(
-            f"Unexpected moodlepy METADATA RECORD rows: {metadata_rows!r}; "
-            f"expected {[expected_metadata_row]!r}"
-        )
-    record_entry = f"{MOODLE_DIST_INFO}/RECORD"
-    self_rows = [row for row in rows if row and row[0] == record_entry]
-    if self_rows != [[record_entry, "", ""]]:
-        raise RuntimeError(f"Unexpected moodlepy RECORD self rows: {self_rows!r}")
-
 
 def check_distributions() -> str:
     found: list[str] = []
@@ -529,24 +390,17 @@ def check_graphrag_native(ragflow_dir: Path) -> str:
     )
 
 
-def verify_cl100k_file(path: Path, description: str) -> None:
+def require_regular_file(path: Path, description: str) -> None:
     if path.is_symlink() or not path.is_file():
         raise RuntimeError(f"Missing regular {description}: {path}")
-    size = path.stat().st_size
-    digest = sha256_file(path)
-    if size != CL100K_SIZE or digest != CL100K_SHA256:
-        raise RuntimeError(
-            f"{description} integrity mismatch: expected {CL100K_SIZE} bytes / "
-            f"SHA256 {CL100K_SHA256}, found {size} bytes / SHA256 {digest}"
-        )
 
 
 def check_tiktoken_offline(ragflow_dir: Path) -> str:
     bundled = ragflow_dir / CL100K_RELATIVE
     cached = ragflow_dir / CL100K_CACHE_NAME
-    verify_cl100k_file(bundled, "bundled cl100k table")
+    require_regular_file(bundled, "bundled cl100k table")
     if cached.exists() or cached.is_symlink():
-        verify_cl100k_file(cached, "RAGFlow cl100k cache")
+        require_regular_file(cached, "RAGFlow cl100k cache")
 
     try:
         module = importlib.import_module("common.token_utils")
@@ -559,7 +413,7 @@ def check_tiktoken_offline(ragflow_dir: Path) -> str:
         raise RuntimeError("common.token_utils has no source path")
     require_inside(Path(module_file), ragflow_dir, "common.token_utils")
 
-    verify_cl100k_file(cached, "materialized RAGFlow cl100k cache")
+    require_regular_file(cached, "materialized RAGFlow cl100k cache")
     count = module.num_tokens_from_string("Привет, мир! Offline tokenization 2026.")
     if not isinstance(count, int) or count <= 0:
         raise RuntimeError(f"cl100k tokenizer returned an invalid token count: {count!r}")
@@ -595,14 +449,6 @@ def check_xgboost_prediction(ragflow_dir: Path) -> str:
     model_path = ragflow_dir / XGBOOST_MODEL_RELATIVE
     if not model_path.is_file():
         raise RuntimeError(f"Missing RAGFlow XGBoost model: {model_path}")
-    size = model_path.stat().st_size
-    digest = sha256_file(model_path)
-    if size != XGBOOST_MODEL_SIZE or digest != XGBOOST_MODEL_SHA256:
-        raise RuntimeError(
-            f"XGBoost model integrity mismatch for {model_path}: expected "
-            f"{XGBOOST_MODEL_SIZE} bytes / {XGBOOST_MODEL_SHA256}, found "
-            f"{size} bytes / {digest}"
-        )
 
     try:
         import numpy as np

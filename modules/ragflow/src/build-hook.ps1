@@ -17,15 +17,15 @@ function Export-NativeOutput([string]$Executable,[object[]]$Arguments,[string]$O
 }
 $Upstream=Join-Path $Locks 'ragflow-0.27.1-upstream.txt';$Windows=Join-Path $Locks 'ragflow-0.27.1-windows.txt'
 Push-Location $Rag
-try{Invoke-LoggedNative $Uv @('export','--frozen','--no-group','test','--no-emit-project','--no-emit-package','numpy','--no-emit-package','xgboost','--no-emit-package','datrie','--no-emit-package','graspologic','--no-emit-package','infinity-emb','--no-emit-package','unclecode-litellm','--no-emit-package','agentrun-mem0ai','--no-header','--no-annotate','--format','requirements-txt','--output-file',$Upstream) 'RAGFlow lock export failed'
-Invoke-LoggedNative $Uv @('pip','compile',(Join-Path $Rag 'pyproject.toml'),(Join-Path $PSScriptRoot 'ragflow-windows-additions.txt'),'--python',$Python,'--constraints',$Upstream,'--overrides',(Join-Path $PSScriptRoot 'ragflow-windows-overrides.txt'),'--excludes',(Join-Path $PSScriptRoot 'ragflow-windows-excludes.txt'),'--generate-hashes','--no-header','--no-annotate','--output-file',$Windows) 'RAGFlow Windows lock compile failed'}finally{Pop-Location}
+try{Invoke-LoggedNative $Uv @('export','--frozen','--no-group','test','--no-emit-project','--no-emit-package','numpy','--no-emit-package','xgboost','--no-emit-package','datrie','--no-emit-package','graspologic','--no-emit-package','infinity-emb','--no-emit-package','unclecode-litellm','--no-emit-package','agentrun-mem0ai','--no-hashes','--no-header','--no-annotate','--format','requirements-txt','--output-file',$Upstream) 'RAGFlow lock export failed'
+Invoke-LoggedNative $Uv @('pip','compile',(Join-Path $Rag 'pyproject.toml'),(Join-Path $PSScriptRoot 'ragflow-windows-additions.txt'),'--python',$Python,'--constraints',$Upstream,'--overrides',(Join-Path $PSScriptRoot 'ragflow-windows-overrides.txt'),'--excludes',(Join-Path $PSScriptRoot 'ragflow-windows-excludes.txt'),'--no-header','--no-annotate','--output-file',$Windows) 'RAGFlow Windows lock compile failed'}finally{Pop-Location}
 Invoke-LoggedNative $Uv @('pip','install','--python',$Python,'pip==26.2.1') 'pip bootstrap failed'
 # Setuptools mirrors absolute source paths below PYTHONPYCACHEPREFIX.  On
 # Windows that makes thrift's temporary optimized-pyc path exceed MAX_PATH.
 $PreviousPythonPycCachePrefix=$env:PYTHONPYCACHEPREFIX
 try{
     Remove-Item Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue
-    Invoke-LoggedNative $Python @('-m','pip','wheel','--wheel-dir',$Wheelhouse,'--no-deps','--require-hashes','--requirement',$Windows) 'RAGFlow wheelhouse build failed'
+    Invoke-LoggedNative $Python @('-m','pip','wheel','--wheel-dir',$Wheelhouse,'--no-deps','--requirement',$Windows) 'RAGFlow wheelhouse build failed'
 }finally{
     if($null -eq $PreviousPythonPycCachePrefix){Remove-Item Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue}else{$env:PYTHONPYCACHEPREFIX=$PreviousPythonPycCachePrefix}
 }
@@ -36,8 +36,8 @@ Copy-Item $WheelLock (Join-Path $Locks 'ragflow-wheelhouse.lock') -Force
 # security can deny that operation even though the destination is writable.
 # pip's distlib launchers avoid that mutation; the following uv sync then only
 # verifies the populated environment and removes bootstrap-only packages.
-Invoke-LoggedNative $Python @('-m','pip','install','--no-index','--find-links',$Wheelhouse,'--require-hashes','--no-deps','--only-binary=:all:','--no-compile','--requirement',$WheelLock) 'RAGFlow wheel installation failed'
-Invoke-LoggedNative $Uv @('pip','sync','--python',$Python,'--no-index','--find-links',$Wheelhouse,'--require-hashes',$WheelLock) 'RAGFlow wheel sync failed'
+Invoke-LoggedNative $Python @('-m','pip','install','--no-index','--find-links',$Wheelhouse,'--no-deps','--only-binary=:all:','--no-compile','--requirement',$WheelLock) 'RAGFlow wheel installation failed'
+Invoke-LoggedNative $Uv @('pip','sync','--python',$Python,'--no-index','--find-links',$Wheelhouse,$WheelLock) 'RAGFlow wheel sync failed'
 Invoke-LoggedNative $Uv @('pip','install','--python',$Python,'--no-index','--no-deps',(Join-Path $Wheelhouse 'datrie-0.8.3-cp313-cp313-win_amd64.whl')) 'datrie install failed'
 $Vc=Join-Path $PayloadRoot 'vendor\VC_redist.x64.exe';$Stage=Join-Path $PayloadRoot 'vc-stage';New-Item -ItemType Directory -Path "$Stage\parts","$Stage\payload","$Stage\dlls" -Force|Out-Null;& $SevenZip x -y -t# "-o$Stage\parts" $Vc|Out-Null;& $SevenZip x -y "-o$Stage\payload" "$Stage\parts\4.cab"|Out-Null;& $SevenZip x -y "-o$Stage\dlls" "$Stage\payload\a12"|Out-Null;$DllRoot=Join-Path $PayloadRoot 'runtime\vc';New-Item -ItemType Directory -Path $DllRoot -Force|Out-Null;Get-ChildItem "$Stage\dlls\*_amd64"|ForEach-Object{$n=$_.Name.Replace('_amd64','');Copy-Item $_.FullName (Join-Path $DllRoot $n) -Force;Copy-Item $_.FullName (Join-Path (Split-Path $Python) $n) -Force};Remove-Item $Stage -Recurse -Force
 Copy-Item (Join-Path $DllRoot 'vcomp140.dll') (Join-Path (Split-Path $Python) 'Lib\site-packages\xgboost\lib\vcomp140.dll') -Force

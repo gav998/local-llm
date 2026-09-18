@@ -544,7 +544,7 @@ Windows и не умеет автоматически сохранять рез�
 | `LOCAL-LLM.bat start ingestion-cpu` | ingestion, но OCR явно на CPU | диагностика и сравнение скорости |
 | `LOCAL-LLM.bat start chat` | core + embeddings + Vikhr | поиск, Chat и Agents |
 | `LOCAL-LLM.bat status` | состояние процессов | убедиться, что сервисы запущены |
-| `LOCAL-LLM.bat verify` | целостность модулей и health | диагностика повреждений |
+| `LOCAL-LLM.bat verify` | runtime/health smoke-проверки | диагностика запуска и доступности |
 | `LOCAL-LLM.bat devices` | Vulkan-устройства llama.cpp и CUDA-устройства PaddleOCR | проверить нумерацию GPU |
 | `LOCAL-LLM.bat stop` | корректная остановка всего стека | перед переносом или резервной копией |
 

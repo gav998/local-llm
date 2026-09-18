@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Create an exact hash lock from a populated, already-resolved wheelhouse."""
+"""Create exact version pins from a populated, already-resolved wheelhouse."""
 
 from __future__ import annotations
 
 import argparse
 import email.parser
-import hashlib
 import re
 import sys
 import urllib.parse
@@ -70,9 +69,8 @@ def direct_wheel_version(url: str) -> str:
 def read_source_pins(path: Path) -> dict[str, RequirementPin]:
     result: dict[str, RequirementPin] = {}
     for record in logical_requirements(path):
-        requirement_text = re.sub(r"\s+--hash=\S+", "", record).strip()
         try:
-            requirement = Requirement(requirement_text)
+            requirement = Requirement(record)
         except InvalidRequirement as exc:
             raise WheelhouseLockError(
                 f"Unsupported requirement in compiled source lock: {record}"
@@ -131,14 +129,6 @@ def wheel_identity(path: Path) -> RequirementPin:
     return RequirementPin(name=canonicalize_name(name), version=version)
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def create_lock(source_lock: Path, wheelhouse: Path, output: Path) -> int:
     pins = read_source_pins(source_lock)
     available: dict[str, dict[str, list[Path]]] = {}
@@ -182,11 +172,7 @@ def create_lock(source_lock: Path, wheelhouse: Path, output: Path) -> int:
             f"{preview}{suffix}"
         )
 
-    body = "".join(
-        f"{pin.name}=={pin.version} \\\n"
-        f"    --hash=sha256:{sha256_file(wheel)}\n"
-        for pin, wheel in selected
-    )
+    body = "".join(f"{pin.name}=={pin.version}\n" for pin, _wheel in selected)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f"{output.name}.tmp")
     temporary.write_text(body, encoding="utf-8", newline="\n")
@@ -209,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, WheelhouseLockError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1
-    print(f"[OK] Hash-locked {count} distributions to local wheels")
+    print(f"[OK] Pinned {count} distributions to local wheel versions")
     return 0
 
 

@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Unit tests for RAGFlow Windows preparation safety checks."""
+"""Unit tests for semantic, hash-free RAGFlow Windows patches."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 import tempfile
 import unittest
-from pathlib import PurePosixPath
 from pathlib import Path
 from unittest import mock
 
 from prepare_ragflow_windows import (
-    DATRIE_WHEEL_NAME,
-    DATRIE_WHEEL_SHA256,
     MOODLE_DIST_INFO,
     MOODLE_REQUIREMENT_ORIGINAL,
     MOODLE_REQUIREMENT_PATCHED,
+    TASK_HANDLER_RELATIVE,
     TENANT_LLM_SERVICE_RELATIVE,
     TIKA_COMMAND_ORIGINAL,
     TIKA_COMMAND_PATCHED,
@@ -24,290 +20,139 @@ from prepare_ragflow_windows import (
     TIKA_IMPORT_PATCHED,
     TIKA_PROBE_ORIGINAL,
     TIKA_PROBE_PATCHED,
+    TIKA_SIGNATURE_PATCHED,
     TIKA_SOURCE_ENTRY,
-    TIKA_VERSION,
-    patch_moodle_metadata,
+    clear_record_entry,
     patch_local_embedding_context_limit,
+    patch_moodle_metadata,
+    patch_task_handler,
     patch_tika_windows_java_launch,
-    record_digest,
-    validate_datrie_direct_url,
 )
 
 
-def direct_url_payload(archive_info: dict[str, object], url: str | None = None) -> bytes:
-    return (
-        json.dumps(
-            {
-                "archive_info": archive_info,
-                "url": url or f"file:///I:/local-llm-main/_src/{DATRIE_WHEEL_NAME}",
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-    )
-
-
-class DatrieDirectUrlTest(unittest.TestCase):
-    def test_accepts_pep_610_sha256_equals_hash(self) -> None:
-        validate_datrie_direct_url(
-            direct_url_payload({"hash": f"sha256={DATRIE_WHEEL_SHA256}"}),
-            Path("direct_url.json"),
-        )
-
-    def test_accepts_uv_sha256_colon_hash(self) -> None:
-        validate_datrie_direct_url(
-            direct_url_payload({"hash": f"sha256:{DATRIE_WHEEL_SHA256}"}),
-            Path("direct_url.json"),
-        )
-
-    def test_accepts_hashes_sha256_hash(self) -> None:
-        validate_datrie_direct_url(
-            direct_url_payload({"hashes": {"sha256": DATRIE_WHEEL_SHA256}}),
-            Path("direct_url.json"),
-        )
-
-    def test_accepts_missing_hash_when_local_wheel_matches(self) -> None:
-        wheel_data = b"local datrie wheel"
-        with tempfile.TemporaryDirectory() as temporary:
-            wheel = Path(temporary) / DATRIE_WHEEL_NAME
-            wheel.write_bytes(wheel_data)
-            with mock.patch(
-                "prepare_ragflow_windows.DATRIE_WHEEL_SHA256",
-                hashlib.sha256(wheel_data).hexdigest(),
-            ):
-                validate_datrie_direct_url(
-                    direct_url_payload({}, wheel.as_uri()),
-                    Path("direct_url.json"),
-                )
-
-    def test_rejects_missing_hash_when_local_wheel_is_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            wheel = Path(temporary) / DATRIE_WHEEL_NAME
-            with self.assertRaisesRegex(RuntimeError, "local wheel is not available"):
-                validate_datrie_direct_url(
-                    direct_url_payload({}, wheel.as_uri()),
-                    Path("direct_url.json"),
-                )
-
-    def test_rejects_wrong_datrie_hash(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "Unexpected datrie wheel hash"):
-            validate_datrie_direct_url(
-                direct_url_payload({"hash": "sha256:" + "0" * 64}),
-                Path("direct_url.json"),
-            )
-
-
 class FakeDistribution:
-    version = "0.24.1"
-    files = [
-        PurePosixPath(f"{MOODLE_DIST_INFO}/METADATA"),
-        PurePosixPath(f"{MOODLE_DIST_INFO}/RECORD"),
-    ]
-
-    def __init__(self, site_packages: Path) -> None:
-        self.site_packages = site_packages
-
-    def locate_file(self, path: PurePosixPath) -> Path:
-        return self.site_packages / path.as_posix()
+    def __init__(self, dist_info: Path, version: str) -> None:
+        self._path = dist_info
+        self.version = version
 
 
-class FakeTikaDistribution:
-    version = TIKA_VERSION
-    files = [
-        PurePosixPath(TIKA_SOURCE_ENTRY),
-        PurePosixPath("tika-2.6.0.dist-info/RECORD"),
-    ]
-
-    def __init__(self, site_packages: Path) -> None:
-        self.site_packages = site_packages
-
-    def locate_file(self, path: PurePosixPath) -> Path:
-        return self.site_packages / path.as_posix()
-
-
-def synthetic_moodle_metadata() -> tuple[bytes, bytes]:
-    original = b"".join(
-        [
-            b"Metadata-Version: 2.1\n",
-            b"Name: moodlepy\n",
-            b"Version: 0.24.1\n",
-            MOODLE_REQUIREMENT_ORIGINAL,
-            b"Requires-Dist: cattrs (>=22.2.0,<23.0.0)\n",
-        ]
-    )
-    patched = original.replace(MOODLE_REQUIREMENT_ORIGINAL, MOODLE_REQUIREMENT_PATCHED)
-    return original, patched
-
-
-class MoodleMetadataRepairTest(unittest.TestCase):
-    def test_repairs_moodle_attrs_requirement_and_record(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            site_packages = Path(temporary)
-            dist_info = site_packages / MOODLE_DIST_INFO
-            dist_info.mkdir()
-            metadata = dist_info / "METADATA"
-            record = dist_info / "RECORD"
-            original, patched = synthetic_moodle_metadata()
-            original_sha = hashlib.sha256(original).hexdigest()
-            patched_sha = hashlib.sha256(patched).hexdigest()
-            metadata.write_bytes(original)
-            record.write_text(
-                "\n".join(
-                    [
-                        (
-                            f"{MOODLE_DIST_INFO}/METADATA,"
-                            f"sha256={record_digest(original_sha)},"
-                            f"{len(original)}"
-                        ),
-                        f"{MOODLE_DIST_INFO}/RECORD,,",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with mock.patch.multiple(
-                "prepare_ragflow_windows",
-                MOODLE_METADATA_ORIGINAL_SIZE=len(original),
-                MOODLE_METADATA_ORIGINAL_SHA256=original_sha,
-                MOODLE_METADATA_PATCHED_SIZE=len(patched),
-                MOODLE_METADATA_PATCHED_SHA256=patched_sha,
-            ), mock.patch(
-                "importlib.metadata.distribution",
-                return_value=FakeDistribution(site_packages),
-            ):
-                patch_moodle_metadata()
-                patch_moodle_metadata()
-
-            repaired = metadata.read_bytes()
-            self.assertEqual(repaired, patched)
-            self.assertNotIn(MOODLE_REQUIREMENT_ORIGINAL, repaired)
-            self.assertIn(MOODLE_REQUIREMENT_PATCHED, repaired)
-            rows = record.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(
-                rows[0],
-                (
-                    f"{MOODLE_DIST_INFO}/METADATA,"
-                    f"sha256={record_digest(patched_sha)},"
-                    f"{len(patched)}"
-                ),
-            )
-
-
-class LocalEmbeddingContextLimitPatchTest(unittest.TestCase):
-    def test_caps_embedding_max_length_from_runtime_env(self) -> None:
-        original = b"".join(
+class SemanticSourcePatchTest(unittest.TestCase):
+    def test_patches_modified_task_handler_and_is_idempotent(self) -> None:
+        source = b"".join(
             [
-                b"import logging\n",
-                b"import os\n",
-                b"from common.constants import LLMType\n",
-                b"\n",
-                b"class LLM4Tenant:\n",
-                b"    def __init__(self, model_config):\n",
-                b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n",
-                b"\n",
-                b"        self.is_tools = model_config.get(\"is_tools\", False)\n",
+                b"# local customization\n",
+                b"from rag.graphrag.general.index import run_graphrag_for_kb\n",
+                b"\nclass Handler:\n",
+                b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n",
+                b'        """Run GraphRAG."""\n',
+                b"        return await run_graphrag_for_kb()\n",
             ]
         )
-        patched = original.replace(
-            b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n\n",
-            (
-                b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n"
-                b"        if model_config.get(\"model_type\") == LLMType.EMBEDDING.value:\n"
-                b"            local_limit = os.environ.get(\"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS\", \"\").strip()\n"
-                b"            if local_limit:\n"
-                b"                try:\n"
-                b"                    self.max_length = min(self.max_length, max(32, int(local_limit)))\n"
-                b"                except ValueError:\n"
-                b"                    logging.warning(\"Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r\", local_limit)\n"
-                b"\n"
-            ),
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / TASK_HANDLER_RELATIVE
+            target.parent.mkdir(parents=True)
+            target.write_bytes(source)
+            patch_task_handler(root)
+            patch_task_handler(root)
+            result = target.read_bytes()
+        self.assertIn(b"# local customization", result)
+        self.assertIn(b"        from rag.graphrag.general.index", result)
+        self.assertNotIn(b"from rag.graphrag.general.index", result.split(b"class Handler")[0])
+
+    def test_patches_modified_tenant_service_and_is_idempotent(self) -> None:
+        source = b"".join(
+            [
+                b"# retained local customization\n",
+                b"class LLM4Tenant:\n",
+                b"    def __init__(self, model_config):\n",
+                b'        self.max_length = model_config.get("max_tokens") or 8192\n\n',
+                b"        self.ready = True\n",
+            ]
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             target = root / TENANT_LLM_SERVICE_RELATIVE
             target.parent.mkdir(parents=True)
-            target.write_bytes(original)
-
-            with mock.patch.multiple(
-                "prepare_ragflow_windows",
-                TENANT_LLM_SERVICE_ORIGINAL_SHA256=hashlib.sha256(original).hexdigest(),
-                TENANT_LLM_SERVICE_PATCHED_SHA256=hashlib.sha256(patched).hexdigest(),
-            ):
-                patch_local_embedding_context_limit(root)
-                patch_local_embedding_context_limit(root)
-
-            self.assertEqual(target.read_bytes(), patched)
-            self.assertIn(b"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", target.read_bytes())
+            target.write_bytes(source)
+            patch_local_embedding_context_limit(root)
+            patch_local_embedding_context_limit(root)
+            result = target.read_bytes()
+        self.assertIn(b"retained local customization", result)
+        self.assertEqual(result.count(b"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS"), 2)
 
 
-class TikaJavaLauncherPatchTest(unittest.TestCase):
-    def test_quotes_portable_java_path_and_repairs_record(self) -> None:
-        original = b"".join(
+class MetadataPatchTest(unittest.TestCase):
+    def test_clears_record_digest_without_calculating_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = Path(temporary) / "RECORD"
+            record.write_text("demo/METADATA,legacy-digest,123\ndemo/RECORD,,\n")
+            clear_record_entry(record, "demo/METADATA")
+            self.assertEqual(
+                record.read_text(), "demo/METADATA,,\ndemo/RECORD,,\n"
+            )
+
+    def test_repairs_modified_moodle_metadata_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            dist_info = Path(temporary) / MOODLE_DIST_INFO
+            dist_info.mkdir()
+            metadata = dist_info / "METADATA"
+            metadata.write_bytes(
+                b"X-Local: keep\n" + MOODLE_REQUIREMENT_ORIGINAL + b"Other: value\n"
+            )
+            record = dist_info / "RECORD"
+            record.write_text(
+                f"{MOODLE_DIST_INFO}/METADATA,old-value,999\n"
+                f"{MOODLE_DIST_INFO}/RECORD,,\n"
+            )
+            fake = FakeDistribution(dist_info, "0.24.1")
+            with mock.patch("importlib.metadata.distribution", return_value=fake):
+                patch_moodle_metadata()
+                patch_moodle_metadata()
+            result = metadata.read_bytes()
+            self.assertIn(b"X-Local: keep", result)
+            self.assertIn(MOODLE_REQUIREMENT_PATCHED, result)
+            self.assertNotIn(MOODLE_REQUIREMENT_ORIGINAL, result)
+            self.assertTrue(record.read_text().startswith(f"{MOODLE_DIST_INFO}/METADATA,,"))
+
+
+class TikaPatchTest(unittest.TestCase):
+    def test_patches_modified_tika_source_and_clears_record_digest(self) -> None:
+        source_data = b"".join(
             [
-                b"from subprocess import Popen\n",
-                b"from subprocess import STDOUT\n",
+                b"# local tweak\n",
+                TIKA_IMPORT_ORIGINAL,
+                b"def checkJarSig(tikaServerJar, jarPath):\n",
+                b"    # locally modified legacy verifier\n",
+                b"    return jarPath.endswith('.jar')\n",
                 b"\n",
-                b"def startServer(tikaServerJar, java_path, java_args, serverHost, port, classpath, config_path):\n",
+                b"def startServer():\n",
                 TIKA_COMMAND_ORIGINAL,
                 b"    try:\n",
                 TIKA_PROBE_ORIGINAL,
-                b"    except FileNotFoundError as e:\n",
-                b"        return False\n",
+                b"    except FileNotFoundError:\n        return False\n",
             ]
         )
-        patched = original.replace(TIKA_IMPORT_ORIGINAL, TIKA_IMPORT_PATCHED, 1)
-        patched = patched.replace(TIKA_COMMAND_ORIGINAL, TIKA_COMMAND_PATCHED, 1)
-        patched = patched.replace(TIKA_PROBE_ORIGINAL, TIKA_PROBE_PATCHED, 1)
-
         with tempfile.TemporaryDirectory() as temporary:
             site_packages = Path(temporary)
+            dist_info = site_packages / "tika-2.6.0.dist-info"
+            dist_info.mkdir()
             source = site_packages / TIKA_SOURCE_ENTRY
-            source.parent.mkdir(parents=True)
-            source.write_bytes(original)
-            record = site_packages / "tika-2.6.0.dist-info" / "RECORD"
-            record.parent.mkdir()
-            original_sha = hashlib.sha256(original).hexdigest()
-            patched_sha = hashlib.sha256(patched).hexdigest()
-            record.write_text(
-                "\n".join(
-                    [
-                        (
-                            f"{TIKA_SOURCE_ENTRY},"
-                            f"sha256={record_digest(original_sha)},"
-                            f"{len(original)}"
-                        ),
-                        "tika-2.6.0.dist-info/RECORD,,",
-                    ]
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with mock.patch.multiple(
-                "prepare_ragflow_windows",
-                TIKA_SOURCE_ORIGINAL_SIZE=len(original),
-                TIKA_SOURCE_ORIGINAL_SHA256=original_sha,
-                TIKA_SOURCE_PATCHED_SIZE=len(patched),
-                TIKA_SOURCE_PATCHED_SHA256=patched_sha,
-            ), mock.patch(
-                "importlib.metadata.distribution",
-                return_value=FakeTikaDistribution(site_packages),
-            ):
+            source.parent.mkdir()
+            source.write_bytes(source_data)
+            record = dist_info / "RECORD"
+            record.write_text(f"{TIKA_SOURCE_ENTRY},old-value,123\ntika-2.6.0.dist-info/RECORD,,\n")
+            fake = FakeDistribution(dist_info, "2.6.0")
+            with mock.patch("importlib.metadata.distribution", return_value=fake):
                 patch_tika_windows_java_launch()
                 patch_tika_windows_java_launch()
-
-            self.assertEqual(source.read_bytes(), patched)
-            self.assertIn(b"list2cmdline([java_path])", patched)
-            self.assertIn(b"Popen([java_path]", patched)
-            rows = record.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(
-                rows[0],
-                (
-                    f"{TIKA_SOURCE_ENTRY},"
-                    f"sha256={record_digest(patched_sha)},"
-                    f"{len(patched)}"
-                ),
-            )
+            result = source.read_bytes()
+            self.assertIn(b"# local tweak", result)
+            self.assertIn(TIKA_IMPORT_PATCHED, result)
+            self.assertIn(TIKA_COMMAND_PATCHED, result)
+            self.assertIn(TIKA_PROBE_PATCHED, result)
+            self.assertIn(TIKA_SIGNATURE_PATCHED, result)
+            self.assertTrue(record.read_text().startswith(f"{TIKA_SOURCE_ENTRY},,"))
 
 
 if __name__ == "__main__":

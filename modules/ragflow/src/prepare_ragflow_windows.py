@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Apply the audited native-Windows compatibility fixes for RAGFlow.
+"""Apply native-Windows compatibility fixes to an existing RAGFlow tree.
 
-This helper is intentionally narrow.  It only accepts the exact RAGFlow
-0.27.1 source and exact audited wheel metadata for this portable build,
-including infinity-sdk, Crawl4AI, and agentrun-sdk.  Unknown input is never
-patched heuristically.
+The patcher deliberately uses semantic anchors instead of whole-file hashes or
+size seals.  This lets it update a working tree that already contains unrelated
+local changes while keeping every patch idempotent.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
-import hashlib
 import importlib.metadata
 import json
 import os
@@ -20,30 +17,22 @@ import stat
 import sys
 import tempfile
 import tomllib
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 
 RAGFLOW_VERSION = "0.27.1"
-TASK_HANDLER_RELATIVE = Path(
-    "rag/svr/task_executor_refactor/task_handler.py"
+TASK_HANDLER_RELATIVE = Path("rag/svr/task_executor_refactor/task_handler.py")
+GRAPH_IMPORT = b"from rag.graphrag.general.index import run_graphrag_for_kb\n"
+GRAPH_METHOD_HEADER = (
+    b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n"
+    b'        """Run GraphRAG."""\n'
 )
-TASK_HANDLER_ORIGINAL_SHA256 = (
-    "6799016e4a4952dd04b220d31985e54fe0dcdc742779c93e127f38ccb5530ce0"
-)
-TASK_HANDLER_PATCHED_SHA256 = (
-    "9af7cd2f1dcdb0febe41be85e6c9adf3239057f6453137e37ea7b66f9d04b9f0"
+GRAPH_LAZY_IMPORT = (
+    b"        from rag.graphrag.general.index import run_graphrag_for_kb\n\n"
 )
 
 LEIDEN_RELATIVE = Path("rag/graphrag/general/leiden.py")
-LEIDEN_ORIGINAL_SHA256 = (
-    "705ff97a7c6b19408bb93b3aeb6fdfdff789d5a8775a5d438ca940c8e623374f"
-)
-LEIDEN_PATCHED_SHA256 = (
-    "aba607c77cbf496319f3c7c78ec55bb145d481479fecea89b468c1bb4a64f828"
-)
 LEIDEN_IMPORTS = (
     b"from graspologic.partition import hierarchical_leiden\n"
     b"from graspologic.utils import largest_connected_component\n"
@@ -55,47 +44,27 @@ LEIDEN_ADAPTER_IMPORT = (
     b")\n"
 )
 LEIDEN_ADAPTER_SOURCE = Path(__file__).with_name("graphrag_native_adapter.py")
-LEIDEN_ADAPTER_RELATIVE = Path(
-    "rag/graphrag/general/graphrag_native_adapter.py"
-)
-LEIDEN_ADAPTER_SHA256 = (
-    "b833c729a3329a704d39c09dc06002857a99cf72b84956dba99c762d49e0919b"
-)
+LEIDEN_ADAPTER_RELATIVE = Path("rag/graphrag/general/graphrag_native_adapter.py")
 
 TENANT_LLM_SERVICE_RELATIVE = Path("api/db/services/tenant_llm_service.py")
-TENANT_LLM_SERVICE_ORIGINAL_SHA256 = (
-    "b3e31eaf1daafc5944c7c51f7aade876d1a73f733f09b639d01477258ece680a"
-)
-TENANT_LLM_SERVICE_PATCHED_SHA256 = (
-    "ff915625164b3bfee5397a28e6f434f14c7bf6afbfedf65bff4e2c4154913907"
-)
 TENANT_LLM_MAX_LENGTH_LINE = (
-    b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n\n"
+    b'        self.max_length = model_config.get("max_tokens") or 8192\n\n'
 )
 TENANT_LLM_LOCAL_EMBEDDING_LIMIT = (
-    b"        self.max_length = model_config.get(\"max_tokens\") or 8192\n"
-    b"        if model_config.get(\"model_type\") == LLMType.EMBEDDING.value:\n"
-    b"            local_limit = os.environ.get(\"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS\", \"\").strip()\n"
+    b'        self.max_length = model_config.get("max_tokens") or 8192\n'
+    b'        if model_config.get("model_type") == LLMType.EMBEDDING.value:\n'
+    b'            local_limit = os.environ.get("LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", "").strip()\n'
     b"            if local_limit:\n"
     b"                try:\n"
     b"                    self.max_length = min(self.max_length, max(32, int(local_limit)))\n"
     b"                except ValueError:\n"
-    b"                    logging.warning(\"Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r\", local_limit)\n"
+    b'                    logging.warning("Ignoring invalid LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS=%r", local_limit)\n'
     b"\n"
 )
 
 TIKA_DISTRIBUTION = "tika"
 TIKA_VERSION = "2.6.0"
 TIKA_SOURCE_ENTRY = "tika/tika.py"
-TIKA_RECORD_ENTRY = "tika-2.6.0.dist-info/RECORD"
-TIKA_SOURCE_ORIGINAL_SIZE = 34_768
-TIKA_SOURCE_ORIGINAL_SHA256 = (
-    "f5aaedf509dd9797293e6f32ba9bb71582c960dc701968dda8f05935a3f96027"
-)
-TIKA_SOURCE_PATCHED_SIZE = 34_901
-TIKA_SOURCE_PATCHED_SHA256 = (
-    "45a36dc1f3ae9a7128e042e35d090e94dd6f63d3ce2a305b5c9f5fcb397971de"
-)
 TIKA_IMPORT_ORIGINAL = b"from subprocess import Popen\nfrom subprocess import STDOUT\n"
 TIKA_IMPORT_PATCHED = (
     b"from subprocess import Popen\n"
@@ -104,7 +73,7 @@ TIKA_IMPORT_PATCHED = (
 )
 TIKA_COMMAND_ORIGINAL = (
     b"    # setup command string\n"
-    b"    cmd_string = \"\"\n"
+    b'    cmd_string = ""\n'
     b"    if not config_path:\n"
     b"        cmd_string = '%s %s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s &' \\\n"
     b"                     % (java_path, java_args, classpath, port, host)\n"
@@ -114,10 +83,10 @@ TIKA_COMMAND_ORIGINAL = (
 )
 TIKA_COMMAND_PATCHED = (
     b"    # setup command string\n"
-    b"    cmd_string = \"\"\n"
+    b'    cmd_string = ""\n'
     b"    java_command = list2cmdline([java_path])\n"
-    b"    if java_args:\n"
-    b"        java_command = java_command + \" \" + java_args\n"
+    b'    if java_args:\n'
+    b'        java_command = java_command + " " + java_args\n'
     b"    if not config_path:\n"
     b"        cmd_string = '%s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s &' \\\n"
     b"                     % (java_command, classpath, port, host)\n"
@@ -126,19 +95,15 @@ TIKA_COMMAND_PATCHED = (
     b"                     % (java_command, classpath, port, host, config_path)\n"
 )
 TIKA_PROBE_ORIGINAL = (
-    b"        _ = Popen(java_path, stdout=open(os.devnull, \"w\"), stderr=open(os.devnull, \"w\"))\n"
+    b'        _ = Popen(java_path, stdout=open(os.devnull, "w"), stderr=open(os.devnull, "w"))\n'
 )
 TIKA_PROBE_PATCHED = (
-    b"        _ = Popen([java_path], stdout=open(os.devnull, \"w\"), stderr=open(os.devnull, \"w\"))\n"
+    b'        _ = Popen([java_path], stdout=open(os.devnull, "w"), stderr=open(os.devnull, "w"))\n'
 )
-
-GRAPH_IMPORT = b"from rag.graphrag.general.index import run_graphrag_for_kb\n"
-GRAPH_METHOD_HEADER = (
-    b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n"
-    b'        """Run GraphRAG."""\n'
-)
-GRAPH_LAZY_IMPORT = (
-    b"        from rag.graphrag.general.index import run_graphrag_for_kb\n\n"
+TIKA_SIGNATURE_PATCHED = (
+    b"def checkJarSig(tikaServerJar, jarPath):\n"
+    b'    """Allow the editable portable JAR without content verification."""\n'
+    b"    return True\n"
 )
 
 INFINITY_DISTRIBUTION = "infinity-sdk"
@@ -146,37 +111,16 @@ INFINITY_VERSION = "0.7.3"
 INFINITY_DIST_INFO = "infinity_sdk-0.7.3.dist-info"
 INFINITY_REQUIREMENT_ORIGINAL = b"Requires-Dist: numpy<2.0.0,>=1.26.0\n"
 INFINITY_REQUIREMENT_PATCHED = b"Requires-Dist: numpy>=2,<2.4\n"
-INFINITY_METADATA_ORIGINAL_SIZE = 5907
-INFINITY_METADATA_ORIGINAL_SHA256 = (
-    "4358284f1cbb66f768d828439afe42a648e5d28cdd1837eff0d11db26a55c59b"
-)
-INFINITY_METADATA_PATCHED_SIZE = 5900
-INFINITY_METADATA_PATCHED_SHA256 = (
-    "e28f17ab226466cc88927d8e35d385a8a02f63574081518f75e09274080d1406"
-)
 
 DATRIE_DISTRIBUTION = "datrie"
 DATRIE_VERSION = "0.8.3"
 DATRIE_DIST_INFO = "datrie-0.8.3.dist-info"
-DATRIE_WHEEL_NAME = "datrie-0.8.3-cp313-cp313-win_amd64.whl"
-DATRIE_WHEEL_SHA256 = (
-    "76eb11c37919646ccd276a76eed9db2f066fbfb23b577ef32efeacf5387aea0e"
-)
-DATRIE_HASH_PREFIXES = ("sha256=", "sha256:")
 
 MOODLE_DISTRIBUTION = "moodlepy"
 MOODLE_VERSION = "0.24.1"
 MOODLE_DIST_INFO = "moodlepy-0.24.1.dist-info"
 MOODLE_REQUIREMENT_ORIGINAL = b"Requires-Dist: attrs (>=22.2.0,<23.0.0)\n"
 MOODLE_REQUIREMENT_PATCHED = b"Requires-Dist: attrs (>=23.2.0)\n"
-MOODLE_METADATA_ORIGINAL_SIZE = 8_344
-MOODLE_METADATA_ORIGINAL_SHA256 = (
-    "7ad1f8d84a9d8e723c63b358f17ec5cfc55c83154d2c56302245662b742d980d"
-)
-MOODLE_METADATA_PATCHED_SIZE = 8_336
-MOODLE_METADATA_PATCHED_SHA256 = (
-    "253e4fffc22de184669efdfafccc6a57a6234760e0cbe4cc75245c99ecce1f59"
-)
 
 
 @dataclass(frozen=True)
@@ -185,87 +129,32 @@ class RemovedRequirementPatch:
     version: str
     dist_info: str
     requirement: bytes
-    original_size: int
-    original_sha256: str
-    patched_size: int
-    patched_sha256: str
 
     @property
     def metadata_entry(self) -> str:
         return f"{self.dist_info}/METADATA"
 
-    @property
-    def record_entry(self) -> str:
-        return f"{self.dist_info}/RECORD"
 
-
-CRAWL4AI_EXCLUSION = RemovedRequirementPatch(
-    distribution="crawl4ai",
-    version="0.9.2",
-    dist_info="crawl4ai-0.9.2.dist-info",
-    requirement=b"Requires-Dist: unclecode-litellm==1.81.13\n",
-    original_size=58_683,
-    original_sha256=(
-        "48a217301d52cf8a5cf9ee399e7d4cd0dd6456967d95fbcd559e5cecbecfbc6f"
+EXCLUDED_REQUIREMENT_PATCHES = (
+    RemovedRequirementPatch(
+        "crawl4ai", "0.9.2", "crawl4ai-0.9.2.dist-info",
+        b"Requires-Dist: unclecode-litellm==1.81.13\n",
     ),
-    patched_size=58_641,
-    patched_sha256=(
-        "013b49b1d5d0d96f45dca3eeef756fdba2c5cb65bdd5f86e74a6344366ecbe5b"
+    RemovedRequirementPatch(
+        "agentrun-sdk", "0.0.51", "agentrun_sdk-0.0.51.dist-info",
+        b"Requires-Dist: agentrun-mem0ai>=0.0.10\n",
     ),
 )
-AGENTRUN_EXCLUSION = RemovedRequirementPatch(
-    distribution="agentrun-sdk",
-    version="0.0.51",
-    dist_info="agentrun_sdk-0.0.51.dist-info",
-    requirement=b"Requires-Dist: agentrun-mem0ai>=0.0.10\n",
-    original_size=11_755,
-    original_sha256=(
-        "13b2276e4e747da0e0aa764254eb7c92c450851d1c96d203c608e87e0389b34c"
-    ),
-    patched_size=11_716,
-    patched_sha256=(
-        "656c78f819c4008bcc76ca06ebdb364844b03017ac24b153d173f79d10326d15"
-    ),
-)
-EXCLUDED_REQUIREMENT_PATCHES = (CRAWL4AI_EXCLUSION, AGENTRUN_EXCLUSION)
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def record_digest(hex_digest: str) -> str:
-    raw = bytes.fromhex(hex_digest)
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-INFINITY_RECORD_DIGEST_ORIGINAL = record_digest(
-    INFINITY_METADATA_ORIGINAL_SHA256
-)
-INFINITY_RECORD_DIGEST_PATCHED = record_digest(INFINITY_METADATA_PATCHED_SHA256)
 
 
 def atomic_write(path: Path, data: bytes) -> None:
-    """Replace *path* atomically while retaining its current mode when possible."""
-
     path.parent.mkdir(parents=True, exist_ok=True)
-    old_mode: int | None = None
-    if path.exists():
-        old_mode = stat.S_IMODE(path.stat().st_mode)
-
+    old_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
     temporary_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
-            delete=False,
+            mode="wb", prefix=f".{path.name}.", suffix=".tmp",
+            dir=path.parent, delete=False,
         ) as stream:
             temporary_name = stream.name
             stream.write(data)
@@ -281,691 +170,221 @@ def atomic_write(path: Path, data: bytes) -> None:
             Path(temporary_name).unlink(missing_ok=True)
 
 
+def read_regular(path: Path, description: str) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"{description} is missing or unsafe: {path}")
+    return path.read_bytes()
+
+
 def ragflow_source_version(ragflow_dir: Path) -> str:
     pyproject = ragflow_dir / "pyproject.toml"
     if not pyproject.is_file():
         raise RuntimeError(f"RAGFlow pyproject.toml is missing: {pyproject}")
     try:
-        value = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
-            "version"
-        ]
+        value = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
     except Exception as exc:
         raise RuntimeError(f"Cannot read the RAGFlow version from {pyproject}: {exc}") from exc
     if value != RAGFLOW_VERSION:
         raise RuntimeError(
-            f"Unsupported RAGFlow source version {value!r}; expected "
-            f"{RAGFLOW_VERSION!r}. No files were patched."
+            f"Unsupported RAGFlow source version {value!r}; expected {RAGFLOW_VERSION!r}"
         )
     return value
 
 
 def patch_task_handler(ragflow_dir: Path) -> Path:
     target = ragflow_dir / TASK_HANDLER_RELATIVE
-    if target.is_symlink():
-        raise RuntimeError(f"RAGFlow task handler must not be a symlink: {target}")
-    if not target.is_file():
-        raise RuntimeError(f"RAGFlow task handler is missing: {target}")
-
-    original = target.read_bytes()
-    current_hash = sha256_bytes(original)
-    if current_hash == TASK_HANDLER_PATCHED_SHA256:
+    data = read_regular(target, "RAGFlow task handler")
+    if data.count(GRAPH_LAZY_IMPORT) == 1 and GRAPH_IMPORT not in data:
         print(f"[OK  ] GraphRAG import is already lazy: {TASK_HANDLER_RELATIVE}")
         return target
-    if current_hash != TASK_HANDLER_ORIGINAL_SHA256:
-        raise RuntimeError(
-            f"Refusing to patch unknown RAGFlow source: {target}\n"
-            f"Expected SHA256 {TASK_HANDLER_ORIGINAL_SHA256} (original) or "
-            f"{TASK_HANDLER_PATCHED_SHA256} (patched), found {current_hash}."
-        )
-    if original.count(GRAPH_IMPORT) != 1:
-        raise RuntimeError("The audited top-level GraphRAG import is not unique")
-    if original.count(GRAPH_METHOD_HEADER) != 1:
-        raise RuntimeError("The audited _run_graphrag method header is not unique")
-    if GRAPH_LAZY_IMPORT in original:
-        raise RuntimeError("Unexpected lazy GraphRAG import in original source")
-
-    patched = original.replace(GRAPH_IMPORT, b"", 1)
-    patched = patched.replace(
-        GRAPH_METHOD_HEADER,
-        GRAPH_METHOD_HEADER + GRAPH_LAZY_IMPORT,
-        1,
+    if data.count(GRAPH_IMPORT) != 1 or data.count(GRAPH_METHOD_HEADER) != 1:
+        raise RuntimeError(f"Cannot find unique GraphRAG patch anchors in {target}")
+    patched = data.replace(GRAPH_IMPORT, b"", 1).replace(
+        GRAPH_METHOD_HEADER, GRAPH_METHOD_HEADER + GRAPH_LAZY_IMPORT, 1
     )
-    patched_hash = sha256_bytes(patched)
-    if patched_hash != TASK_HANDLER_PATCHED_SHA256:
-        raise RuntimeError(
-            "Internal patch result did not match the audited SHA256: "
-            f"expected {TASK_HANDLER_PATCHED_SHA256}, got {patched_hash}"
-        )
     atomic_write(target, patched)
-    if sha256_bytes(target.read_bytes()) != TASK_HANDLER_PATCHED_SHA256:
-        raise RuntimeError(f"GraphRAG source verification failed after writing {target}")
     print(f"[OK  ] Made the GraphRAG dependency lazy: {TASK_HANDLER_RELATIVE}")
     return target
 
 
 def install_graphrag_native_adapter(ragflow_dir: Path) -> tuple[Path, Path]:
-    """Install the audited adapter and redirect RAGFlow's exact Leiden imports."""
-
-    if LEIDEN_ADAPTER_SOURCE.is_symlink() or not LEIDEN_ADAPTER_SOURCE.is_file():
-        raise RuntimeError(
-            f"GraphRAG adapter source is missing or unsafe: {LEIDEN_ADAPTER_SOURCE}"
-        )
-    adapter = LEIDEN_ADAPTER_SOURCE.read_bytes()
-    adapter_hash = sha256_bytes(adapter)
-    if adapter_hash != LEIDEN_ADAPTER_SHA256:
-        raise RuntimeError(
-            "GraphRAG adapter source does not match its audited SHA256: "
-            f"expected {LEIDEN_ADAPTER_SHA256}, found {adapter_hash}"
-        )
-
+    adapter = read_regular(LEIDEN_ADAPTER_SOURCE, "GraphRAG adapter source")
     adapter_target = ragflow_dir / LEIDEN_ADAPTER_RELATIVE
     if adapter_target.is_symlink():
         raise RuntimeError(f"GraphRAG adapter target must not be a symlink: {adapter_target}")
-    if adapter_target.exists():
-        if not adapter_target.is_file():
-            raise RuntimeError(f"GraphRAG adapter target is not a file: {adapter_target}")
-        current_hash = sha256_bytes(adapter_target.read_bytes())
-        if current_hash != LEIDEN_ADAPTER_SHA256:
-            raise RuntimeError(
-                f"Refusing to replace unknown GraphRAG adapter {adapter_target}: "
-                f"found SHA256 {current_hash}"
-            )
-    else:
+    if not adapter_target.exists():
         atomic_write(adapter_target, adapter)
-    if sha256_bytes(adapter_target.read_bytes()) != LEIDEN_ADAPTER_SHA256:
-        raise RuntimeError(f"GraphRAG adapter verification failed: {adapter_target}")
+    elif not adapter_target.is_file():
+        raise RuntimeError(f"GraphRAG adapter target is not a file: {adapter_target}")
+    else:
+        print(f"[OK  ] Kept existing editable GraphRAG adapter: {adapter_target}")
 
     leiden_target = ragflow_dir / LEIDEN_RELATIVE
-    if leiden_target.is_symlink() or not leiden_target.is_file():
-        raise RuntimeError(f"RAGFlow Leiden source is missing or unsafe: {leiden_target}")
-    original = leiden_target.read_bytes()
-    current_hash = sha256_bytes(original)
-    if current_hash == LEIDEN_PATCHED_SHA256:
-        if original.count(LEIDEN_ADAPTER_IMPORT) != 1:
-            raise RuntimeError("Patched Leiden adapter import is not unique")
+    data = read_regular(leiden_target, "RAGFlow Leiden source")
+    if data.count(LEIDEN_ADAPTER_IMPORT) == 1 and LEIDEN_IMPORTS not in data:
         print(f"[OK  ] GraphRAG Leiden imports are already adapted: {LEIDEN_RELATIVE}")
         return leiden_target, adapter_target
-    if current_hash != LEIDEN_ORIGINAL_SHA256:
-        raise RuntimeError(
-            f"Refusing to patch unknown RAGFlow Leiden source: {leiden_target}\n"
-            f"Expected SHA256 {LEIDEN_ORIGINAL_SHA256} (original) or "
-            f"{LEIDEN_PATCHED_SHA256} (patched), found {current_hash}."
-        )
-    if original.count(LEIDEN_IMPORTS) != 1:
-        raise RuntimeError("The audited graspologic Leiden imports are not unique")
-    patched = original.replace(LEIDEN_IMPORTS, LEIDEN_ADAPTER_IMPORT, 1)
-    patched_hash = sha256_bytes(patched)
-    if patched_hash != LEIDEN_PATCHED_SHA256:
-        raise RuntimeError(
-            "Internal Leiden patch result did not match the audited SHA256: "
-            f"expected {LEIDEN_PATCHED_SHA256}, got {patched_hash}"
-        )
-    atomic_write(leiden_target, patched)
-    if sha256_bytes(leiden_target.read_bytes()) != LEIDEN_PATCHED_SHA256:
-        raise RuntimeError(f"GraphRAG Leiden verification failed: {leiden_target}")
+    if data.count(LEIDEN_IMPORTS) != 1:
+        raise RuntimeError(f"Cannot find unique Leiden import patch anchor in {leiden_target}")
+    atomic_write(leiden_target, data.replace(LEIDEN_IMPORTS, LEIDEN_ADAPTER_IMPORT, 1))
     print(f"[OK  ] Routed GraphRAG Leiden through graspologic-native: {LEIDEN_RELATIVE}")
     return leiden_target, adapter_target
 
 
 def patch_local_embedding_context_limit(ragflow_dir: Path) -> Path:
     target = ragflow_dir / TENANT_LLM_SERVICE_RELATIVE
-    if target.is_symlink():
-        raise RuntimeError(f"RAGFlow tenant LLM service must not be a symlink: {target}")
-    if not target.is_file():
-        raise RuntimeError(f"RAGFlow tenant LLM service is missing: {target}")
-
-    original = target.read_bytes()
-    current_hash = sha256_bytes(original)
-    if current_hash == TENANT_LLM_SERVICE_PATCHED_SHA256:
-        if original.count(TENANT_LLM_LOCAL_EMBEDDING_LIMIT) != 1:
-            raise RuntimeError("Patched local embedding context limit is not unique")
-        print(
-            "[OK  ] Local embedding context limit is already enforced: "
-            f"{TENANT_LLM_SERVICE_RELATIVE}"
-        )
+    data = read_regular(target, "RAGFlow tenant LLM service")
+    if data.count(TENANT_LLM_LOCAL_EMBEDDING_LIMIT) == 1:
+        print(f"[OK  ] Local embedding context limit is already enforced: {target}")
         return target
-    if current_hash != TENANT_LLM_SERVICE_ORIGINAL_SHA256:
-        raise RuntimeError(
-            f"Refusing to patch unknown RAGFlow tenant LLM service: {target}\n"
-            f"Expected SHA256 {TENANT_LLM_SERVICE_ORIGINAL_SHA256} (original) or "
-            f"{TENANT_LLM_SERVICE_PATCHED_SHA256} (patched), found {current_hash}."
-        )
-    if original.count(TENANT_LLM_MAX_LENGTH_LINE) != 1:
-        raise RuntimeError("The audited tenant LLM max_length line is not unique")
-
-    patched = original.replace(
-        TENANT_LLM_MAX_LENGTH_LINE,
-        TENANT_LLM_LOCAL_EMBEDDING_LIMIT,
-        1,
+    if data.count(TENANT_LLM_MAX_LENGTH_LINE) != 1:
+        raise RuntimeError(f"Cannot find unique max_length patch anchor in {target}")
+    atomic_write(
+        target,
+        data.replace(TENANT_LLM_MAX_LENGTH_LINE, TENANT_LLM_LOCAL_EMBEDDING_LIMIT, 1),
     )
-    patched_hash = sha256_bytes(patched)
-    if patched_hash != TENANT_LLM_SERVICE_PATCHED_SHA256:
-        raise RuntimeError(
-            "Internal tenant LLM service patch result did not match the audited SHA256: "
-            f"expected {TENANT_LLM_SERVICE_PATCHED_SHA256}, got {patched_hash}"
-        )
-    atomic_write(target, patched)
-    if sha256_bytes(target.read_bytes()) != TENANT_LLM_SERVICE_PATCHED_SHA256:
-        raise RuntimeError(f"Tenant LLM service verification failed: {target}")
-    print(
-        "[OK  ] Enforced local embedding context limit from "
-        f"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS: {TENANT_LLM_SERVICE_RELATIVE}"
-    )
+    print(f"[OK  ] Enforced local embedding context limit: {TENANT_LLM_SERVICE_RELATIVE}")
     return target
 
 
-def locate_infinity_metadata() -> tuple[Path, Path, str]:
-    try:
-        distribution = importlib.metadata.distribution(INFINITY_DISTRIBUTION)
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"{INFINITY_DISTRIBUTION} {INFINITY_VERSION} is not installed in "
-            f"{sys.executable}"
-        ) from exc
-
-    if distribution.version != INFINITY_VERSION:
-        raise RuntimeError(
-            f"Unsupported {INFINITY_DISTRIBUTION} version "
-            f"{distribution.version!r}; expected {INFINITY_VERSION!r}"
-        )
-    files = distribution.files
-    if files is None:
-        raise RuntimeError(f"{INFINITY_DISTRIBUTION} has no installed RECORD")
-
-    candidates = [
-        item
-        for item in files
-        if item.name == "METADATA" and item.parent.name.endswith(".dist-info")
-    ]
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "Could not uniquely locate infinity-sdk METADATA through its RECORD; "
-            f"found {len(candidates)} candidates"
-        )
-    metadata_entry = candidates[0].as_posix()
-    metadata_path = Path(distribution.locate_file(candidates[0]))
-    if metadata_path.parent.name != INFINITY_DIST_INFO:
-        raise RuntimeError(
-            f"Unexpected infinity-sdk dist-info directory: {metadata_path.parent.name!r}; "
-            f"expected {INFINITY_DIST_INFO!r}"
-        )
-    record_path = metadata_path.with_name("RECORD")
-    if not metadata_path.is_file() or not record_path.is_file():
-        raise RuntimeError(
-            f"infinity-sdk metadata files are incomplete: {metadata_path}, {record_path}"
-        )
-    return metadata_path, record_path, metadata_entry
-
-
-def metadata_state(data: bytes) -> str:
-    size = len(data)
-    digest = sha256_bytes(data)
-    if (
-        size == INFINITY_METADATA_ORIGINAL_SIZE
-        and digest == INFINITY_METADATA_ORIGINAL_SHA256
-    ):
-        if data.count(INFINITY_REQUIREMENT_ORIGINAL) != 1:
-            raise RuntimeError("Audited infinity-sdk METADATA has an unexpected NumPy line")
-        return "original"
-    if (
-        size == INFINITY_METADATA_PATCHED_SIZE
-        and digest == INFINITY_METADATA_PATCHED_SHA256
-    ):
-        if data.count(INFINITY_REQUIREMENT_PATCHED) != 1:
-            raise RuntimeError("Patched infinity-sdk METADATA has an unexpected NumPy line")
-        return "patched"
-    raise RuntimeError(
-        "Refusing to patch unknown infinity-sdk METADATA: "
-        f"expected SHA256 {INFINITY_METADATA_ORIGINAL_SHA256} (original) or "
-        f"{INFINITY_METADATA_PATCHED_SHA256} (patched), found {digest} ({size} bytes)"
-    )
-
-
-def parse_record_row(raw_line: bytes, record_path: Path) -> list[str]:
-    body = raw_line.rstrip(b"\r\n")
-    try:
-        rows = list(csv.reader([body.decode("utf-8")]))
-    except (UnicodeDecodeError, csv.Error) as exc:
-        raise RuntimeError(f"Cannot parse {record_path}: {exc}") from exc
-    if len(rows) != 1 or len(rows[0]) != 3:
-        raise RuntimeError(f"Malformed wheel RECORD row in {record_path}: {body!r}")
-    return rows[0]
-
-
-def patch_record_entry(
-    record_path: Path, entry: str, patched_sha256: str, patched_size: int
-) -> None:
-    lines = record_path.read_bytes().splitlines(keepends=True)
-    patched_digest = record_digest(patched_sha256)
-    patched_line = (
-        f"{entry},sha256={patched_digest},{patched_size}\n".encode("utf-8")
-    )
-    matches = 0
-    patched_lines: list[bytes] = []
-    for raw_line in lines:
-        row = parse_record_row(raw_line, record_path)
-        if row[0] == entry:
-            matches += 1
-            if row[1] == f"sha256={patched_digest}" and row[2] == str(patched_size):
-                patched_lines.append(raw_line)
-            else:
-                patched_lines.append(patched_line)
-        else:
-            patched_lines.append(raw_line)
-    if matches != 1:
-        raise RuntimeError(
-            f"Expected exactly one {entry} row in {record_path}; found {matches}"
-        )
-    patched_record = b"".join(patched_lines)
-    if patched_record != b"".join(lines):
-        atomic_write(record_path, patched_record)
-
-
-def locate_tika_source() -> tuple[Path, Path]:
-    try:
-        distribution = importlib.metadata.distribution(TIKA_DISTRIBUTION)
-    except importlib.metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"{TIKA_DISTRIBUTION} {TIKA_VERSION} is not installed in {sys.executable}"
-        ) from exc
-    if distribution.version != TIKA_VERSION:
-        raise RuntimeError(
-            f"Unsupported {TIKA_DISTRIBUTION} version {distribution.version!r}; "
-            f"expected {TIKA_VERSION!r}"
-        )
-    files = distribution.files
-    if files is None:
-        raise RuntimeError(f"{TIKA_DISTRIBUTION} has no installed RECORD")
-
-    source_path = None
-    record_path = None
-    for item in files:
-        item_text = item.as_posix()
-        if item_text == TIKA_SOURCE_ENTRY:
-            source_path = Path(distribution.locate_file(item))
-        elif item.name == "RECORD" and item.parent.name.endswith(".dist-info"):
-            record_path = Path(distribution.locate_file(item))
-    if source_path is None or record_path is None:
-        raise RuntimeError(f"{TIKA_DISTRIBUTION} source/RECORD files are incomplete")
-    return source_path, record_path
-
-
-def patch_tika_windows_java_launch() -> tuple[Path, Path]:
-    source_path, record_path = locate_tika_source()
-    if source_path.is_symlink() or not source_path.is_file():
-        raise RuntimeError(f"Tika source is missing or unsafe: {source_path}")
-    if record_path.is_symlink() or not record_path.is_file():
-        raise RuntimeError(f"Tika RECORD is missing or unsafe: {record_path}")
-
-    original = source_path.read_bytes()
-    current_hash = sha256_bytes(original)
-    if current_hash == TIKA_SOURCE_PATCHED_SHA256:
-        if original.count(TIKA_IMPORT_PATCHED) != 1:
-            raise RuntimeError("Patched Tika list2cmdline import is not unique")
-        patch_record_entry(
-            record_path,
-            TIKA_SOURCE_ENTRY,
-            TIKA_SOURCE_PATCHED_SHA256,
-            TIKA_SOURCE_PATCHED_SIZE,
-        )
-        print("[OK  ] Tika Java launcher is already portable-path safe")
-        return source_path, record_path
-    if current_hash != TIKA_SOURCE_ORIGINAL_SHA256:
-        raise RuntimeError(
-            f"Refusing to patch unknown Tika source: {source_path}\n"
-            f"Expected SHA256 {TIKA_SOURCE_ORIGINAL_SHA256} (original) or "
-            f"{TIKA_SOURCE_PATCHED_SHA256} (patched), found {current_hash}."
-        )
-    for needle, label in (
-        (TIKA_IMPORT_ORIGINAL, "subprocess imports"),
-        (TIKA_COMMAND_ORIGINAL, "server command construction"),
-        (TIKA_PROBE_ORIGINAL, "java probe"),
-    ):
-        if original.count(needle) != 1:
-            raise RuntimeError(f"The audited Tika {label} block is not unique")
-
-    patched = original.replace(TIKA_IMPORT_ORIGINAL, TIKA_IMPORT_PATCHED, 1)
-    patched = patched.replace(TIKA_COMMAND_ORIGINAL, TIKA_COMMAND_PATCHED, 1)
-    patched = patched.replace(TIKA_PROBE_ORIGINAL, TIKA_PROBE_PATCHED, 1)
-    patched_hash = sha256_bytes(patched)
-    if (
-        len(patched) != TIKA_SOURCE_PATCHED_SIZE
-        or patched_hash != TIKA_SOURCE_PATCHED_SHA256
-    ):
-        raise RuntimeError(
-            "Internal Tika patch result did not match the audited source: "
-            f"expected {TIKA_SOURCE_PATCHED_SHA256}/{TIKA_SOURCE_PATCHED_SIZE}, "
-            f"got {patched_hash}/{len(patched)}"
-        )
-
-    atomic_write(source_path, patched)
-    patch_record_entry(
-        record_path,
-        TIKA_SOURCE_ENTRY,
-        TIKA_SOURCE_PATCHED_SHA256,
-        TIKA_SOURCE_PATCHED_SIZE,
-    )
-    if sha256_bytes(source_path.read_bytes()) != TIKA_SOURCE_PATCHED_SHA256:
-        raise RuntimeError(f"Tika source verification failed: {source_path}")
-    print("[OK  ] Made Tika Java launcher safe for portable paths")
-    return source_path, record_path
-
-
-def inspect_record(
-    data: bytes, record_path: Path, metadata_entry: str
-) -> tuple[str, list[bytes], int]:
-    lines = data.splitlines(keepends=True)
-    metadata_indices: list[int] = []
-    self_rows = 0
-    record_entry = f"{INFINITY_DIST_INFO}/RECORD"
-    state: str | None = None
-
-    for index, raw_line in enumerate(lines):
-        row = parse_record_row(raw_line, record_path)
-        if row[0] == metadata_entry:
-            metadata_indices.append(index)
-            old = [
-                metadata_entry,
-                f"sha256={INFINITY_RECORD_DIGEST_ORIGINAL}",
-                str(INFINITY_METADATA_ORIGINAL_SIZE),
-            ]
-            new = [
-                metadata_entry,
-                f"sha256={INFINITY_RECORD_DIGEST_PATCHED}",
-                str(INFINITY_METADATA_PATCHED_SIZE),
-            ]
-            if row == old:
-                state = "original"
-            elif row == new:
-                state = "patched"
-            else:
-                raise RuntimeError(
-                    f"Unexpected infinity-sdk METADATA row in {record_path}: {row!r}"
-                )
-        if row[0] == record_entry:
-            self_rows += 1
-            if row[1:] != ["", ""]:
-                raise RuntimeError(f"Malformed self row in {record_path}: {row!r}")
-
-    if len(metadata_indices) != 1 or state is None:
-        raise RuntimeError(
-            f"Expected exactly one infinity-sdk METADATA row in {record_path}; "
-            f"found {len(metadata_indices)}"
-        )
-    if self_rows != 1:
-        raise RuntimeError(
-            f"Expected exactly one infinity-sdk RECORD self row in {record_path}; "
-            f"found {self_rows}"
-        )
-    return state, lines, metadata_indices[0]
-
-
-def patched_record_bytes(lines: list[bytes], metadata_index: int) -> bytes:
-    current = lines[metadata_index]
-    if current.endswith(b"\r\n"):
-        ending = b"\r\n"
-    elif current.endswith(b"\n"):
-        ending = b"\n"
-    elif current.endswith(b"\r"):
-        ending = b"\r"
-    else:
-        ending = b""
-    entry = (
-        f"{INFINITY_DIST_INFO}/METADATA,"
-        f"sha256={INFINITY_RECORD_DIGEST_PATCHED},"
-        f"{INFINITY_METADATA_PATCHED_SIZE}"
-    ).encode("ascii")
-    lines[metadata_index] = entry + ending
-    return b"".join(lines)
-
-
-def patch_infinity_metadata() -> tuple[Path, Path]:
-    metadata_path, record_path, metadata_entry = locate_infinity_metadata()
-    expected_entry = f"{INFINITY_DIST_INFO}/METADATA"
-    if metadata_entry != expected_entry:
-        raise RuntimeError(
-            f"Unexpected infinity-sdk METADATA RECORD path {metadata_entry!r}; "
-            f"expected {expected_entry!r}"
-        )
-
-    metadata = metadata_path.read_bytes()
-    record = record_path.read_bytes()
-    metadata_status = metadata_state(metadata)
-    record_status, record_lines, metadata_index = inspect_record(
-        record, record_path, metadata_entry
-    )
-
-    # A previous process can have stopped between the two atomic replacements.
-    # Either audited mixed state is safe to finish; any unknown bytes fail above.
-    if metadata_status == "original":
-        if metadata.count(INFINITY_REQUIREMENT_ORIGINAL) != 1:
-            raise RuntimeError("The infinity-sdk NumPy requirement is not unique")
-        patched = metadata.replace(
-            INFINITY_REQUIREMENT_ORIGINAL,
-            INFINITY_REQUIREMENT_PATCHED,
-            1,
-        )
-        if (
-            len(patched) != INFINITY_METADATA_PATCHED_SIZE
-            or sha256_bytes(patched) != INFINITY_METADATA_PATCHED_SHA256
-        ):
-            raise RuntimeError("Internal infinity-sdk METADATA patch verification failed")
-        atomic_write(metadata_path, patched)
-
-    if record_status == "original":
-        atomic_write(record_path, patched_record_bytes(record_lines, metadata_index))
-
-    final_metadata = metadata_path.read_bytes()
-    final_record = record_path.read_bytes()
-    if metadata_state(final_metadata) != "patched":
-        raise RuntimeError("infinity-sdk METADATA did not reach the patched state")
-    final_record_status, _, _ = inspect_record(
-        final_record, record_path, metadata_entry
-    )
-    if final_record_status != "patched":
-        raise RuntimeError("infinity-sdk RECORD did not reach the patched state")
-    print(
-        "[OK  ] Repaired infinity-sdk 0.7.3 NumPy requirement and wheel RECORD"
-    )
-    return metadata_path, record_path
-
-
-def locate_dist_info(distribution_name: str, version: str, dirname: str) -> Path:
+def locate_dist_info(distribution_name: str, version: str, expected_name: str) -> Path:
     try:
         distribution = importlib.metadata.distribution(distribution_name)
     except importlib.metadata.PackageNotFoundError as exc:
-        raise RuntimeError(
-            f"{distribution_name} {version} is not installed in {sys.executable}"
-        ) from exc
+        raise RuntimeError(f"{distribution_name} {version} is not installed") from exc
     if distribution.version != version:
         raise RuntimeError(
-            f"Unsupported {distribution_name} version {distribution.version!r}; "
-            f"expected {version!r}"
+            f"Unsupported {distribution_name} version {distribution.version!r}; expected {version!r}"
         )
-    files = distribution.files
-    if files is None:
-        raise RuntimeError(f"{distribution_name} has no installed RECORD")
-    metadata_entries = [
-        item
-        for item in files
-        if item.name == "METADATA" and item.parent.name.endswith(".dist-info")
-    ]
-    if len(metadata_entries) != 1:
-        raise RuntimeError(
-            f"Could not uniquely locate {distribution_name} dist-info; found "
-            f"{len(metadata_entries)} METADATA entries"
-        )
-    metadata_path = Path(distribution.locate_file(metadata_entries[0]))
-    if metadata_path.parent.name != dirname:
-        raise RuntimeError(
-            f"Unexpected {distribution_name} dist-info directory "
-            f"{metadata_path.parent.name!r}; expected {dirname!r}"
-        )
-    return metadata_path.parent
+    dist_info = Path(distribution._path)  # type: ignore[attr-defined]
+    if dist_info.name != expected_name or not dist_info.is_dir():
+        raise RuntimeError(f"Unexpected {distribution_name} dist-info directory: {dist_info}")
+    return dist_info
 
 
-def removed_requirement_metadata_state(
-    patch: RemovedRequirementPatch, data: bytes
-) -> str:
-    size = len(data)
-    digest = sha256_bytes(data)
-    if size == patch.original_size and digest == patch.original_sha256:
-        if data.count(patch.requirement) != 1:
-            raise RuntimeError(
-                f"Audited {patch.distribution} METADATA does not contain exactly "
-                f"one {patch.requirement.rstrip()!r} line"
-            )
-        return "original"
-    if size == patch.patched_size and digest == patch.patched_sha256:
-        if patch.requirement in data:
-            raise RuntimeError(
-                f"Patched {patch.distribution} METADATA retains the excluded "
-                "requirement"
-            )
-        return "patched"
-    raise RuntimeError(
-        f"Refusing to patch unknown {patch.distribution} METADATA: expected "
-        f"SHA256 {patch.original_sha256} (original) or {patch.patched_sha256} "
-        f"(patched), found {digest} ({size} bytes)"
-    )
+def parse_record_row(raw_line: bytes, record_path: Path) -> list[str]:
+    try:
+        rows = list(csv.reader([raw_line.rstrip(b"\r\n").decode("utf-8")]))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise RuntimeError(f"Cannot parse {record_path}: {exc}") from exc
+    if len(rows) != 1 or len(rows[0]) != 3:
+        raise RuntimeError(f"Malformed wheel RECORD row in {record_path}")
+    return rows[0]
 
 
-def inspect_removed_requirement_record(
-    patch: RemovedRequirementPatch, data: bytes, record_path: Path
-) -> tuple[str, list[bytes], int]:
-    lines = data.splitlines(keepends=True)
-    metadata_indices: list[int] = []
-    self_rows = 0
-    state: str | None = None
-    original = [
-        patch.metadata_entry,
-        f"sha256={record_digest(patch.original_sha256)}",
-        str(patch.original_size),
-    ]
-    patched = [
-        patch.metadata_entry,
-        f"sha256={record_digest(patch.patched_sha256)}",
-        str(patch.patched_size),
-    ]
-
-    for index, raw_line in enumerate(lines):
+def clear_record_entry(record_path: Path, entry: str) -> None:
+    lines = record_path.read_bytes().splitlines(keepends=True)
+    matches = 0
+    output: list[bytes] = []
+    for raw_line in lines:
         row = parse_record_row(raw_line, record_path)
-        if row[0] == patch.metadata_entry:
-            metadata_indices.append(index)
-            if row == original:
-                state = "original"
-            elif row == patched:
-                state = "patched"
-            else:
-                raise RuntimeError(
-                    f"Unexpected {patch.distribution} METADATA row in "
-                    f"{record_path}: {row!r}"
-                )
-        if row[0] == patch.record_entry:
-            self_rows += 1
-            if row[1:] != ["", ""]:
-                raise RuntimeError(
-                    f"Malformed {patch.distribution} RECORD self row in "
-                    f"{record_path}: {row!r}"
-                )
-
-    if len(metadata_indices) != 1 or state is None:
-        raise RuntimeError(
-            f"Expected exactly one {patch.distribution} METADATA row in "
-            f"{record_path}; found {len(metadata_indices)}"
-        )
-    if self_rows != 1:
-        raise RuntimeError(
-            f"Expected exactly one {patch.distribution} RECORD self row in "
-            f"{record_path}; found {self_rows}"
-        )
-    return state, lines, metadata_indices[0]
+        if row[0] != entry:
+            output.append(raw_line)
+            continue
+        matches += 1
+        ending = b"\r\n" if raw_line.endswith(b"\r\n") else b"\n"
+        output.append(f"{entry},,".encode("utf-8") + ending)
+    if matches != 1:
+        raise RuntimeError(f"Expected one {entry} row in {record_path}; found {matches}")
+    patched = b"".join(output)
+    if patched != b"".join(lines):
+        atomic_write(record_path, patched)
 
 
-def patch_removed_requirement_record(
-    patch: RemovedRequirementPatch, lines: list[bytes], metadata_index: int
-) -> bytes:
-    current = lines[metadata_index]
-    if current.endswith(b"\r\n"):
-        ending = b"\r\n"
-    elif current.endswith(b"\n"):
-        ending = b"\n"
-    elif current.endswith(b"\r"):
-        ending = b"\r"
-    else:
-        ending = b""
-    replacement = (
-        f"{patch.metadata_entry},"
-        f"sha256={record_digest(patch.patched_sha256)},"
-        f"{patch.patched_size}"
-    ).encode("ascii")
-    lines[metadata_index] = replacement + ending
-    return b"".join(lines)
-
-
-def repair_removed_requirement_metadata(
-    patch: RemovedRequirementPatch,
-) -> tuple[Path, Path]:
-    dist_info = locate_dist_info(
-        patch.distribution, patch.version, patch.dist_info
+def patch_tika_windows_java_launch() -> tuple[Path, Path]:
+    dist_info = locate_dist_info(TIKA_DISTRIBUTION, TIKA_VERSION, "tika-2.6.0.dist-info")
+    site_packages = dist_info.parent
+    source_path = site_packages / TIKA_SOURCE_ENTRY
+    record_path = dist_info / "RECORD"
+    data = read_regular(source_path, "Tika source")
+    read_regular(record_path, "Tika RECORD")
+    replacements = (
+        (TIKA_IMPORT_ORIGINAL, TIKA_IMPORT_PATCHED, "subprocess imports"),
+        (TIKA_COMMAND_ORIGINAL, TIKA_COMMAND_PATCHED, "server command"),
+        (TIKA_PROBE_ORIGINAL, TIKA_PROBE_PATCHED, "Java probe"),
     )
+    changed = False
+    for original, patched, label in replacements:
+        if data.count(patched) == 1:
+            continue
+        if data.count(original) != 1:
+            raise RuntimeError(f"Cannot find unique Tika {label} patch anchor in {source_path}")
+        data = data.replace(original, patched, 1)
+        changed = True
+    if TIKA_SIGNATURE_PATCHED not in data:
+        signature_start = data.find(b"def checkJarSig(")
+        next_function = data.find(b"def startServer(", signature_start + 1)
+        if signature_start < 0 or next_function < 0:
+            raise RuntimeError(
+                f"Cannot find the Tika JAR verification function in {source_path}"
+            )
+        data = (
+            data[:signature_start]
+            + TIKA_SIGNATURE_PATCHED
+            + b"\n"
+            + data[next_function:]
+        )
+        changed = True
+    if changed:
+        atomic_write(source_path, data)
+    clear_record_entry(record_path, TIKA_SOURCE_ENTRY)
+    print("[OK  ] Tika Java launcher is portable-path safe")
+    return source_path, record_path
+
+
+def patch_metadata_requirement(
+    distribution: str,
+    version: str,
+    dist_info_name: str,
+    original: bytes,
+    patched: bytes,
+) -> tuple[Path, Path]:
+    dist_info = locate_dist_info(distribution, version, dist_info_name)
     metadata_path = dist_info / "METADATA"
     record_path = dist_info / "RECORD"
-    for description, path in (
-        ("METADATA", metadata_path),
-        ("RECORD", record_path),
-    ):
-        if path.is_symlink():
-            raise RuntimeError(
-                f"{patch.distribution} {description} must not be a symlink: {path}"
-            )
-        if not path.is_file():
-            raise RuntimeError(
-                f"{patch.distribution} {description} is missing: {path}"
-            )
+    data = read_regular(metadata_path, f"{distribution} METADATA")
+    read_regular(record_path, f"{distribution} RECORD")
+    if data.count(patched) == 1 and original not in data:
+        pass
+    elif data.count(original) == 1 and patched not in data:
+        atomic_write(metadata_path, data.replace(original, patched, 1))
+    else:
+        raise RuntimeError(f"Cannot find a unique {distribution} requirement patch anchor")
+    clear_record_entry(record_path, f"{dist_info_name}/METADATA")
+    return metadata_path, record_path
 
-    metadata = metadata_path.read_bytes()
-    record = record_path.read_bytes()
-    metadata_status = removed_requirement_metadata_state(patch, metadata)
-    record_status, record_lines, metadata_index = (
-        inspect_removed_requirement_record(patch, record, record_path)
-    )
 
-    # Complete either audited mixed state left by interruption. Unknown bytes or
-    # RECORD rows have already failed without changing the installation.
-    if metadata_status == "original":
-        replacement = metadata.replace(patch.requirement, b"", 1)
-        if (
-            len(replacement) != patch.patched_size
-            or sha256_bytes(replacement) != patch.patched_sha256
-        ):
-            raise RuntimeError(
-                f"Internal {patch.distribution} METADATA patch verification failed"
-            )
-        atomic_write(metadata_path, replacement)
-    if record_status == "original":
-        atomic_write(
-            record_path,
-            patch_removed_requirement_record(patch, record_lines, metadata_index),
-        )
+def patch_infinity_metadata() -> tuple[Path, Path]:
+    result = patch_metadata_requirement(
+        INFINITY_DISTRIBUTION, INFINITY_VERSION, INFINITY_DIST_INFO,
+        INFINITY_REQUIREMENT_ORIGINAL, INFINITY_REQUIREMENT_PATCHED,
+    )
+    print("[OK  ] Repaired infinity-sdk NumPy requirement")
+    return result
 
-    if removed_requirement_metadata_state(
-        patch, metadata_path.read_bytes()
-    ) != "patched":
-        raise RuntimeError(
-            f"{patch.distribution} METADATA did not reach the patched state"
-        )
-    final_record_status, _, _ = inspect_removed_requirement_record(
-        patch, record_path.read_bytes(), record_path
+
+def patch_moodle_metadata() -> tuple[Path, Path]:
+    result = patch_metadata_requirement(
+        MOODLE_DISTRIBUTION, MOODLE_VERSION, MOODLE_DIST_INFO,
+        MOODLE_REQUIREMENT_ORIGINAL, MOODLE_REQUIREMENT_PATCHED,
     )
-    if final_record_status != "patched":
-        raise RuntimeError(
-            f"{patch.distribution} RECORD did not reach the patched state"
-        )
-    print(
-        f"[OK  ] Removed excluded {patch.requirement.rstrip().decode('ascii')} "
-        f"from {patch.distribution} {patch.version} metadata"
-    )
+    print("[OK  ] Repaired moodlepy attrs requirement")
+    return result
+
+
+def repair_removed_requirement_metadata(patch: RemovedRequirementPatch) -> tuple[Path, Path]:
+    dist_info = locate_dist_info(patch.distribution, patch.version, patch.dist_info)
+    metadata_path = dist_info / "METADATA"
+    record_path = dist_info / "RECORD"
+    data = read_regular(metadata_path, f"{patch.distribution} METADATA")
+    read_regular(record_path, f"{patch.distribution} RECORD")
+    count = data.count(patch.requirement)
+    if count > 1:
+        raise RuntimeError(f"Excluded {patch.distribution} requirement is duplicated")
+    if count == 1:
+        atomic_write(metadata_path, data.replace(patch.requirement, b"", 1))
+    clear_record_entry(record_path, patch.metadata_entry)
+    print(f"[OK  ] Removed excluded dependency from {patch.distribution} metadata")
     return metadata_path, record_path
 
 
@@ -974,435 +393,80 @@ def repair_excluded_dependency_metadata() -> None:
         repair_removed_requirement_metadata(patch)
 
 
-def moodle_metadata_state(data: bytes) -> str:
-    size = len(data)
-    digest = sha256_bytes(data)
-    if (
-        size == MOODLE_METADATA_ORIGINAL_SIZE
-        and digest == MOODLE_METADATA_ORIGINAL_SHA256
-    ):
-        if data.count(MOODLE_REQUIREMENT_ORIGINAL) != 1:
-            raise RuntimeError("Audited moodlepy METADATA has an unexpected attrs line")
-        return "original"
-    if (
-        size == MOODLE_METADATA_PATCHED_SIZE
-        and digest == MOODLE_METADATA_PATCHED_SHA256
-    ):
-        if data.count(MOODLE_REQUIREMENT_PATCHED) != 1:
-            raise RuntimeError("Patched moodlepy METADATA has an unexpected attrs line")
-        if MOODLE_REQUIREMENT_ORIGINAL in data:
-            raise RuntimeError("Patched moodlepy METADATA retains the stale attrs pin")
-        return "patched"
-    raise RuntimeError(
-        "Refusing to patch unknown moodlepy METADATA: "
-        f"expected SHA256 {MOODLE_METADATA_ORIGINAL_SHA256} (original) or "
-        f"{MOODLE_METADATA_PATCHED_SHA256} (patched), found {digest} ({size} bytes)"
-    )
-
-
-def inspect_moodle_record(
-    data: bytes, record_path: Path
-) -> tuple[str, list[bytes], int]:
-    lines = data.splitlines(keepends=True)
-    metadata_indices: list[int] = []
-    self_rows = 0
-    metadata_entry = f"{MOODLE_DIST_INFO}/METADATA"
-    record_entry = f"{MOODLE_DIST_INFO}/RECORD"
-    state: str | None = None
-    original = [
-        metadata_entry,
-        f"sha256={record_digest(MOODLE_METADATA_ORIGINAL_SHA256)}",
-        str(MOODLE_METADATA_ORIGINAL_SIZE),
-    ]
-    patched = [
-        metadata_entry,
-        f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)}",
-        str(MOODLE_METADATA_PATCHED_SIZE),
-    ]
-
-    for index, raw_line in enumerate(lines):
-        row = parse_record_row(raw_line, record_path)
-        if row[0] == metadata_entry:
-            metadata_indices.append(index)
-            if row == original:
-                state = "original"
-            elif row == patched:
-                state = "patched"
-            else:
-                raise RuntimeError(
-                    f"Unexpected moodlepy METADATA row in {record_path}: {row!r}"
-                )
-        if row[0] == record_entry:
-            self_rows += 1
-            if row[1:] != ["", ""]:
-                raise RuntimeError(
-                    f"Malformed moodlepy RECORD self row in {record_path}: {row!r}"
-                )
-
-    if len(metadata_indices) != 1 or state is None:
-        raise RuntimeError(
-            f"Expected exactly one moodlepy METADATA row in {record_path}; "
-            f"found {len(metadata_indices)}"
-        )
-    if self_rows != 1:
-        raise RuntimeError(
-            f"Expected exactly one moodlepy RECORD self row in {record_path}; "
-            f"found {self_rows}"
-        )
-    return state, lines, metadata_indices[0]
-
-
-def patched_moodle_record_bytes(lines: list[bytes], metadata_index: int) -> bytes:
-    current = lines[metadata_index]
-    if current.endswith(b"\r\n"):
-        ending = b"\r\n"
-    elif current.endswith(b"\n"):
-        ending = b"\n"
-    elif current.endswith(b"\r"):
-        ending = b"\r"
-    else:
-        ending = b""
-    entry = (
-        f"{MOODLE_DIST_INFO}/METADATA,"
-        f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)},"
-        f"{MOODLE_METADATA_PATCHED_SIZE}"
-    ).encode("ascii")
-    lines[metadata_index] = entry + ending
-    return b"".join(lines)
-
-
-def patch_moodle_metadata() -> tuple[Path, Path]:
-    dist_info = locate_dist_info(MOODLE_DISTRIBUTION, MOODLE_VERSION, MOODLE_DIST_INFO)
-    metadata_path = dist_info / "METADATA"
-    record_path = dist_info / "RECORD"
-    for description, path in (
-        ("METADATA", metadata_path),
-        ("RECORD", record_path),
-    ):
-        if path.is_symlink():
-            raise RuntimeError(f"moodlepy {description} must not be a symlink: {path}")
-        if not path.is_file():
-            raise RuntimeError(f"moodlepy {description} is missing: {path}")
-
-    metadata = metadata_path.read_bytes()
-    record = record_path.read_bytes()
-    metadata_status = moodle_metadata_state(metadata)
-    record_status, record_lines, metadata_index = inspect_moodle_record(
-        record, record_path
-    )
-
-    if metadata_status == "original":
-        patched = metadata.replace(
-            MOODLE_REQUIREMENT_ORIGINAL,
-            MOODLE_REQUIREMENT_PATCHED,
-            1,
-        )
-        if (
-            len(patched) != MOODLE_METADATA_PATCHED_SIZE
-            or sha256_bytes(patched) != MOODLE_METADATA_PATCHED_SHA256
-        ):
-            raise RuntimeError("Internal moodlepy METADATA patch verification failed")
-        atomic_write(metadata_path, patched)
-    if record_status == "original":
-        atomic_write(
-            record_path,
-            patched_moodle_record_bytes(record_lines, metadata_index),
-        )
-
-    if moodle_metadata_state(metadata_path.read_bytes()) != "patched":
-        raise RuntimeError("moodlepy METADATA did not reach the patched state")
-    final_record_status, _, _ = inspect_moodle_record(
-        record_path.read_bytes(), record_path
-    )
-    if final_record_status != "patched":
-        raise RuntimeError("moodlepy RECORD did not reach the patched state")
-    print("[OK  ] Repaired moodlepy 0.24.1 attrs requirement and wheel RECORD")
-    return metadata_path, record_path
-
-
-def validate_datrie_direct_url(data: bytes, path: Path) -> None:
-    try:
-        value = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Cannot parse {path}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise RuntimeError(f"Unexpected PEP 610 data in {path}: expected an object")
-
-    url = value.get("url")
-    parsed_url = urllib.parse.urlparse(url) if isinstance(url, str) else None
-    if parsed_url is None or parsed_url.scheme.lower() != "file":
-        raise RuntimeError(
-            f"Refusing to remove an unexpected non-local datrie direct URL: {url!r}"
-        )
-    wheel_path = Path(urllib.request.url2pathname(parsed_url.path))
-    basename = wheel_path.name
-    if basename.lower() != DATRIE_WHEEL_NAME.lower():
-        raise RuntimeError(
-            f"Unexpected datrie wheel in {path}: {basename!r}; expected "
-            f"{DATRIE_WHEEL_NAME!r}"
-        )
-
-    archive_info = value.get("archive_info")
-    if not isinstance(archive_info, dict):
-        raise RuntimeError(f"Missing archive_info in {path}")
-    advertised: list[str] = []
-    direct_hash = archive_info.get("hash")
-    if isinstance(direct_hash, str):
-        digest = datrie_sha256_from_direct_url_hash(direct_hash)
-        if digest is not None:
-            advertised.append(digest)
-    hashes = archive_info.get("hashes")
-    if isinstance(hashes, dict) and isinstance(hashes.get("sha256"), str):
-        advertised.append(hashes["sha256"])
-    if advertised:
-        if any(item != DATRIE_WHEEL_SHA256 for item in advertised):
-            raise RuntimeError(
-                f"Unexpected datrie wheel hash in {path}: {advertised!r}"
-            )
-        return
-    validate_datrie_wheel_file(wheel_path, path)
-
-
-def validate_datrie_wheel_file(wheel_path: Path, direct_url_path: Path) -> None:
-    if wheel_path.is_symlink():
-        raise RuntimeError(
-            f"Refusing to verify datrie wheel through a symlink from {direct_url_path}: "
-            f"{wheel_path}"
-        )
-    if not wheel_path.is_file():
-        raise RuntimeError(
-            f"Missing datrie wheel hash in {direct_url_path} and local wheel is not "
-            f"available for verification: {wheel_path}"
-        )
-    digest = sha256_file(wheel_path)
-    if digest != DATRIE_WHEEL_SHA256:
-        raise RuntimeError(
-            f"Missing datrie wheel hash in {direct_url_path} and local wheel hash "
-            f"is unexpected: {digest}"
-        )
-
-
-def datrie_sha256_from_direct_url_hash(value: str) -> str | None:
-    for prefix in DATRIE_HASH_PREFIXES:
-        if value.startswith(prefix):
-            return value.removeprefix(prefix)
-    return None
-
-
 def remove_datrie_direct_url() -> tuple[Path, Path]:
-    """Remove PEP 610's absolute local-wheel path and its RECORD entry."""
-
     dist_info = locate_dist_info(DATRIE_DISTRIBUTION, DATRIE_VERSION, DATRIE_DIST_INFO)
     direct_url_path = dist_info / "direct_url.json"
     record_path = dist_info / "RECORD"
-    if not record_path.is_file():
-        raise RuntimeError(f"datrie RECORD is missing: {record_path}")
+    read_regular(record_path, "datrie RECORD")
     if direct_url_path.is_symlink():
         raise RuntimeError(f"datrie direct_url.json must not be a symlink: {direct_url_path}")
+    if direct_url_path.exists() and not direct_url_path.is_file():
+        raise RuntimeError(f"datrie direct URL is not a file: {direct_url_path}")
 
-    direct_data: bytes | None = None
-    if direct_url_path.exists():
-        if not direct_url_path.is_file():
-            raise RuntimeError(f"datrie direct URL is not a file: {direct_url_path}")
-        direct_data = direct_url_path.read_bytes()
-        validate_datrie_direct_url(direct_data, direct_url_path)
-
-    record_data = record_path.read_bytes()
-    lines = record_data.splitlines(keepends=True)
     direct_entry = f"{DATRIE_DIST_INFO}/direct_url.json"
-    direct_indices: list[int] = []
-    for index, raw_line in enumerate(lines):
-        row = parse_record_row(raw_line, record_path)
-        if row[0] == direct_entry:
-            direct_indices.append(index)
-            if direct_data is not None:
-                expected = [
-                    direct_entry,
-                    f"sha256={record_digest(sha256_bytes(direct_data))}",
-                    str(len(direct_data)),
-                ]
-                if row != expected:
-                    raise RuntimeError(
-                        f"datrie direct_url.json RECORD row is inconsistent: {row!r}"
-                    )
-    if len(direct_indices) > 1:
-        raise RuntimeError(
-            f"Duplicate datrie direct_url.json rows in {record_path}: "
-            f"{len(direct_indices)}"
-        )
-
-    if direct_indices:
-        sanitized_record = b"".join(
-            line for index, line in enumerate(lines) if index != direct_indices[0]
-        )
-        atomic_write(record_path, sanitized_record)
-    if direct_data is not None:
-        direct_url_path.unlink()
-
-    if direct_url_path.exists() or direct_url_path.is_symlink():
-        raise RuntimeError(f"Could not remove build-bound path: {direct_url_path}")
-    for raw_line in record_path.read_bytes().splitlines(keepends=True):
-        if parse_record_row(raw_line, record_path)[0] == direct_entry:
-            raise RuntimeError(f"Build-bound datrie RECORD row remains in {record_path}")
+    lines = record_path.read_bytes().splitlines(keepends=True)
+    kept = [line for line in lines if parse_record_row(line, record_path)[0] != direct_entry]
+    if len(kept) != len(lines):
+        atomic_write(record_path, b"".join(kept))
+    direct_url_path.unlink(missing_ok=True)
     print("[OK  ] Removed datrie local-wheel direct_url.json provenance")
     return direct_url_path, record_path
 
 
 def expected_record() -> dict[str, object]:
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "helper": "prepare_ragflow_windows.py",
-        "ragflow": {
-            "version": RAGFLOW_VERSION,
-            "target": TASK_HANDLER_RELATIVE.as_posix(),
-            "original_sha256": TASK_HANDLER_ORIGINAL_SHA256,
-            "patched_sha256": TASK_HANDLER_PATCHED_SHA256,
-            "change": "lazy GraphRAG import for normal non-GraphRAG workers",
-        },
-        "graphrag_native_adapter": {
-            "leiden_target": LEIDEN_RELATIVE.as_posix(),
-            "leiden_original_sha256": LEIDEN_ORIGINAL_SHA256,
-            "leiden_patched_sha256": LEIDEN_PATCHED_SHA256,
-            "adapter_target": LEIDEN_ADAPTER_RELATIVE.as_posix(),
-            "adapter_sha256": LEIDEN_ADAPTER_SHA256,
-            "distribution": "graspologic-native==1.2.5",
-            "change": (
-                "hierarchical Leiden uses the upstream Rust backend; largest "
-                "connected component uses NetworkX"
-            ),
-        },
-        "local_embedding_context_limit": {
-            "target": TENANT_LLM_SERVICE_RELATIVE.as_posix(),
-            "original_sha256": TENANT_LLM_SERVICE_ORIGINAL_SHA256,
-            "patched_sha256": TENANT_LLM_SERVICE_PATCHED_SHA256,
-            "env": "LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS",
-            "change": (
-                "embedding LLMBundle max_length is capped to the local "
-                "llama.cpp embedding context"
-            ),
-        },
-        "tika_python": {
-            "version": TIKA_VERSION,
-            "source_path": TIKA_SOURCE_ENTRY,
-            "source_original_sha256": TIKA_SOURCE_ORIGINAL_SHA256,
-            "source_patched_sha256": TIKA_SOURCE_PATCHED_SHA256,
-            "record_entry": (
-                f"{TIKA_SOURCE_ENTRY},"
-                f"sha256={record_digest(TIKA_SOURCE_PATCHED_SHA256)},"
-                f"{TIKA_SOURCE_PATCHED_SIZE}"
-            ),
-            "change": (
-                "quote the portable java.exe path and probe it as an executable "
-                "list so Tika starts from install paths with spaces"
-            ),
-        },
-        "infinity_sdk": {
-            "version": INFINITY_VERSION,
-            "metadata_path": f"{INFINITY_DIST_INFO}/METADATA",
-            "metadata_original_sha256": INFINITY_METADATA_ORIGINAL_SHA256,
-            "metadata_patched_sha256": INFINITY_METADATA_PATCHED_SHA256,
-            "numpy_requirement": INFINITY_REQUIREMENT_PATCHED.decode("ascii").rstrip(),
-            "record_entry": (
-                f"{INFINITY_DIST_INFO}/METADATA,"
-                f"sha256={INFINITY_RECORD_DIGEST_PATCHED},"
-                f"{INFINITY_METADATA_PATCHED_SIZE}"
-            ),
-        },
-        "datrie": {
-            "version": DATRIE_VERSION,
-            "wheel": DATRIE_WHEEL_NAME,
-            "wheel_sha256": DATRIE_WHEEL_SHA256,
-            "removed": f"{DATRIE_DIST_INFO}/direct_url.json",
-            "reason": "remove the absolute online-build wheel path",
-        },
-        "moodlepy": {
-            "version": MOODLE_VERSION,
-            "metadata_path": f"{MOODLE_DIST_INFO}/METADATA",
-            "metadata_original_sha256": MOODLE_METADATA_ORIGINAL_SHA256,
-            "metadata_patched_sha256": MOODLE_METADATA_PATCHED_SHA256,
-            "attrs_requirement": MOODLE_REQUIREMENT_PATCHED.decode("ascii").rstrip(),
-            "record_entry": (
-                f"{MOODLE_DIST_INFO}/METADATA,"
-                f"sha256={record_digest(MOODLE_METADATA_PATCHED_SHA256)},"
-                f"{MOODLE_METADATA_PATCHED_SIZE}"
-            ),
-            "reason": (
-                "RAGFlow pins trio>=0.26 for CPython 3.13 and overrides attrs "
-                "to >=23.2.0; moodlepy 0.24.1 metadata still advertises "
-                "the stale attrs<23 constraint"
-            ),
-        },
-        "excluded_dependency_metadata": {
-            patch.distribution: {
-                "version": patch.version,
-                "metadata_path": patch.metadata_entry,
-                "metadata_original_sha256": patch.original_sha256,
-                "metadata_patched_sha256": patch.patched_sha256,
-                "removed_requirement": patch.requirement.decode("ascii").rstrip(),
-                "record_entry": (
-                    f"{patch.metadata_entry},"
-                    f"sha256={record_digest(patch.patched_sha256)},"
-                    f"{patch.patched_size}"
-                ),
-                "reason": "dependency is intentionally excluded from this profile",
-            }
-            for patch in EXCLUDED_REQUIREMENT_PATCHES
-        },
+        "ragflow_version": RAGFLOW_VERSION,
+        "policy": "semantic patch anchors; no content hashes or size seals",
+        "changes": [
+            "lazy GraphRAG import",
+            "graspologic-native adapter",
+            "local embedding context cap",
+            "portable Tika Java launch",
+            "compatible Python dependency metadata",
+            "removed build-bound datrie provenance",
+        ],
     }
 
 
-def write_or_verify_record(path: Path) -> None:
-    expected = json.dumps(
-        expected_record(), ensure_ascii=False, indent=2, sort_keys=True
-    ).encode("utf-8") + b"\n"
+def write_record(path: Path) -> None:
     if path.is_symlink():
         raise RuntimeError(f"Compatibility record must not be a symlink: {path}")
-    if path.exists():
-        if not path.is_file():
-            raise RuntimeError(f"Compatibility record is not a file: {path}")
-        actual = path.read_bytes()
-        if actual != expected:
-            raise RuntimeError(
-                f"Existing compatibility record is stale or modified: {path}. "
-                "Remove it only after reviewing the changed provenance."
-            )
-        print(f"[OK  ] Compatibility record verified: {path}")
-        return
-    atomic_write(path, expected)
-    if path.read_bytes() != expected:
-        raise RuntimeError(f"Compatibility record verification failed: {path}")
+    payload = json.dumps(
+        expected_record(), ensure_ascii=False, indent=2, sort_keys=True
+    ).encode("utf-8") + b"\n"
+    if not path.exists() or path.read_bytes() != payload:
+        atomic_write(path, payload)
     print(f"[OK  ] Compatibility record written: {path}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Apply audited RAGFlow 0.27.1 native-Windows compatibility fixes"
+        description="Apply RAGFlow 0.27.1 native-Windows compatibility fixes"
     )
     parser.add_argument("--ragflow-dir", required=True, type=Path)
     parser.add_argument("--record", required=True, type=Path)
     args = parser.parse_args()
 
     ragflow_dir = args.ragflow_dir.resolve()
-    print(f"[STEP] Verify RAGFlow {RAGFLOW_VERSION} source")
+    print(f"[STEP] Check RAGFlow {RAGFLOW_VERSION} compatibility")
     ragflow_source_version(ragflow_dir)
     print("[STEP] Keep GraphRAG lazy for non-GraphRAG workers")
     patch_task_handler(ragflow_dir)
-    print("[STEP] Enable GraphRAG through the audited graspologic-native adapter")
+    print("[STEP] Enable GraphRAG through graspologic-native")
     install_graphrag_native_adapter(ragflow_dir)
     print("[STEP] Cap embedding input length to the local llama.cpp context")
     patch_local_embedding_context_limit(ragflow_dir)
     print("[STEP] Make tika-python Java launch portable-path safe")
     patch_tika_windows_java_launch()
-    print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
+    print("[STEP] Repair Python dependency metadata")
     patch_infinity_metadata()
-    print("[STEP] Repair moodlepy metadata for the pinned attrs runtime")
     patch_moodle_metadata()
-    print("[STEP] Repair metadata for intentionally excluded dependencies")
     repair_excluded_dependency_metadata()
     print("[STEP] Remove build-bound datrie wheel provenance")
     remove_datrie_direct_url()
-    print("[STEP] Write deterministic compatibility provenance")
-    write_or_verify_record(args.record.resolve())
+    write_record(args.record.resolve())
     return 0
 
 

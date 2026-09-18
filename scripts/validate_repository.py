@@ -2,7 +2,6 @@
 """Static acceptance checks for the modular portable repository."""
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -54,10 +53,6 @@ REQUIRED = (
 )
 
 
-def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def validate() -> list[str]:
     errors: list[str] = []
     for relative in ("1.PREPARE-ONLINE.bat", "_src/.gitkeep", "prepared/.gitkeep"):
@@ -68,8 +63,6 @@ def validate() -> list[str]:
         errors.append(f"module set: expected {sorted(EXPECTED)}, found {sorted(actual)}")
     manifests: dict[str, dict] = {}
     ports: dict[int, str] = {}
-    prepare_hashes: set[str] = set()
-    runtime_hashes: set[str] = set()
     artifacts: set[str] = set()
     for name, version in EXPECTED.items():
         root = MODULES / name
@@ -102,12 +95,6 @@ def validate() -> list[str]:
             owner = ports.setdefault(int(port), f"{name}.{label}")
             if owner != f"{name}.{label}":
                 errors.append(f"port {port} collision: {owner}, {name}.{label}")
-        prepare_hashes.add(digest(root / "src/prepare.ps1"))
-        runtime_hashes.add(digest(root / "lib/runtime.ps1"))
-    if len(prepare_hashes) != 1:
-        errors.append("module-local prepare engines diverged")
-    if len(runtime_hashes) != 1:
-        errors.append("module-local runtime engines diverged")
     if artifacts != EXPECTED_ARTIFACTS:
         errors.append(
             f"fixed artifact set changed: missing={sorted(EXPECTED_ARTIFACTS-artifacts)}, "

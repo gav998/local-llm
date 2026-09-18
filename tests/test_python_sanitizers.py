@@ -38,7 +38,7 @@ class PythonRuntimeSanitizerTests(unittest.TestCase):
                 with record.open("w", encoding="utf-8", newline="") as stream:
                     csv.writer(stream, lineterminator="\n").writerows(
                         [
-                            ["../../Scripts/demo.exe", "sha256=ignored", "1"],
+                            ["../../Scripts/demo.exe", "legacy-digest", "1"],
                             ["demo-1.0.dist-info/direct_url.json", "", ""],
                             ["demo/__init__.py", "", ""],
                         ]

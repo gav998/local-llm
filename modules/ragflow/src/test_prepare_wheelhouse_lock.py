@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import sys
 import tempfile
 import unittest
@@ -45,10 +44,8 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         make_wheel(self.wheelhouse, "ja-core-news-sm", "3.8.0")
         make_wheel(self.wheelhouse, "unrelated-stale", "9.9")
         self.requirements.write_text(
-            "source_only==1.0.0 \\\n"
-            "    --hash=sha256:" + "a" * 64 + "\n"
-            "ja-core-news-sm @ https://example.invalid/ja_core_news_sm-3.8.0-py3-none-any.whl \\\n"
-            "    --hash=sha256:" + "b" * 64 + "\n"
+            "source_only==1.0.0\n"
+            "ja-core-news-sm @ https://example.invalid/ja_core_news_sm-3.8.0-py3-none-any.whl\n"
             "ignored-on-this-platform==4.0 ; sys_platform == 'never'\n",
             encoding="utf-8",
         )
@@ -56,18 +53,9 @@ class PrepareWheelhouseLockTest(unittest.TestCase):
         count = create_lock(self.requirements, self.wheelhouse, self.output)
 
         self.assertEqual(count, 2)
-        ja_hash = hashlib.sha256(
-            (self.wheelhouse / "ja_core_news_sm-3.8.0-py3-none-any.whl").read_bytes()
-        ).hexdigest()
-        source_hash = hashlib.sha256(
-            (self.wheelhouse / "source_only-1.0.0-py3-none-any.whl").read_bytes()
-        ).hexdigest()
         self.assertEqual(
             self.output.read_text(encoding="utf-8"),
-            f"ja-core-news-sm==3.8.0 \\\n"
-            f"    --hash=sha256:{ja_hash}\n"
-            f"source-only==1.0.0 \\\n"
-            f"    --hash=sha256:{source_hash}\n",
+            "ja-core-news-sm==3.8.0\nsource-only==1.0.0\n",
         )
 
     def test_rejects_missing_locked_wheel(self) -> None:

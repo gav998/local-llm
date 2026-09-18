@@ -41,7 +41,7 @@
 
 Сохранены прежние CPython 3.13 отклонения: NumPy 2.3.5, XGBoost 2.1.4,
 scikit-learn 1.8.0, datrie 0.8.3 и graspologic-native 1.2.5. Сохранились
-hash-locked `ragflow-windows-{additions,overrides,excludes}.txt`, подготовка
+version-pinned `ragflow-windows-{additions,overrides,excludes}.txt`, подготовка
 wheelhouse lock, audited GraphRAG adapter и metadata/RECORD patches.
 
 RAGFlow assets также не обновлялись:
@@ -49,9 +49,12 @@ RAGFlow assets также не обновлялись:
 - `InfiniFlow/deepdoc` revision `de0e793dc6d744406c96dabd688ccc969f41b443`;
 - `InfiniFlow/text_concat_xgb_v1.0` revision `722ed09a54f23f14fe0279ce6b74ce18e1960f54`;
 - NLTK data revision `550b6625bcef1f2abff2ff770a5a0d272c9c6b2a`;
-- `cl100k_base.tiktoken` SHA-256 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`;
-- Eclipse Temurin JRE 21.0.8+9 Windows x64 SHA-256 `238d74ec4ec9422d416fa98805ba375eecd8bc8f971bd0c61a21051a4fe42db8`;
-- Apache Tika server 3.3.0 SHA-256 `2aca63d25f84774d759de6e132ae7f5723e3ee2adf1d51f585658baba1335e9b`.
+- `cl100k_base.tiktoken`;
+- Eclipse Temurin JRE 21.0.8+9 Windows x64;
+- Apache Tika server 3.3.0.
+
+Для этих файлов намеренно не применяются content hash/size проверки: локально
+изменённые рабочие assets принимаются подготовщиком без повторного чтения целого файла.
 
 ## Внешние данные
 

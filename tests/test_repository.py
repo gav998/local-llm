@@ -81,17 +81,40 @@ class RepositoryContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         pip_install = (
             "@('-m','pip','install','--no-index','--find-links',$Wheelhouse,"
-            "'--require-hashes','--no-deps','--only-binary=:all:','--no-compile',"
+            "'--no-deps','--only-binary=:all:','--no-compile',"
             "'--requirement',$WheelLock)"
         )
         uv_sync = (
             "@('pip','sync','--python',$Python,'--no-index','--find-links',"
-            "$Wheelhouse,'--require-hashes',$WheelLock)"
+            "$Wheelhouse,$WheelLock)"
         )
         self.assertIn("Remove-Item -LiteralPath $Log", hook)
         self.assertIn(pip_install, hook)
         self.assertIn(uv_sync, hook)
         self.assertLess(hook.index(pip_install), hook.index(uv_sync))
+        self.assertIn("'--no-hashes'", hook)
+        self.assertNotIn("--generate-" + "hashes", hook)
+        self.assertNotIn("--require-" + "hashes", hook)
+
+    def test_ragflow_preparation_has_no_content_integrity_gates(self) -> None:
+        source = Path(__file__).parents[1] / "modules" / "ragflow" / "src"
+        python_sources = {
+            name: (source / name).read_text(encoding="utf-8")
+            for name in (
+                "prepare_ragflow_assets.py",
+                "prepare_ragflow_windows.py",
+                "prepare_wheelhouse_lock.py",
+                "verify_ragflow_runtime.py",
+            )
+        }
+        for name, text in python_sources.items():
+            with self.subTest(source=name):
+                self.assertNotIn("import hash" + "lib", text)
+                self.assertNotIn("SHA" + "256", text)
+        for name in ("ragflow-windows-additions.txt", "ragflow-windows-overrides.txt"):
+            with self.subTest(source=name):
+                text = (source / name).read_text(encoding="utf-8")
+                self.assertNotIn("--" + "hash=", text)
 
     def test_python_import_probes_survive_windows_powershell_quoting(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
@@ -415,7 +438,7 @@ class RepositoryContractTests(unittest.TestCase):
     def test_module_packaging_skips_sealing_and_archive_tests(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
         hash_command = "Get-" "FileHash"
-        seal_manifest = "payload." "sha256.json"
+        seal_manifest = "payload." + "sha" + "256.json"
         payload_command = "verify-" "payload"
         payload_function = "Test-" "Payload"
         for prepare_path in sorted(modules.glob("*/src/prepare.ps1")):
