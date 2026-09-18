@@ -366,6 +366,14 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("$env:TIKA_PATH=$tikaTemp", control)
         self.assertIn("$env:TIKA_LOG_PATH=$LogRoot", control)
         self.assertIn("function Assert-TikaRuntime", control)
+        tika_probe = control[control.index("function Assert-TikaRuntime{") :]
+        tika_probe = tika_probe[: tika_probe.index("function Assert-CoreDependencies")]
+        self.assertIn("$ErrorActionPreference='Continue'", tika_probe)
+        self.assertIn("$JavaExitCode=$LASTEXITCODE", tika_probe)
+        self.assertIn(
+            "$ErrorActionPreference=$PreviousErrorActionPreference", tika_probe
+        )
+        self.assertIn("if($JavaExitCode -ne 0)", tika_probe)
         self.assertIn("Assert-TikaRuntime;Start-OwnedProcess 'task-executor'", control)
 
         prepare = (

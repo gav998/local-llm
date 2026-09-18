@@ -17,8 +17,16 @@ function Set-RagEnvironment{
 function Assert-TikaRuntime{
  if(-not(Test-Path -LiteralPath $JavaExe -PathType Leaf)){throw "Portable Java runtime is missing: $JavaExe. Rebuild/re-extract the ragflow module and run LOCAL-LLM.bat install."}
  if(-not(Test-Path -LiteralPath $TikaJar -PathType Leaf)){throw "Tika server JAR is missing: $TikaJar. Rebuild/re-extract the ragflow module and run LOCAL-LLM.bat install."}
- & $JavaExe '-version' 2>$null | Out-Null
- if($LASTEXITCODE -ne 0){throw "Portable Java runtime cannot start: $JavaExe"}
+ $PreviousErrorActionPreference=$ErrorActionPreference
+ $JavaExitCode=-1
+ try{
+  # java -version writes its normal version banner to stderr. Windows PowerShell
+  # otherwise promotes that banner to NativeCommandError when error action is Stop.
+  $ErrorActionPreference='Continue'
+  & $JavaExe '-version' 2>$null|Out-Null
+  $JavaExitCode=$LASTEXITCODE
+ }finally{$ErrorActionPreference=$PreviousErrorActionPreference}
+ if($JavaExitCode -ne 0){throw "Portable Java runtime cannot start: $JavaExe"}
 }
 function Assert-CoreDependencies{$mysql=Connection 'mysql';$es=Connection 'elasticsearch';$silo=Connection 'silo';$valkey=Connection 'valkey';if(-not(Test-Tcp ([int]$mysql.port))){throw 'MySQL endpoint is not ready'};if(-not(Test-Http $es.url)){throw 'Elasticsearch endpoint is not ready'};if(-not(Test-Http ("http://$($silo.endpoint)/minio/health/ready"))){throw 'Silo endpoint is not ready'};if(-not(Test-Tcp ([int]$valkey.port))){throw 'Valkey endpoint is not ready'}}
 function Assert-IngestionDependencies{$llama=Connection 'llama-cpp';$ocr=Connection 'paddleocr';if(-not(Test-Http ($llama.embedding_url.Replace('/v1','/health')))){throw 'Embedding endpoint is not ready'};if(-not(Test-Http ($ocr.url+'/health'))){throw 'PaddleOCR endpoint is not ready'}}
