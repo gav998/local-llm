@@ -11,20 +11,20 @@ GPU 1 when two boards are visible, keeping GPU 0 free for embeddings by default.
 from __future__ import annotations
 
 import argparse
+import copy
+import html
+from html.parser import HTMLParser
 import hmac
 import json
 import os
 import queue
+import re
 import shutil
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
-
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-
 
 MODEL_NAMES = (
     "PP-DocLayout-L",
@@ -35,8 +35,12 @@ MODEL_NAMES = (
 )
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
 DEFAULT_TEXT_RECOGNITION_BATCH_SIZE = 8
+DEFAULT_MAX_BLOCK_TOKENS = 900
 ATOMIC_REPLACE_TIMEOUT_SECONDS = 2.0
 ATOMIC_REPLACE_RETRY_SECONDS = 0.02
+APPROX_TOKEN_PATTERN = re.compile(r"<[^>]+>|[\w]+|[^\w\s]", re.UNICODE)
+HTML_TABLE_PATTERN = re.compile(r"<\s*/?\s*(table|thead|tbody|tr|td|th)\b", re.I)
+HTML_ROW_BOUNDARY_PATTERN = re.compile(r"(<\s*/\s*tr\s*>)\s*(<\s*tr\b)", re.I)
 
 PREDICT_OPTION_MAP = {
     "useDocOrientationClassify": "use_doc_orientation_classify",
@@ -93,6 +97,234 @@ IGNORED_CLOUD_OPTIONS = {
 
 class QueueBusyError(RuntimeError):
     pass
+
+
+class HtmlTableExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[list[tuple[str, str]]] = []
+        self._current_row: list[tuple[str, str]] | None = None
+        self._current_cell_tag: str | None = None
+        self._current_cell_text: list[str] = []
+        self._table_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag == "table":
+            self._table_depth += 1
+            return
+        if self._table_depth < 1:
+            return
+        if tag == "tr":
+            self._finish_cell()
+            self._current_row = []
+            return
+        if tag in {"td", "th"} and self._current_row is not None:
+            self._finish_cell()
+            self._current_cell_tag = tag
+            self._current_cell_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"td", "th"}:
+            self._finish_cell()
+            return
+        if tag == "tr":
+            self._finish_cell()
+            if self._current_row:
+                self.rows.append(self._current_row)
+            self._current_row = None
+            return
+        if tag == "table" and self._table_depth:
+            self._table_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell_tag is not None:
+            self._current_cell_text.append(data)
+
+    def _finish_cell(self) -> None:
+        if self._current_cell_tag is None or self._current_row is None:
+            return
+        text = " ".join("".join(self._current_cell_text).split())
+        self._current_row.append((self._current_cell_tag, text))
+        self._current_cell_tag = None
+        self._current_cell_text = []
+
+
+def approximate_token_count(text: str) -> int:
+    count = 0
+    for piece in APPROX_TOKEN_PATTERN.findall(text):
+        if piece.startswith("<"):
+            count += max(1, (len(piece) + 11) // 12)
+        elif re.match(r"^\w+$", piece, re.UNICODE):
+            count += max(1, (len(piece) + 3) // 4)
+        else:
+            count += 1
+    return count
+
+
+def split_text_by_budget(text: str, max_tokens: int) -> list[str]:
+    if approximate_token_count(text) <= max_tokens:
+        return [text]
+
+    parts = re.findall(r"\S+\s*", text, re.UNICODE)
+    if not parts:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for part in parts:
+        part_tokens = approximate_token_count(part)
+        if part_tokens > max_tokens:
+            if current:
+                chunks.append("".join(current).strip())
+                current = []
+                current_tokens = 0
+            chunks.extend(split_oversized_word(part.strip(), max_tokens))
+            continue
+        if current and current_tokens + part_tokens > max_tokens:
+            chunks.append("".join(current).strip())
+            current = []
+            current_tokens = 0
+        current.append(part)
+        current_tokens += part_tokens
+    if current:
+        chunks.append("".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def split_oversized_word(text: str, max_tokens: int) -> list[str]:
+    max_chars = max(32, max_tokens * 3)
+    return [text[index : index + max_chars] for index in range(0, len(text), max_chars)]
+
+
+def row_to_html(row: list[tuple[str, str]]) -> str:
+    cells = "".join(
+        f"<{tag}>{html.escape(text, quote=False)}</{tag}>" for tag, text in row
+    )
+    return f"<tr>{cells}</tr>"
+
+
+def table_html(rows: list[list[tuple[str, str]]]) -> str:
+    return "<table>\n" + "\n".join(row_to_html(row) for row in rows) + "\n</table>"
+
+
+def extract_table_rows(content: str) -> list[list[tuple[str, str]]]:
+    parser = HtmlTableExtractor()
+    try:
+        parser.feed(content)
+        parser.close()
+    except Exception:
+        return []
+    return [row for row in parser.rows if row]
+
+
+def split_table_html(content: str, max_tokens: int) -> list[str]:
+    rows = extract_table_rows(content)
+    if len(rows) < 2:
+        normalized = HTML_ROW_BOUNDARY_PATTERN.sub(r"\1\n\2", content)
+        return split_text_by_budget(normalized, max_tokens)
+
+    header = rows[0] if all(tag == "th" for tag, _ in rows[0]) else None
+    body_rows = rows[1:] if header is not None else rows
+    chunks: list[str] = []
+    current_rows: list[list[tuple[str, str]]] = []
+
+    def candidate(extra_rows: list[list[tuple[str, str]]]) -> list[list[tuple[str, str]]]:
+        if header is not None:
+            return [header, *current_rows, *extra_rows]
+        return [*current_rows, *extra_rows]
+
+    def flush() -> None:
+        nonlocal current_rows
+        if current_rows:
+            chunks.append(table_html(candidate([])))
+            current_rows = []
+
+    for row in body_rows:
+        row_rows = [row]
+        row_text = table_html(([header] if header is not None else []) + row_rows)
+        if approximate_token_count(row_text) > max_tokens:
+            flush()
+            chunks.extend(split_oversized_table_row(header, row, max_tokens))
+            continue
+        next_text = table_html(candidate(row_rows))
+        if current_rows and approximate_token_count(next_text) > max_tokens:
+            flush()
+        current_rows.append(row)
+    flush()
+    if not chunks and header is not None:
+        chunks.append(table_html([header]))
+    return chunks
+
+
+def split_oversized_table_row(
+    header: list[tuple[str, str]] | None,
+    row: list[tuple[str, str]],
+    max_tokens: int,
+) -> list[str]:
+    chunks: list[str] = []
+    for cell_index, (_tag, text) in enumerate(row, start=1):
+        field_name = f"Колонка {cell_index}"
+        if header is not None and cell_index <= len(header):
+            field_name = header[cell_index - 1][1] or field_name
+        field_header = [("th", "Поле"), ("th", "Значение")]
+        empty_field = table_html([field_header, [("td", field_name), ("td", "")]])
+        part_budget = max(16, max_tokens - approximate_token_count(empty_field))
+        for part in split_text_by_budget(text, part_budget):
+            field_table = table_html(
+                [field_header, [("td", field_name), ("td", part)]]
+            )
+            if approximate_token_count(field_table) <= max_tokens:
+                chunks.append(field_table)
+            else:
+                chunks.extend(split_text_by_budget(f"{field_name}: {part}", max_tokens))
+    return chunks
+
+
+def split_block_content(content: str, label: str, max_tokens: int) -> list[str]:
+    if approximate_token_count(content) <= max_tokens:
+        return [content]
+    if label == "table" or HTML_TABLE_PATTERN.search(content):
+        return split_table_html(content, max_tokens)
+    return split_text_by_budget(content, max_tokens)
+
+
+def bound_parsing_blocks(blocks: list[Any], max_tokens: int) -> list[Any]:
+    bounded: list[Any] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            bounded.append(block)
+            continue
+        content = block.get("block_content")
+        if not isinstance(content, str) or not content.strip():
+            bounded.append(block)
+            continue
+        label = str(block.get("block_label") or "")
+        parts = split_block_content(content, label, max_tokens)
+        if len(parts) == 1 and parts[0] == content:
+            bounded.append(block)
+            continue
+        for part in parts:
+            split_block = copy.deepcopy(block)
+            split_block["block_content"] = part
+            bounded.append(split_block)
+    return bounded
+
+
+def bound_result_blocks(value: Any, max_tokens: int) -> Any:
+    if isinstance(value, dict):
+        bounded = {}
+        for key, item in value.items():
+            if key == "parsing_res_list" and isinstance(item, list):
+                bounded[key] = bound_parsing_blocks(item, max_tokens)
+            else:
+                bounded[key] = bound_result_blocks(item, max_tokens)
+        return bounded
+    if isinstance(value, (list, tuple)):
+        return [bound_result_blocks(item, max_tokens) for item in value]
+    return value
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -434,11 +666,13 @@ class JobManager:
         public_url: str,
         gpu_info: dict[str, Any],
         max_queued_jobs: int = 8,
+        max_block_tokens: int = DEFAULT_MAX_BLOCK_TOKENS,
     ) -> None:
         self.pipeline = pipeline
         self.jobs_root = jobs_root
         self.public_url = public_url.rstrip("/")
         self.gpu_info = gpu_info
+        self.max_block_tokens = max_block_tokens
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self._queue: queue.Queue[tuple[str, Path, dict[str, Any]] | None] = queue.Queue(
             maxsize=max_queued_jobs
@@ -528,6 +762,7 @@ class JobManager:
                 with temporary.open("w", encoding="utf-8", newline="\n") as output:
                     for result in results:
                         pruned = prune_result(result.json["res"])
+                        pruned = bound_result_blocks(pruned, self.max_block_tokens)
                         line = {
                             "logId": job_id,
                             "errorCode": 0,
@@ -558,6 +793,10 @@ class JobManager:
 
 
 def create_app(manager: JobManager, token: str) -> FastAPI:
+    from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+    from fastapi.responses import FileResponse
+
+    globals()["UploadFile"] = UploadFile
     app = FastAPI(title="local_llm PaddleOCR compatibility gateway")
 
     def require_token(authorization: str | None) -> None:
@@ -661,11 +900,17 @@ def main() -> int:
         raise SystemExit("The local OCR gateway may bind only to 127.0.0.1")
 
     pipeline, gpu_info = load_pipeline(args.config, args.model_root)
+    max_block_tokens = parse_positive_int(
+        os.environ.get("LOCAL_OCR_MAX_BLOCK_TOKENS", str(DEFAULT_MAX_BLOCK_TOKENS)).strip(),
+        "LOCAL_OCR_MAX_BLOCK_TOKENS",
+    )
+    gpu_info["max_block_tokens"] = max_block_tokens
     manager = JobManager(
         pipeline,
         args.jobs_root,
         f"http://{args.host}:{args.port}",
         gpu_info,
+        max_block_tokens=max_block_tokens,
     )
     app = create_app(manager, args.token)
     import uvicorn

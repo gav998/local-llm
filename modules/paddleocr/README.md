@@ -9,6 +9,13 @@ The ingestion profile starts OCR with `ingestion_gpu_index`, which defaults to
 Text recognition batches default to `8` to give the selected GPU more work per
 OCR call while keeping the 8 GiB profile strict and table-aware.
 
+Before returning OCR JSONL to RAGFlow, the gateway bounds every
+`parsing_res_list[].block_content` to `max_block_tokens`, which defaults to
+`900`. Oversized HTML tables are split by rows with the header repeated in each
+chunk; oversized cells and plain text blocks are split further by text budget.
+This prevents a single PP-StructureV3 table block from exceeding the local
+embedding context even when the embedding server remains at 2048 tokens.
+
 For measurement only, `MODULE.bat start cpu` starts the same gateway with
 explicit `device: cpu`. The stack exposes this as
 `LOCAL-LLM.bat start ingestion-cpu`. The normal ingestion profile remains

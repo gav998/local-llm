@@ -230,7 +230,9 @@ Qwen3-Embedding и PP-StructureV3 в одни 8 ГБ видеопамяти.
 для профиля ingestion, `gpu_index` задаёт GPU для ручного
 `modules\paddleocr\MODULE.bat start`, `prefer_gpu_index` задаёт предпочтение
 для режима `auto`, а `text_recognition_batch_size` управляет размером batch
-распознавания строк.
+распознавания строк. `max_block_tokens` задаёт защитный потолок OCR-блока,
+который попадёт в RAGFlow; по умолчанию это `900`, чтобы большие таблицы
+резались до embedding-контекста 2048 без увеличения VRAM.
 
 Для проверки скорости OCR на CPU есть отдельный диагностический профиль:
 `LOCAL-LLM.bat start ingestion-cpu`. Он запускает тот же ingestion stack, но
@@ -305,7 +307,10 @@ OCR и обработчик очереди. В ingestion embedding остаёт�
 чтением PDF, растеризацией, подготовкой изображений, post-processing,
 chunking и записью в индексы; это нормально, но `/health` OCR должен
 показывать `strict_gpu: true`, `device: "gpu:N"`, `runtime_device: "gpu:N"`
-и `text_recognition_batch_size: 8`.
+и `text_recognition_batch_size: 8`. Также `/health` показывает
+`max_block_tokens: 900`: этот лимит применяется к выходу PaddleOCR до передачи
+результата в RAGFlow. Если меняете его или обновляете OCR-логику разбиения,
+проблемные документы нужно заново распарсить и переиндексировать.
 
 Если кажется, что GPU простаивает, проверьте именно CUDA-график, а не общий
 3D-график Windows Task Manager. Надёжнее открыть отдельный `cmd.exe` и во

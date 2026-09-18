@@ -13,7 +13,9 @@ from fastapi.testclient import TestClient
 
 from ocr_job_gateway import (
     JobManager,
+    approximate_token_count,
     atomic_json,
+    bound_result_blocks,
     create_app,
     read_json,
     validate_pipeline_profile,
@@ -40,6 +42,26 @@ class FakeResult:
                         ),
                         "block_label": "table",
                         "block_bbox": [10, 120, 500, 300],
+                    },
+                    {
+                        "block_content": (
+                            "<table><tr><th>Код</th><th>Описание</th></tr>"
+                            + "".join(
+                                f"<tr><td>R-{index:02d}</td>"
+                                f"<td>Строка таблицы {index} с проверочным текстом</td></tr>"
+                                for index in range(1, 12)
+                            )
+                            + "</table>"
+                        ),
+                        "block_label": "table",
+                        "block_bbox": [10, 320, 500, 700],
+                    },
+                    {
+                        "block_content": " ".join(
+                            f"длиннаяячейка{index}" for index in range(60)
+                        ),
+                        "block_label": "text",
+                        "block_bbox": [10, 720, 500, 820],
                     },
                 ],
             }
@@ -93,6 +115,25 @@ def main() -> int:
     else:
         raise AssertionError("Missing explicit DocPreprocessor switches must fail closed")
 
+    oversized = FakeResult().json["res"]
+    bounded = bound_result_blocks(oversized, 40)
+    blocks = bounded["parsing_res_list"]
+    table_blocks = [
+        block
+        for block in blocks
+        if block.get("block_label") == "table"
+        and "R-11" in block.get("block_content", "")
+    ]
+    assert len(table_blocks) == 1
+    all_table_blocks = [
+        block for block in blocks if block.get("block_label") == "table"
+    ]
+    assert len(all_table_blocks) > 2
+    for block in blocks:
+        content = block.get("block_content", "")
+        if content:
+            assert approximate_token_count(content) <= 40, content
+
     with tempfile.TemporaryDirectory(prefix="local-ocr-atomic-") as temporary:
         state_path = Path(temporary) / "state.json"
         state_path.write_text('{"state": "queued"}\n', encoding="utf-8")
@@ -135,6 +176,7 @@ def main() -> int:
             Path(temporary),
             "http://testserver",
             {"strict_gpu": "fake-contract-test"},
+            max_block_tokens=40,
         )
         try:
             with TestClient(create_app(manager, "local")) as client:
@@ -196,6 +238,10 @@ def main() -> int:
                 table = pruned["parsing_res_list"][1]
                 assert table["block_label"] == "table"
                 assert "<table>" in table["block_content"]
+                bounded_blocks = pruned["parsing_res_list"]
+                assert len(bounded_blocks) > 4
+                for block in bounded_blocks:
+                    assert approximate_token_count(block["block_content"]) <= 40
 
                 failed = client.post(
                     "/api/v2/ocr/jobs",

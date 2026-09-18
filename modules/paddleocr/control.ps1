@@ -3,7 +3,7 @@
 $Python=Join-Path $PSScriptRoot 'runtime\python\python.exe';$Gateway=Join-Path $PSScriptRoot 'service\ocr_job_gateway.py';$Port=9399;$Secrets=Join-Path $StateRoot 'secrets.json'
 function Has-Setting($Object,[string]$Name){return $Object.PSObject.Properties.Name -contains $Name}
 function Setting($Object,[string]$Name,$Default){if(Has-Setting $Object $Name){return $Object.PSObject.Properties[$Name].Value};return $Default}
-function Default-Secrets{return [ordered]@{token=New-HexSecret 32;gpu_index='auto';prefer_gpu_index=1;ingestion_gpu_index='auto';text_recognition_batch_size=8}}
+function Default-Secrets{return [ordered]@{token=New-HexSecret 32;gpu_index='auto';prefer_gpu_index=1;ingestion_gpu_index='auto';text_recognition_batch_size=8;max_block_tokens=900}}
 function Sync-OcrServiceSource{
  $SrcDir=Join-Path $PSScriptRoot 'src';$SvcDir=Join-Path $PSScriptRoot 'service'
  if(-not(Test-Path $SrcDir -PathType Container)){return}
@@ -74,6 +74,7 @@ function Set-OcrEnvironment($s,[string]$Target){
   $env:LOCAL_OCR_DEVICE="gpu:$RuntimeDevice"
  }
  $env:LOCAL_OCR_TEXT_REC_BATCH_SIZE=[string](Setting $s 'text_recognition_batch_size' 8)
+ $env:LOCAL_OCR_MAX_BLOCK_TOKENS=[string](Setting $s 'max_block_tokens' 900)
  $env:LOCAL_OCR_TOKEN=$s.token
 }
 function Install-Ocr{Begin-Install;Sync-OcrServiceSource;if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets;Write-JsonAtomic $Secrets $s};& $Python (Join-Path $PSScriptRoot 'service\test_ocr_job_gateway_contract.py');if($LASTEXITCODE -ne 0){throw 'OCR API contract failed'};Write-Connection ([ordered]@{schema=1;module='paddleocr';url="http://127.0.0.1:$Port";token=$s.token;strict_gpu=$true});Start-Ocr 'install';Stop-OwnedProcess 'paddleocr';Set-Installed;Write-Host '[OK] paddleocr installed; strict GPU pipeline passed'}
