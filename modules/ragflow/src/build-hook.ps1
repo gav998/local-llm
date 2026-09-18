@@ -1,6 +1,6 @@
 [CmdletBinding()]param([string]$ModuleRoot,[string]$PayloadRoot,[string]$SourceRoot,[string]$CacheRoot,[string]$SevenZip)
 $ErrorActionPreference='Stop';$Python=Join-Path $PayloadRoot 'runtime\python\python.exe';$Uv=Join-Path $PayloadRoot 'build\uv\uv.exe';$Rag=Join-Path $PayloadRoot 'ragflow';$Wheelhouse=Join-Path $CacheRoot 'wheelhouse';$Log=Join-Path $CacheRoot 'build-ragflow.log';$Locks=Join-Path $PayloadRoot 'locks'
-New-Item -ItemType Directory -Path $Wheelhouse,$Locks -Force|Out-Null;$env:PATH=(Join-Path $PayloadRoot 'build\git\cmd')+';'+(Join-Path $PayloadRoot 'build\git\mingw64\bin')+';'+$env:PATH;$env:PIP_CACHE_DIR=Join-Path $CacheRoot 'cache\pip';$env:UV_CACHE_DIR=Join-Path $CacheRoot 'cache\uv';$env:UV_NO_CONFIG='1';$env:UV_LINK_MODE='copy';$env:PYTHONNOUSERSITE='1'
+New-Item -ItemType Directory -Path $Wheelhouse,$Locks -Force|Out-Null;Remove-Item -LiteralPath $Log -Force -ErrorAction SilentlyContinue;$env:PATH=(Join-Path $PayloadRoot 'build\git\cmd')+';'+(Join-Path $PayloadRoot 'build\git\mingw64\bin')+';'+$env:PATH;$env:PIP_CACHE_DIR=Join-Path $CacheRoot 'cache\pip';$env:UV_CACHE_DIR=Join-Path $CacheRoot 'cache\uv';$env:UV_NO_CONFIG='1';$env:UV_LINK_MODE='copy';$env:PYTHONNOUSERSITE='1'
 function Invoke-LoggedNative([string]$Executable,[object[]]$Arguments,[string]$FailureMessage){
     if(-not(Test-Path -LiteralPath $Executable -PathType Leaf)){throw "Native executable is missing: $Executable"}
     $PreviousErrorActionPreference=$ErrorActionPreference
@@ -32,6 +32,11 @@ try{
 Copy-Item (Join-Path $PayloadRoot 'vendor\datrie-0.8.3-cp313-cp313-win_amd64.whl') $Wheelhouse -Force
 $WheelLock=Join-Path $Wheelhouse 'requirements.lock';Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'prepare_wheelhouse_lock.py'),'--requirements',$Windows,'--wheelhouse',$Wheelhouse,'--output',$WheelLock) 'Wheelhouse lock failed'
 Copy-Item $WheelLock (Join-Path $Locks 'ragflow-wheelhouse.lock') -Force
+# uv patches PE resources while creating Windows console trampolines.  Endpoint
+# security can deny that operation even though the destination is writable.
+# pip's distlib launchers avoid that mutation; the following uv sync then only
+# verifies the populated environment and removes bootstrap-only packages.
+Invoke-LoggedNative $Python @('-m','pip','install','--no-index','--find-links',$Wheelhouse,'--require-hashes','--no-deps','--only-binary=:all:','--no-compile','--requirement',$WheelLock) 'RAGFlow wheel installation failed'
 Invoke-LoggedNative $Uv @('pip','sync','--python',$Python,'--no-index','--find-links',$Wheelhouse,'--require-hashes',$WheelLock) 'RAGFlow wheel sync failed'
 Invoke-LoggedNative $Uv @('pip','install','--python',$Python,'--no-index','--no-deps',(Join-Path $Wheelhouse 'datrie-0.8.3-cp313-cp313-win_amd64.whl')) 'datrie install failed'
 $Vc=Join-Path $PayloadRoot 'vendor\VC_redist.x64.exe';$Stage=Join-Path $PayloadRoot 'vc-stage';New-Item -ItemType Directory -Path "$Stage\parts","$Stage\payload","$Stage\dlls" -Force|Out-Null;& $SevenZip x -y -t# "-o$Stage\parts" $Vc|Out-Null;& $SevenZip x -y "-o$Stage\payload" "$Stage\parts\4.cab"|Out-Null;& $SevenZip x -y "-o$Stage\dlls" "$Stage\payload\a12"|Out-Null;$DllRoot=Join-Path $PayloadRoot 'runtime\vc';New-Item -ItemType Directory -Path $DllRoot -Force|Out-Null;Get-ChildItem "$Stage\dlls\*_amd64"|ForEach-Object{$n=$_.Name.Replace('_amd64','');Copy-Item $_.FullName (Join-Path $DllRoot $n) -Force;Copy-Item $_.FullName (Join-Path (Split-Path $Python) $n) -Force};Remove-Item $Stage -Recurse -Force

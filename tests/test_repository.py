@@ -71,6 +71,28 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn("$ErrorActionPreference='Continue'", hook)
                 self.assertEqual(hook.count("*>>$Log"), 1)
 
+    def test_ragflow_avoids_uv_pe_launcher_creation_during_bulk_install(self) -> None:
+        hook = (
+            Path(__file__).parents[1]
+            / "modules"
+            / "ragflow"
+            / "src"
+            / "build-hook.ps1"
+        ).read_text(encoding="utf-8")
+        pip_install = (
+            "@('-m','pip','install','--no-index','--find-links',$Wheelhouse,"
+            "'--require-hashes','--no-deps','--only-binary=:all:','--no-compile',"
+            "'--requirement',$WheelLock)"
+        )
+        uv_sync = (
+            "@('pip','sync','--python',$Python,'--no-index','--find-links',"
+            "$Wheelhouse,'--require-hashes',$WheelLock)"
+        )
+        self.assertIn("Remove-Item -LiteralPath $Log", hook)
+        self.assertIn(pip_install, hook)
+        self.assertIn(uv_sync, hook)
+        self.assertLess(hook.index(pip_install), hook.index(uv_sync))
+
     def test_python_import_probes_survive_windows_powershell_quoting(self) -> None:
         modules = Path(__file__).parents[1] / "modules"
         for name in ("paddleocr", "ragflow"):
