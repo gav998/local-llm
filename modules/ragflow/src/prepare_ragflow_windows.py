@@ -84,6 +84,54 @@ TENANT_LLM_LOCAL_EMBEDDING_LIMIT = (
     b"\n"
 )
 
+TIKA_DISTRIBUTION = "tika"
+TIKA_VERSION = "2.6.0"
+TIKA_SOURCE_ENTRY = "tika/tika.py"
+TIKA_RECORD_ENTRY = "tika-2.6.0.dist-info/RECORD"
+TIKA_SOURCE_ORIGINAL_SIZE = 34_768
+TIKA_SOURCE_ORIGINAL_SHA256 = (
+    "f5aaedf509dd9797293e6f32ba9bb71582c960dc701968dda8f05935a3f96027"
+)
+TIKA_SOURCE_PATCHED_SIZE = 34_901
+TIKA_SOURCE_PATCHED_SHA256 = (
+    "45a36dc1f3ae9a7128e042e35d090e94dd6f63d3ce2a305b5c9f5fcb397971de"
+)
+TIKA_IMPORT_ORIGINAL = b"from subprocess import Popen\nfrom subprocess import STDOUT\n"
+TIKA_IMPORT_PATCHED = (
+    b"from subprocess import Popen\n"
+    b"from subprocess import STDOUT\n"
+    b"from subprocess import list2cmdline\n"
+)
+TIKA_COMMAND_ORIGINAL = (
+    b"    # setup command string\n"
+    b"    cmd_string = \"\"\n"
+    b"    if not config_path:\n"
+    b"        cmd_string = '%s %s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s &' \\\n"
+    b"                     % (java_path, java_args, classpath, port, host)\n"
+    b"    else:\n"
+    b"        cmd_string = '%s %s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s --config %s &' \\\n"
+    b"                     % (java_path, java_args, classpath, port, host, config_path)\n"
+)
+TIKA_COMMAND_PATCHED = (
+    b"    # setup command string\n"
+    b"    cmd_string = \"\"\n"
+    b"    java_command = list2cmdline([java_path])\n"
+    b"    if java_args:\n"
+    b"        java_command = java_command + \" \" + java_args\n"
+    b"    if not config_path:\n"
+    b"        cmd_string = '%s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s &' \\\n"
+    b"                     % (java_command, classpath, port, host)\n"
+    b"    else:\n"
+    b"        cmd_string = '%s -cp \"%s\" org.apache.tika.server.core.TikaServerCli --port %s --host %s --config %s &' \\\n"
+    b"                     % (java_command, classpath, port, host, config_path)\n"
+)
+TIKA_PROBE_ORIGINAL = (
+    b"        _ = Popen(java_path, stdout=open(os.devnull, \"w\"), stderr=open(os.devnull, \"w\"))\n"
+)
+TIKA_PROBE_PATCHED = (
+    b"        _ = Popen([java_path], stdout=open(os.devnull, \"w\"), stderr=open(os.devnull, \"w\"))\n"
+)
+
 GRAPH_IMPORT = b"from rag.graphrag.general.index import run_graphrag_for_kb\n"
 GRAPH_METHOD_HEADER = (
     b"    async def _run_graphrag(self, embedding_model: LLMBundle) -> None:\n"
@@ -482,6 +530,125 @@ def parse_record_row(raw_line: bytes, record_path: Path) -> list[str]:
     if len(rows) != 1 or len(rows[0]) != 3:
         raise RuntimeError(f"Malformed wheel RECORD row in {record_path}: {body!r}")
     return rows[0]
+
+
+def patch_record_entry(
+    record_path: Path, entry: str, patched_sha256: str, patched_size: int
+) -> None:
+    lines = record_path.read_bytes().splitlines(keepends=True)
+    patched_digest = record_digest(patched_sha256)
+    patched_line = (
+        f"{entry},sha256={patched_digest},{patched_size}\n".encode("utf-8")
+    )
+    matches = 0
+    patched_lines: list[bytes] = []
+    for raw_line in lines:
+        row = parse_record_row(raw_line, record_path)
+        if row[0] == entry:
+            matches += 1
+            if row[1] == f"sha256={patched_digest}" and row[2] == str(patched_size):
+                patched_lines.append(raw_line)
+            else:
+                patched_lines.append(patched_line)
+        else:
+            patched_lines.append(raw_line)
+    if matches != 1:
+        raise RuntimeError(
+            f"Expected exactly one {entry} row in {record_path}; found {matches}"
+        )
+    patched_record = b"".join(patched_lines)
+    if patched_record != b"".join(lines):
+        atomic_write(record_path, patched_record)
+
+
+def locate_tika_source() -> tuple[Path, Path]:
+    try:
+        distribution = importlib.metadata.distribution(TIKA_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"{TIKA_DISTRIBUTION} {TIKA_VERSION} is not installed in {sys.executable}"
+        ) from exc
+    if distribution.version != TIKA_VERSION:
+        raise RuntimeError(
+            f"Unsupported {TIKA_DISTRIBUTION} version {distribution.version!r}; "
+            f"expected {TIKA_VERSION!r}"
+        )
+    files = distribution.files
+    if files is None:
+        raise RuntimeError(f"{TIKA_DISTRIBUTION} has no installed RECORD")
+
+    source_path = None
+    record_path = None
+    for item in files:
+        item_text = item.as_posix()
+        if item_text == TIKA_SOURCE_ENTRY:
+            source_path = Path(distribution.locate_file(item))
+        elif item.name == "RECORD" and item.parent.name.endswith(".dist-info"):
+            record_path = Path(distribution.locate_file(item))
+    if source_path is None or record_path is None:
+        raise RuntimeError(f"{TIKA_DISTRIBUTION} source/RECORD files are incomplete")
+    return source_path, record_path
+
+
+def patch_tika_windows_java_launch() -> tuple[Path, Path]:
+    source_path, record_path = locate_tika_source()
+    if source_path.is_symlink() or not source_path.is_file():
+        raise RuntimeError(f"Tika source is missing or unsafe: {source_path}")
+    if record_path.is_symlink() or not record_path.is_file():
+        raise RuntimeError(f"Tika RECORD is missing or unsafe: {record_path}")
+
+    original = source_path.read_bytes()
+    current_hash = sha256_bytes(original)
+    if current_hash == TIKA_SOURCE_PATCHED_SHA256:
+        if original.count(TIKA_IMPORT_PATCHED) != 1:
+            raise RuntimeError("Patched Tika list2cmdline import is not unique")
+        patch_record_entry(
+            record_path,
+            TIKA_SOURCE_ENTRY,
+            TIKA_SOURCE_PATCHED_SHA256,
+            TIKA_SOURCE_PATCHED_SIZE,
+        )
+        print("[OK  ] Tika Java launcher is already portable-path safe")
+        return source_path, record_path
+    if current_hash != TIKA_SOURCE_ORIGINAL_SHA256:
+        raise RuntimeError(
+            f"Refusing to patch unknown Tika source: {source_path}\n"
+            f"Expected SHA256 {TIKA_SOURCE_ORIGINAL_SHA256} (original) or "
+            f"{TIKA_SOURCE_PATCHED_SHA256} (patched), found {current_hash}."
+        )
+    for needle, label in (
+        (TIKA_IMPORT_ORIGINAL, "subprocess imports"),
+        (TIKA_COMMAND_ORIGINAL, "server command construction"),
+        (TIKA_PROBE_ORIGINAL, "java probe"),
+    ):
+        if original.count(needle) != 1:
+            raise RuntimeError(f"The audited Tika {label} block is not unique")
+
+    patched = original.replace(TIKA_IMPORT_ORIGINAL, TIKA_IMPORT_PATCHED, 1)
+    patched = patched.replace(TIKA_COMMAND_ORIGINAL, TIKA_COMMAND_PATCHED, 1)
+    patched = patched.replace(TIKA_PROBE_ORIGINAL, TIKA_PROBE_PATCHED, 1)
+    patched_hash = sha256_bytes(patched)
+    if (
+        len(patched) != TIKA_SOURCE_PATCHED_SIZE
+        or patched_hash != TIKA_SOURCE_PATCHED_SHA256
+    ):
+        raise RuntimeError(
+            "Internal Tika patch result did not match the audited source: "
+            f"expected {TIKA_SOURCE_PATCHED_SHA256}/{TIKA_SOURCE_PATCHED_SIZE}, "
+            f"got {patched_hash}/{len(patched)}"
+        )
+
+    atomic_write(source_path, patched)
+    patch_record_entry(
+        record_path,
+        TIKA_SOURCE_ENTRY,
+        TIKA_SOURCE_PATCHED_SHA256,
+        TIKA_SOURCE_PATCHED_SIZE,
+    )
+    if sha256_bytes(source_path.read_bytes()) != TIKA_SOURCE_PATCHED_SHA256:
+        raise RuntimeError(f"Tika source verification failed: {source_path}")
+    print("[OK  ] Made Tika Java launcher safe for portable paths")
+    return source_path, record_path
 
 
 def inspect_record(
@@ -1083,7 +1250,7 @@ def remove_datrie_direct_url() -> tuple[Path, Path]:
 
 def expected_record() -> dict[str, object]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "helper": "prepare_ragflow_windows.py",
         "ragflow": {
             "version": RAGFLOW_VERSION,
@@ -1112,6 +1279,21 @@ def expected_record() -> dict[str, object]:
             "change": (
                 "embedding LLMBundle max_length is capped to the local "
                 "llama.cpp embedding context"
+            ),
+        },
+        "tika_python": {
+            "version": TIKA_VERSION,
+            "source_path": TIKA_SOURCE_ENTRY,
+            "source_original_sha256": TIKA_SOURCE_ORIGINAL_SHA256,
+            "source_patched_sha256": TIKA_SOURCE_PATCHED_SHA256,
+            "record_entry": (
+                f"{TIKA_SOURCE_ENTRY},"
+                f"sha256={record_digest(TIKA_SOURCE_PATCHED_SHA256)},"
+                f"{TIKA_SOURCE_PATCHED_SIZE}"
+            ),
+            "change": (
+                "quote the portable java.exe path and probe it as an executable "
+                "list so Tika starts from install paths with spaces"
             ),
         },
         "infinity_sdk": {
@@ -1209,6 +1391,8 @@ def main() -> int:
     install_graphrag_native_adapter(ragflow_dir)
     print("[STEP] Cap embedding input length to the local llama.cpp context")
     patch_local_embedding_context_limit(ragflow_dir)
+    print("[STEP] Make tika-python Java launch portable-path safe")
+    patch_tika_windows_java_launch()
     print("[STEP] Repair infinity-sdk metadata for the pinned NumPy 2 runtime")
     patch_infinity_metadata()
     print("[STEP] Repair moodlepy metadata for the pinned attrs runtime")

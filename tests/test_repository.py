@@ -297,6 +297,39 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", prepare)
         self.assertIn("LLMType.EMBEDDING.value", prepare)
 
+    def test_ragflow_bundles_portable_java_for_tika(self) -> None:
+        root = Path(__file__).parents[1]
+        manifest = json.loads(
+            (root / "modules" / "ragflow" / "module.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        java = next(
+            artifact
+            for artifact in manifest["artifacts"]
+            if artifact["file"] == "OpenJDK21U-jre_x64_windows_hotspot_21.0.8_9.zip"
+        )
+        self.assertEqual(java["target"], "runtime/java")
+        self.assertEqual(java["key"], "runtime/java/bin/java.exe")
+
+        control = (root / "modules" / "ragflow" / "control.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("$JavaExe=Join-Path $JavaHome 'bin\\java.exe'", control)
+        self.assertIn("$env:JAVA_HOME=$JavaHome", control)
+        self.assertIn("$env:TIKA_JAVA=$JavaExe", control)
+        self.assertIn("$env:TIKA_PATH=$tikaTemp", control)
+        self.assertIn("$env:TIKA_LOG_PATH=$LogRoot", control)
+        self.assertIn("function Assert-TikaRuntime", control)
+        self.assertIn("Assert-TikaRuntime;Start-OwnedProcess 'task-executor'", control)
+
+        prepare = (
+            root / "modules" / "ragflow" / "src" / "prepare_ragflow_windows.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def patch_tika_windows_java_launch", prepare)
+        self.assertIn("list2cmdline([java_path])", prepare)
+        self.assertIn("Popen([java_path]", prepare)
+
     def test_web_caddyfile_uses_multiline_handle_blocks(self) -> None:
         control = (
             Path(__file__).parents[1] / "modules" / "web" / "control.ps1"

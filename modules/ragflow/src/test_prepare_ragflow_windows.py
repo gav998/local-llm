@@ -18,8 +18,17 @@ from prepare_ragflow_windows import (
     MOODLE_REQUIREMENT_ORIGINAL,
     MOODLE_REQUIREMENT_PATCHED,
     TENANT_LLM_SERVICE_RELATIVE,
+    TIKA_COMMAND_ORIGINAL,
+    TIKA_COMMAND_PATCHED,
+    TIKA_IMPORT_ORIGINAL,
+    TIKA_IMPORT_PATCHED,
+    TIKA_PROBE_ORIGINAL,
+    TIKA_PROBE_PATCHED,
+    TIKA_SOURCE_ENTRY,
+    TIKA_VERSION,
     patch_moodle_metadata,
     patch_local_embedding_context_limit,
+    patch_tika_windows_java_launch,
     record_digest,
     validate_datrie_direct_url,
 )
@@ -92,6 +101,20 @@ class FakeDistribution:
     files = [
         PurePosixPath(f"{MOODLE_DIST_INFO}/METADATA"),
         PurePosixPath(f"{MOODLE_DIST_INFO}/RECORD"),
+    ]
+
+    def __init__(self, site_packages: Path) -> None:
+        self.site_packages = site_packages
+
+    def locate_file(self, path: PurePosixPath) -> Path:
+        return self.site_packages / path.as_posix()
+
+
+class FakeTikaDistribution:
+    version = TIKA_VERSION
+    files = [
+        PurePosixPath(TIKA_SOURCE_ENTRY),
+        PurePosixPath("tika-2.6.0.dist-info/RECORD"),
     ]
 
     def __init__(self, site_packages: Path) -> None:
@@ -215,6 +238,76 @@ class LocalEmbeddingContextLimitPatchTest(unittest.TestCase):
 
             self.assertEqual(target.read_bytes(), patched)
             self.assertIn(b"LOCAL_RAGFLOW_EMBEDDING_MAX_TOKENS", target.read_bytes())
+
+
+class TikaJavaLauncherPatchTest(unittest.TestCase):
+    def test_quotes_portable_java_path_and_repairs_record(self) -> None:
+        original = b"".join(
+            [
+                b"from subprocess import Popen\n",
+                b"from subprocess import STDOUT\n",
+                b"\n",
+                b"def startServer(tikaServerJar, java_path, java_args, serverHost, port, classpath, config_path):\n",
+                TIKA_COMMAND_ORIGINAL,
+                b"    try:\n",
+                TIKA_PROBE_ORIGINAL,
+                b"    except FileNotFoundError as e:\n",
+                b"        return False\n",
+            ]
+        )
+        patched = original.replace(TIKA_IMPORT_ORIGINAL, TIKA_IMPORT_PATCHED, 1)
+        patched = patched.replace(TIKA_COMMAND_ORIGINAL, TIKA_COMMAND_PATCHED, 1)
+        patched = patched.replace(TIKA_PROBE_ORIGINAL, TIKA_PROBE_PATCHED, 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            site_packages = Path(temporary)
+            source = site_packages / TIKA_SOURCE_ENTRY
+            source.parent.mkdir(parents=True)
+            source.write_bytes(original)
+            record = site_packages / "tika-2.6.0.dist-info" / "RECORD"
+            record.parent.mkdir()
+            original_sha = hashlib.sha256(original).hexdigest()
+            patched_sha = hashlib.sha256(patched).hexdigest()
+            record.write_text(
+                "\n".join(
+                    [
+                        (
+                            f"{TIKA_SOURCE_ENTRY},"
+                            f"sha256={record_digest(original_sha)},"
+                            f"{len(original)}"
+                        ),
+                        "tika-2.6.0.dist-info/RECORD,,",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.multiple(
+                "prepare_ragflow_windows",
+                TIKA_SOURCE_ORIGINAL_SIZE=len(original),
+                TIKA_SOURCE_ORIGINAL_SHA256=original_sha,
+                TIKA_SOURCE_PATCHED_SIZE=len(patched),
+                TIKA_SOURCE_PATCHED_SHA256=patched_sha,
+            ), mock.patch(
+                "importlib.metadata.distribution",
+                return_value=FakeTikaDistribution(site_packages),
+            ):
+                patch_tika_windows_java_launch()
+                patch_tika_windows_java_launch()
+
+            self.assertEqual(source.read_bytes(), patched)
+            self.assertIn(b"list2cmdline([java_path])", patched)
+            self.assertIn(b"Popen([java_path]", patched)
+            rows = record.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(
+                rows[0],
+                (
+                    f"{TIKA_SOURCE_ENTRY},"
+                    f"sha256={record_digest(patched_sha)},"
+                    f"{len(patched)}"
+                ),
+            )
 
 
 if __name__ == "__main__":

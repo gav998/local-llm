@@ -16,6 +16,7 @@
 | CPython 3.11.16, standalone release 20260901 | paddleocr |
 | Node.js 24.20.0 | web (production build) |
 | MinGit package 2.55.0.5 / Git 2.55.0.windows.5 | ragflow |
+| Eclipse Temurin JRE 21.0.8+9 Windows x64 | ragflow |
 | RAGFlow source 0.27.1 | ragflow, web |
 | `datrie` 0.8.3 cp313 wheel | ragflow |
 | PaddlePaddle GPU 3.3.1 cp311, CUDA 11.8 / sm_61 | paddleocr |
@@ -49,6 +50,7 @@ RAGFlow assets также не обновлялись:
 - `InfiniFlow/text_concat_xgb_v1.0` revision `722ed09a54f23f14fe0279ce6b74ce18e1960f54`;
 - NLTK data revision `550b6625bcef1f2abff2ff770a5a0d272c9c6b2a`;
 - `cl100k_base.tiktoken` SHA-256 `223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7`;
+- Eclipse Temurin JRE 21.0.8+9 Windows x64 SHA-256 `238d74ec4ec9422d416fa98805ba375eecd8bc8f971bd0c61a21051a4fe42db8`;
 - Apache Tika server 3.3.0 SHA-256 `2aca63d25f84774d759de6e132ae7f5723e3ee2adf1d51f585658baba1335e9b`.
 
 ## Внешние данные

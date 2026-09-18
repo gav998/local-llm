@@ -15,7 +15,7 @@ EXPECTED = {
     "valkey": "8.1.6",
     "llama-cpp": "b10786",
     "paddleocr": "3.3.1+3.7.0+3.7.2",
-    "ragflow": "0.27.1",
+    "ragflow": "0.27.1+jre21.0.8.9",
     "web": "0.27.1+caddy-2.11.4",
 }
 EXPECTED_ARTIFACTS = {
@@ -24,6 +24,7 @@ EXPECTED_ARTIFACTS = {
     "cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz",
     "node-v24.20.0-win-x64.zip",
     "MinGit-2.55.0.5-64-bit.zip",
+    "OpenJDK21U-jre_x64_windows_hotspot_21.0.8_9.zip",
     "ragflow-0.27.1.zip",
     "datrie-0.8.3-cp313-cp313-win_amd64.whl",
     "paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl",

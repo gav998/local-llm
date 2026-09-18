@@ -55,7 +55,7 @@ Runtime разделён на восемь независимых portable-мо�
 | `valkey` | очередь заданий и кэш |
 | `llama-cpp` | llama.cpp b10786 Vulkan, embeddings и chat LLM |
 | `paddleocr` | PaddleOCR / PP-StructureV3, strict GPU без скрытого CPU fallback |
-| `ragflow` | RAGFlow 0.27.1 API и task executor |
+| `ragflow` | RAGFlow 0.27.1 API, task executor и portable Java для Tika |
 | `web` | RAGFlow UI и локальный Caddy |
 
 Каждый модуль собирается отдельно в свой `.7z`, но обычная работа по-прежнему
@@ -616,6 +616,7 @@ modules\mysql\MODULE.bat stop
 | Компонент | Версия / профиль |
 |---|---|
 | RAGFlow | `0.27.1`, native Windows compatibility patch |
+| Java / Tika | Eclipse Temurin JRE 21.0.8+9, Apache Tika server 3.3.0 |
 | PaddleOCR / PaddleX | `3.7.0` / `3.7.2` |
 | PaddlePaddle | GPU `3.3.1`, CUDA 11.8, `sm_61` |
 | OCR | PP-StructureV3: layout, East Slavic OCR и таблицы |
