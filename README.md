@@ -239,6 +239,20 @@ Qwen3-Embedding и PP-StructureV3 в одни 8 ГБ видеопамяти.
 передаёт OCR явный `device: "cpu"`. Обычный `start ingestion` остаётся
 strict-GPU и не делает скрытый CPU fallback.
 
+Чтобы запустить только PaddleOCR без MySQL, Elasticsearch, RAGFlow, llama.cpp
+и web gateway, используйте отдельный профиль:
+
+```bat
+LOCAL-LLM.bat start paddleocr
+```
+
+Он поднимает OCR API на `http://127.0.0.1:9399`, рабочую область документов
+на `http://127.0.0.1:9400` и открывает её в браузере. Остальные сервисы стека
+останавливаются, поэтому профиль действительно оставляет запущенным только
+модуль PaddleOCR. Для GPU используется `gpu_index` из
+`modules\paddleocr\state\secrets.json`; значение `auto` предпочитает вторую
+видимую CUDA-карту и иначе выбирает первую.
+
 Для первоначальной настройки моделей запустите:
 
 ```bat
@@ -253,9 +267,9 @@ http://127.0.0.1:9388
 
 Адрес доступен только на текущем компьютере. Интернет для работы не нужен.
 
-> `LOCAL-LLM.bat` без аргументов теперь показывает справку по командам. Это
-> нормально: интерактивное меню осталось у online-сборщика
-> `1.PREPARE-ONLINE.bat`, а установленный стек управляется командами ниже.
+> `LOCAL-LLM.bat` без аргументов показывает интерактивное меню, включая
+> отдельный запуск PaddleOCR. Те же действия доступны командами ниже и удобны
+> для ярлыков или сценариев.
 
 ## Первый вход и учётная запись
 
@@ -342,6 +356,93 @@ nvidia-smi -l 1
 он содержит локальный секрет OCR. Добавьте или включите OCR-модель
 **PP-StructureV3**, выполните проверку соединения и при необходимости выберите
 её как default OCR model.
+
+### Прямое использование PaddleOCR API
+
+Сначала выполните `LOCAL-LLM.bat start paddleocr` или запустите профиль
+`ingestion`. Gateway принимает задания только с текущего компьютера и
+проверяет Bearer token из `modules\paddleocr\state\secrets.json`.
+
+| Метод | Endpoint | Назначение |
+|---|---|---|
+| `GET` | `/health` | готовность, выбранная CUDA-карта и runtime-параметры |
+| `POST` | `/api/v2/ocr/jobs` | создать асинхронное OCR-задание |
+| `GET` | `/api/v2/ocr/jobs/{jobId}` | получить состояние `queued`, `running`, `done` или `failed` |
+| `GET` | `/api/v2/ocr/jobs/{jobId}/result` | скачать итоговый JSONL после состояния `done` |
+
+Создание задания — `multipart/form-data` с полями `file`,
+`model=PP-StructureV3` и `optionalPayload` (JSON-объект). Пример для PowerShell
+из корня установки:
+
+```powershell
+$token = (Get-Content .\modules\paddleocr\state\secrets.json -Raw | ConvertFrom-Json).token
+$response = curl.exe --silent --show-error --fail `
+  -H "Authorization: Bearer $token" `
+  -F "file=@D:\Документы\пример.pdf" `
+  -F "model=PP-StructureV3" `
+  --form-string 'optionalPayload={"useTableRecognition":true,"useRegionDetection":true,"formatBlockContent":true}' `
+  http://127.0.0.1:9399/api/v2/ocr/jobs | ConvertFrom-Json
+$jobId = $response.data.jobId
+
+do {
+  Start-Sleep -Seconds 1
+  $job = Invoke-RestMethod `
+    -Headers @{ Authorization = "Bearer $token" } `
+    -Uri "http://127.0.0.1:9399/api/v2/ocr/jobs/$jobId"
+} while ($job.data.state -in @('queued', 'running'))
+
+if ($job.data.state -eq 'failed') { throw $job.data.errorMsg }
+Invoke-WebRequest `
+  -Uri "http://127.0.0.1:9399/api/v2/ocr/jobs/$jobId/result" `
+  -OutFile ".\ocr-result.jsonl"
+```
+
+Каждая строка результата JSONL соответствует странице. Распознанные блоки
+находятся в
+`result.layoutParsingResults[].prunedResult.parsing_res_list[]`; основные
+поля блока — `block_label`, `block_content` и `block_bbox`. Endpoint результата
+не требует заголовка Authorization: это часть контракта совместимости с
+RAGFlow, но он всё равно доступен только через loopback.
+
+Доступные поля `optionalPayload`:
+
+- переключатели `useTableRecognition` (обязательно `true`),
+  `useRegionDetection`, `formatBlockContent` и `layoutNms`;
+- layout-параметры `layoutThreshold`, `layoutUnclipRatio` и
+  `layoutMergeBboxesMode`;
+- OCR-параметры `textDetLimitSideLen`, `textDetLimitType`, `textDetThresh`,
+  `textDetBoxThresh`, `textDetUnclipRatio` и `textRecScoreThresh`;
+- список `markdownIgnoreLabels`.
+
+Поля `useDocOrientationClassify`, `useDocUnwarping`,
+`useTextlineOrientation`, `useSealRecognition`, `useFormulaRecognition` и
+`useChartRecognition` существуют в контракте, но в профиле GTX 1080 8 ГБ
+могут быть только `false`. Запрос `true` завершается HTTP 400, чтобы gateway
+не загружал дополнительные модели скрытно.
+
+### Рабочая область PaddleOCR
+
+После `LOCAL-LLM.bat start paddleocr` откройте
+`http://127.0.0.1:9400`. Кнопка **Выбрать каталог…** показывает стандартный
+Windows-диалог для каталога на компьютере, где запущено приложение. Слева
+отображается иерархия всех подпапок и документов; PDF-файлы кликабельны.
+Средняя колонка показывает PDF постранично, правая содержит редактируемый
+Markdown. Прокрутка двух колонок синхронизирована в обе стороны.
+
+Если для PDF ещё нет сохранённого результата, нажмите **Распознать OCR**.
+После распознавания кнопка превращается в **Переделать OCR**. В диалоге
+**Параметры** доступны все эффективные настройки API; недоступные для
+8-гигабайтного профиля функции явно отмечены. Результат можно:
+
+- сохранить рядом с PDF как `<имя>.pdf.ocr.md`;
+- сохранить Markdown в выбранный стандартным диалогом путь;
+- встроить Markdown как вложение `<имя>.ocr.md` в новую копию PDF;
+- после отдельного подтверждения встроить Markdown и заменить исходный PDF.
+
+Встраивание сохраняет исходные визуальные страницы PDF и добавляет Markdown
+как вложенный файл. Перед заменой важного оригинала всё равно сделайте
+резервную копию. Кэш распознавания и рабочие данные интерфейса находятся в
+`modules\paddleocr\data\workbench` и переносятся вместе с установкой.
 
 ## Типовой сценарий: большая папка документов
 
@@ -540,6 +641,7 @@ Windows и не умеет автоматически сохранять рез�
 | Команда | Что запускается | Когда использовать |
 |---|---|---|
 | `LOCAL-LLM.bat start core` | базы, хранилище, RAGFlow API и web | настройки и просмотр без OCR/LLM |
+| `LOCAL-LLM.bat start paddleocr` | только PaddleOCR API + рабочая область документов | отдельный OCR и редактирование Markdown |
 | `LOCAL-LLM.bat start ingestion` | core + OCR + embeddings + worker | загрузка, OCR, chunks и индексация |
 | `LOCAL-LLM.bat start ingestion-cpu` | ingestion, но OCR явно на CPU | диагностика и сравнение скорости |
 | `LOCAL-LLM.bat start chat` | core + embeddings + Vikhr | поиск, Chat и Agents |
@@ -563,6 +665,7 @@ modules\elasticsearch\data\index\ поисковый и векторный ин�
 modules\silo\data\                 загруженные оригиналы
 modules\valkey\data\               очередь и кэш
 modules\paddleocr\data\jobs\      внутренние OCR-задания
+modules\paddleocr\data\workbench\ кэш рабочей области и Markdown
 modules\<name>\config\runtime\    настройки модуля
 modules\<name>\state\             локальные секреты и PID-записи
 modules\<name>\logs\              подробные логи

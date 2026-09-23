@@ -1,6 +1,6 @@
 {
-  "schema":1,"name":"paddleocr","version":"3.3.1+3.7.0+3.7.2",
-  "description":"Strict-GPU PaddleOCR PP-StructureV3 job API","ports":{"http":9399},
+  "schema":1,"name":"paddleocr","version":"3.3.1+3.7.0+3.7.2+workbench1",
+  "description":"Strict-GPU PaddleOCR PP-StructureV3 job API and document workbench","ports":{"http":9399,"workbench":9400},
   "artifacts":[
     {"file":"uv-x86_64-pc-windows-msvc.zip","url":"https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-pc-windows-msvc.zip","kind":"archive","strip_single_root":false,"target":"build/uv","key":"build/uv/uv.exe"},
     {"file":"cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","url":"https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.11.16+20260901-x86_64-pc-windows-msvc-install_only.tar.gz","kind":"archive","strip_single_root":true,"target":"runtime/python","key":"runtime/python/python.exe"},

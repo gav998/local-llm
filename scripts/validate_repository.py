@@ -13,7 +13,7 @@ EXPECTED = {
     "silo": "2026-08-06T00-00-00Z",
     "valkey": "8.1.6",
     "llama-cpp": "b10786",
-    "paddleocr": "3.3.1+3.7.0+3.7.2",
+    "paddleocr": "3.3.1+3.7.0+3.7.2+workbench1",
     "ragflow": "0.27.1+jre21.0.8.9",
     "web": "0.27.1+caddy-2.11.4",
 }

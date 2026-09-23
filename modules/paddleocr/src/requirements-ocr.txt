@@ -6,3 +6,4 @@ paddleocr==3.7.0
 paddlex[ocr,serving]==3.7.2
 python-multipart==0.0.20
 httpx==0.28.1
+PyMuPDF==1.26.4

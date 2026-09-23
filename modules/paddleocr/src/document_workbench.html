@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PaddleOCR — рабочая область</title>
+  <style>
+    :root { color-scheme: light; --bg:#eef2f7; --panel:#fff; --line:#d9e0e8; --ink:#16202a; --muted:#64748b; --accent:#2563eb; --accent2:#1d4ed8; --danger:#b42318; }
+    * { box-sizing:border-box; }
+    html,body { height:100%; margin:0; font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+    body { display:grid; grid-template-rows:auto 1fr; overflow:hidden; }
+    header { display:flex; align-items:center; gap:12px; min-height:58px; padding:10px 16px; background:#0f172a; color:#fff; }
+    header h1 { margin:0; font-size:18px; white-space:nowrap; }
+    header .path { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#cbd5e1; }
+    button,input,select,textarea { font:inherit; }
+    button { border:1px solid transparent; border-radius:7px; padding:7px 11px; cursor:pointer; background:var(--accent); color:#fff; }
+    button:hover { background:var(--accent2); }
+    button.secondary { color:var(--ink); background:#fff; border-color:var(--line); }
+    button.secondary:hover { background:#f8fafc; }
+    button.danger { background:#fff; color:var(--danger); border-color:#f3b7b2; }
+    button:disabled { cursor:not-allowed; opacity:.5; }
+    .layout { min-height:0; display:grid; grid-template-columns:minmax(220px, 23%) minmax(360px, 39%) minmax(360px, 38%); gap:1px; background:var(--line); }
+    .column { min-width:0; min-height:0; display:grid; grid-template-rows:auto 1fr; background:var(--panel); }
+    .toolbar { min-height:49px; padding:8px 10px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line); }
+    .toolbar strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .scroll { min-height:0; overflow:auto; }
+    .tree { padding:10px; }
+    details.folder { margin-left:7px; }
+    details.folder > summary { cursor:pointer; padding:3px; color:#334155; }
+    .file { display:flex; align-items:center; gap:7px; width:100%; margin:1px 0; padding:5px 7px; border:0; border-radius:5px; background:transparent; color:#475569; text-align:left; overflow:hidden; }
+    .file span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .file.pdf { color:#172554; }
+    .file.pdf:hover,.file.pdf.active { background:#dbeafe; color:#1d4ed8; }
+    .empty { padding:28px 20px; color:var(--muted); text-align:center; }
+    .pdf-view { padding:18px; background:#cbd5e1; scroll-behavior:auto; }
+    .pdf-page { position:relative; max-width:920px; margin:0 auto 18px; padding:0; background:#fff; box-shadow:0 3px 14px #33415540; }
+    .pdf-page img { display:block; width:100%; min-height:180px; background:#fff; }
+    .page-no { position:absolute; right:8px; bottom:7px; padding:2px 7px; border-radius:12px; background:#0f172acc; color:#fff; font-size:11px; }
+    .right-toolbar { flex-wrap:wrap; }
+    .status { margin-left:auto; color:var(--muted); white-space:nowrap; }
+    .status.busy { color:#9a6700; }
+    .status.error { color:var(--danger); white-space:normal; }
+    .editor-view { padding:12px; background:#f8fafc; }
+    .editor-page { margin:0 0 14px; border:1px solid var(--line); border-radius:8px; background:#fff; overflow:hidden; }
+    .editor-page label { display:block; padding:6px 10px; background:#f1f5f9; color:#475569; font-size:12px; border-bottom:1px solid var(--line); }
+    .editor-page textarea { display:block; width:100%; min-height:240px; padding:12px; border:0; outline:0; resize:vertical; color:#172033; background:#fff; font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    dialog { width:min(720px, 92vw); max-height:88vh; border:0; border-radius:12px; box-shadow:0 20px 70px #0f172a55; padding:0; }
+    dialog::backdrop { background:#0f172a88; }
+    .dialog-head,.dialog-foot { padding:13px 16px; display:flex; align-items:center; gap:10px; border-bottom:1px solid var(--line); }
+    .dialog-foot { border:0; border-top:1px solid var(--line); justify-content:flex-end; }
+    .dialog-body { padding:16px; overflow:auto; max-height:65vh; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 18px; }
+    .field { display:grid; gap:4px; }
+    .field.full { grid-column:1/-1; }
+    .field input[type=text],.field input[type=number],.field select { width:100%; border:1px solid var(--line); border-radius:6px; padding:7px; background:#fff; color:var(--ink); }
+    .check { display:flex; gap:8px; align-items:flex-start; }
+    .hint { color:var(--muted); font-size:12px; }
+    .disabled-note { padding:9px 11px; border-radius:7px; background:#fff7ed; color:#9a3412; }
+    .manual { display:flex; gap:6px; }
+    .manual input { min-width:0; flex:1; border:1px solid #64748b; border-radius:7px; padding:7px; background:#fff; color:#111827; }
+    @media (max-width:1050px) { .layout { grid-template-columns:230px 1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PaddleOCR</h1>
+    <button id="chooseFolder">Выбрать каталог…</button>
+    <div class="manual"><input id="manualPath" placeholder="или введите путь D:\Документы"><button class="secondary" id="openPath">Открыть</button></div>
+    <div class="path" id="workspacePath">Рабочий каталог не выбран</div>
+  </header>
+  <main class="layout">
+    <section class="column">
+      <div class="toolbar"><strong>Документы</strong><button class="secondary" id="refreshTree" title="Обновить">↻</button></div>
+      <div class="scroll tree" id="tree"><div class="empty">Выберите каталог на этом компьютере</div></div>
+    </section>
+    <section class="column">
+      <div class="toolbar"><strong id="documentName">Предпросмотр PDF</strong><span class="status" id="pageStatus"></span></div>
+      <div class="scroll pdf-view" id="pdfView"><div class="empty">Нажмите на PDF в дереве</div></div>
+    </section>
+    <section class="column">
+      <div class="toolbar right-toolbar">
+        <button id="ocrButton" disabled>Распознать OCR</button>
+        <button class="secondary" id="settingsButton">Параметры</button>
+        <button class="secondary" id="saveButton" disabled>Сохранить</button>
+        <span class="status" id="ocrStatus"></span>
+      </div>
+      <div class="scroll editor-view" id="editorView"><div class="empty">Здесь появится редактируемый Markdown</div></div>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog">
+    <div class="dialog-head"><strong>Параметры PP-StructureV3</strong></div>
+    <div class="dialog-body">
+      <div class="grid">
+        <label class="field"><span>Модель</span><select disabled><option>PP-StructureV3</option></select><span class="hint">Единственная модель, подготовленная для профиля 8 ГБ.</span></label>
+        <label class="field"><span>Порог layout</span><input data-option="layoutThreshold" data-type="float" type="number" min="0" max="1" step="0.05" placeholder="по умолчанию 0.4"></label>
+        <label class="check"><input data-option="useTableRecognition" data-type="bool" type="checkbox" checked disabled><span>Распознавать таблицы <small class="hint">обязательно</small></span></label>
+        <label class="check"><input data-option="useRegionDetection" data-type="bool" type="checkbox" checked><span>Определять области документа</span></label>
+        <label class="check"><input data-option="formatBlockContent" data-type="bool" type="checkbox" checked><span>Форматировать содержимое блоков</span></label>
+        <label class="check"><input data-option="layoutNms" data-type="bool" type="checkbox" checked><span>Layout NMS</span></label>
+        <label class="check"><input data-option="useDocOrientationClassify" data-type="bool" type="checkbox" disabled><span>Классификация ориентации документа</span></label>
+        <label class="check"><input data-option="useDocUnwarping" data-type="bool" type="checkbox" disabled><span>Выравнивание документа</span></label>
+        <label class="check"><input data-option="useTextlineOrientation" data-type="bool" type="checkbox" disabled><span>Ориентация строк</span></label>
+        <label class="check"><input data-option="useSealRecognition" data-type="bool" type="checkbox" disabled><span>Распознавание печатей</span></label>
+        <label class="check"><input data-option="useFormulaRecognition" data-type="bool" type="checkbox" disabled><span>Распознавание формул</span></label>
+        <label class="check"><input data-option="useChartRecognition" data-type="bool" type="checkbox" disabled><span>Распознавание диаграмм</span></label>
+        <label class="field"><span>Layout unclip ratio</span><input data-option="layoutUnclipRatio" data-type="json" type="text" placeholder="[1.0, 1.0]"></label>
+        <label class="field"><span>Объединение layout bbox</span><select data-option="layoutMergeBboxesMode" data-type="string"><option value="">по умолчанию</option><option>union</option><option>large</option><option>small</option></select></label>
+        <label class="field"><span>Длина стороны детектора</span><input data-option="textDetLimitSideLen" data-type="int" type="number" min="1" placeholder="736"></label>
+        <label class="field"><span>Тип лимита стороны</span><select data-option="textDetLimitType" data-type="string"><option value="">по умолчанию</option><option>min</option><option>max</option></select></label>
+        <label class="field"><span>Text detect threshold</span><input data-option="textDetThresh" data-type="float" type="number" min="0" max="1" step="0.05" placeholder="0.3"></label>
+        <label class="field"><span>Text box threshold</span><input data-option="textDetBoxThresh" data-type="float" type="number" min="0" max="1" step="0.05" placeholder="0.6"></label>
+        <label class="field"><span>Text unclip ratio</span><input data-option="textDetUnclipRatio" data-type="float" type="number" min="0" step="0.1" placeholder="1.5"></label>
+        <label class="field"><span>Мин. уверенность текста</span><input data-option="textRecScoreThresh" data-type="float" type="number" min="0" max="1" step="0.05" placeholder="0.0"></label>
+        <label class="field full"><span>Игнорируемые Markdown-метки</span><input data-option="markdownIgnoreLabels" data-type="csv" type="text" placeholder="number, footnote, header, footer"></label>
+        <div class="field full disabled-note">Ориентация документа и строк, выравнивание, печати, формулы и диаграммы отключены профилем для GTX 1080 8 ГБ. Gateway отклоняет попытку включить их вместо скрытого расхода VRAM.</div>
+      </div>
+    </div>
+    <div class="dialog-foot"><button class="secondary" data-close="settingsDialog">Закрыть</button></div>
+  </dialog>
+
+  <dialog id="saveDialog">
+    <div class="dialog-head"><strong>Сохранение результата</strong></div>
+    <div class="dialog-body">
+      <p>Markdown сохраняется с маркерами страниц. При встраивании в PDF он добавляется внутрь документа как вложение <code>*.ocr.md</code>; визуальные страницы PDF не изменяются.</p>
+      <div style="display:grid;gap:9px">
+        <button id="saveSidecar">Сохранить рядом как .pdf.ocr.md</button>
+        <button class="secondary" id="saveMarkdownAs">Сохранить Markdown как…</button>
+        <button class="secondary" id="savePdfCopy">Встроить Markdown в копию PDF…</button>
+        <button class="danger" id="replacePdf">Встроить Markdown и заменить исходный PDF</button>
+      </div>
+    </div>
+    <div class="dialog-foot"><button class="secondary" data-close="saveDialog">Отмена</button></div>
+  </dialog>
+
+  <script>
+    const state = { path:null, pages:[], syncing:false, task:null };
+    const $ = id => document.getElementById(id);
+
+    async function api(url, options={}) {
+      const response = await fetch(url, {headers:{'Content-Type':'application/json'}, ...options});
+      const contentType = response.headers.get('content-type') || '';
+      const data = contentType.includes('json') ? await response.json() : await response.text();
+      if (!response.ok) throw new Error(data.detail || data || `HTTP ${response.status}`);
+      return data;
+    }
+    function showError(error) { $('ocrStatus').textContent = error.message || String(error); $('ocrStatus').className='status error'; }
+    function setBusy(text='') { $('ocrStatus').textContent=text; $('ocrStatus').className=text?'status busy':'status'; }
+
+    function treeNode(item) {
+      if (item.kind === 'directory') {
+        const details=document.createElement('details'); details.className='folder'; details.open=true;
+        const summary=document.createElement('summary'); summary.textContent=`📁 ${item.name}`; details.append(summary);
+        item.children.forEach(child => details.append(treeNode(child))); return details;
+      }
+      const button=document.createElement('button'); button.className=`file ${item.kind}`; button.disabled=item.kind!=='pdf';
+      button.innerHTML=`<span>${item.kind==='pdf'?'📕':'📄'}</span><span></span>`; button.lastChild.textContent=item.name;
+      if(item.kind==='pdf') button.onclick=()=>openDocument(item.path, button);
+      return button;
+    }
+    function renderTree(payload) {
+      $('workspacePath').textContent=payload.root || 'Рабочий каталог не выбран'; $('tree').replaceChildren();
+      if(!payload.tree.length) $('tree').innerHTML='<div class="empty">В каталоге нет документов</div>';
+      else payload.tree.forEach(item=>$('tree').append(treeNode(item)));
+    }
+    async function chooseFolder() {
+      setBusy('Открывается системный диалог…');
+      try { const data=await api('/api/workspace/dialog',{method:'POST',body:'{}'}); if(!data.cancelled) renderTree(data); setBusy(); }
+      catch(error){ showError(error); }
+    }
+    async function openManual() {
+      try { renderTree(await api('/api/workspace',{method:'POST',body:JSON.stringify({path:$('manualPath').value})})); setBusy(); }
+      catch(error){ showError(error); }
+    }
+    async function refreshTree() { try { renderTree(await api('/api/tree')); } catch(error){ showError(error); } }
+
+    function renderPdf(count) {
+      $('pdfView').replaceChildren();
+      for(let i=1;i<=count;i++) {
+        const page=document.createElement('div'); page.className='pdf-page'; page.dataset.page=i;
+        const image=document.createElement('img'); image.loading='lazy'; image.alt=`Страница ${i}`;
+        image.src=`/api/pdf/page/${i}?path=${encodeURIComponent(state.path)}`;
+        const number=document.createElement('span'); number.className='page-no'; number.textContent=`${i} / ${count}`;
+        page.append(image,number); $('pdfView').append(page);
+      }
+      $('pageStatus').textContent=`${count} стр.`;
+    }
+    function renderEditors(pages, count) {
+      state.pages=Array.from({length:count},(_,i)=>pages?.[i] || ''); $('editorView').replaceChildren();
+      state.pages.forEach((text,index)=>{
+        const section=document.createElement('div'); section.className='editor-page'; section.dataset.page=index+1;
+        const label=document.createElement('label'); label.textContent=`Markdown · страница ${index+1}`;
+        const area=document.createElement('textarea'); area.value=text; area.placeholder='Распознавание для этой страницы ещё не выполнено';
+        area.addEventListener('input',()=>{state.pages[index]=area.value;}); section.append(label,area); $('editorView').append(section);
+      });
+    }
+    async function openDocument(path, button) {
+      try {
+        setBusy('Открытие…'); state.path=path; document.querySelectorAll('.file.active').forEach(x=>x.classList.remove('active')); button?.classList.add('active');
+        const data=await api(`/api/document?path=${encodeURIComponent(path)}`); $('documentName').textContent=data.name;
+        renderPdf(data.pageCount); renderEditors(data.result?.pages, data.pageCount);
+        $('ocrButton').disabled=false; $('ocrButton').textContent=data.result?'Переделать OCR':'Распознать OCR'; $('saveButton').disabled=!data.result;
+        setBusy(data.result?'Загружен сохранённый результат OCR':'OCR ещё не выполнен');
+      } catch(error){ showError(error); }
+    }
+    function collectOptions() {
+      const options={useTableRecognition:true};
+      document.querySelectorAll('[data-option]').forEach(input=>{
+        const key=input.dataset.option, type=input.dataset.type;
+        if(input.disabled && key!=='useTableRecognition') return;
+        if(type==='bool') { options[key]=input.checked; return; }
+        if(input.value.trim()==='') return;
+        if(type==='int') options[key]=parseInt(input.value,10);
+        else if(type==='float') options[key]=parseFloat(input.value);
+        else if(type==='json') options[key]=JSON.parse(input.value);
+        else if(type==='csv') options[key]=input.value.split(',').map(x=>x.trim()).filter(Boolean);
+        else options[key]=input.value;
+      }); return options;
+    }
+    async function runOcr() {
+      if(!state.path) return;
+      try {
+        const options=collectOptions(); $('ocrButton').disabled=true; $('saveButton').disabled=true; setBusy('Задание отправляется…');
+        const data=await api('/api/ocr',{method:'POST',body:JSON.stringify({path:state.path,options})}); state.task=data.taskId; pollTask();
+      } catch(error){ $('ocrButton').disabled=false; showError(error); }
+    }
+    async function pollTask() {
+      try {
+        const data=await api(`/api/ocr/${state.task}`);
+        if(data.state==='done') { renderEditors(data.result.pages, document.querySelectorAll('.pdf-page').length); $('ocrButton').disabled=false; $('ocrButton').textContent='Переделать OCR'; $('saveButton').disabled=false; setBusy('OCR завершён'); return; }
+        if(data.state==='failed') throw new Error(data.error || 'Ошибка OCR');
+        setBusy(data.state==='queued'?'В очереди…':data.state==='submitting'?'Загрузка в PaddleOCR…':'Идёт распознавание…'); setTimeout(pollTask,1000);
+      } catch(error){ $('ocrButton').disabled=false; showError(error); }
+    }
+    function currentPages() { return [...document.querySelectorAll('.editor-page textarea')].map(x=>x.value); }
+    async function save(kind, mode) {
+      try {
+        if(kind==='pdf' && mode==='replace' && !confirm('Исходный PDF будет заменён новой копией с вложенным Markdown. Продолжить?')) return;
+        setBusy('Сохранение…');
+        const data=await api(`/api/save/${kind}`,{method:'POST',body:JSON.stringify({path:state.path,pages:currentPages(),mode})});
+        if(!data.cancelled) setBusy(`Сохранено: ${data.path}`); else setBusy('Сохранение отменено'); $('saveDialog').close();
+      } catch(error){ showError(error); }
+    }
+
+    function synchronize(source,target) {
+      if(state.syncing) return; state.syncing=true;
+      const maxSource=source.scrollHeight-source.clientHeight, maxTarget=target.scrollHeight-target.clientHeight;
+      if(maxSource>0 && maxTarget>0) target.scrollTop=(source.scrollTop/maxSource)*maxTarget;
+      requestAnimationFrame(()=>state.syncing=false);
+    }
+    $('pdfView').addEventListener('scroll',()=>synchronize($('pdfView'),$('editorView')),{passive:true});
+    $('editorView').addEventListener('scroll',()=>synchronize($('editorView'),$('pdfView')),{passive:true});
+    $('chooseFolder').onclick=chooseFolder; $('openPath').onclick=openManual; $('refreshTree').onclick=refreshTree; $('ocrButton').onclick=runOcr;
+    $('settingsButton').onclick=()=>$('settingsDialog').showModal(); $('saveButton').onclick=()=>$('saveDialog').showModal();
+    document.querySelectorAll('[data-close]').forEach(button=>button.onclick=() => $(button.dataset.close).close());
+    $('saveSidecar').onclick=()=>save('markdown','sidecar'); $('saveMarkdownAs').onclick=()=>save('markdown','dialog');
+    $('savePdfCopy').onclick=()=>save('pdf','copy'); $('replacePdf').onclick=()=>save('pdf','replace');
+    refreshTree();
+  </script>
+</body>
+</html>

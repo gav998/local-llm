@@ -250,6 +250,26 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Wait-Healthy 'paddleocr' {", start)
         self.assertNotIn("Wait-Healthy 'paddleocr strict GPU API'", start)
 
+    def test_standalone_paddleocr_profile_bundles_document_workbench(self) -> None:
+        root = Path(__file__).parents[1]
+        module = root / "modules" / "paddleocr"
+        for name in (
+            "document_workbench.py",
+            "document_workbench.html",
+            "test_document_workbench.py",
+        ):
+            self.assertTrue((module / "src" / name).is_file(), name)
+        hook = (module / "src" / "build-hook.ps1").read_text(encoding="utf-8")
+        control = (module / "control.ps1").read_text(encoding="utf-8")
+        stack = (root / "stack" / "control.ps1").read_text(encoding="utf-8")
+        launcher = (root / "LOCAL-LLM.bat").read_text(encoding="utf-8")
+        self.assertIn("document_workbench.py", hook)
+        self.assertIn("test_document_workbench.py", hook)
+        self.assertIn("$WorkbenchPort=9400", control)
+        self.assertIn("'workbench'{Assert-Installed;Start-OcrWorkbench", control)
+        self.assertIn("'paddleocr'{Start-PaddleOcr}", stack)
+        self.assertIn("start paddleocr", launcher)
+
     def test_ingestion_uses_separate_ocr_gpu_profile(self) -> None:
         stack = (
             Path(__file__).parents[1] / "stack" / "control.ps1"
