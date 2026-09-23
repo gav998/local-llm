@@ -1,8 +1,12 @@
 # PaddleOCR module
 
 Independent strict-GPU PaddlePaddle 3.3.1 (CUDA 11.8), PaddleOCR 3.7.0 and
-PaddleX 3.7.2 API with the five unchanged PP-StructureV3 models. Health is
-reported only after the GPU pipeline loads; CPU fallback remains disabled.
+PaddleX 3.7.2 API with eleven unchanged PP-StructureV3 models. The local
+profile initializes document and line orientation, unwarping, seal, formula
+and chart components so each can be selected per job without network access.
+Health is reported only after the GPU pipeline loads; CPU fallback remains
+disabled. Tables and formulas are enabled by default, while the other optional
+stages remain opt-in.
 
 The ingestion profile starts OCR with `ingestion_gpu_index`, which defaults to
 `auto`: prefer CUDA `gpu:1` when two GPUs are visible, otherwise use `gpu:0`.
@@ -26,9 +30,9 @@ module alone: the compatibility API listens on `127.0.0.1:9399`, while the
 loopback-only document workbench listens on `127.0.0.1:9400`. The workbench
 uses this module's bundled Python and PyMuPDF. It provides a server-directory
 picker, recursive document tree, page-rendered PDF preview, synchronized
-per-page Markdown editing, OCR option controls, sidecar Markdown saves and
-Markdown attachment embedding into a PDF copy or the explicitly confirmed
-original.
+per-page Markdown editing with content-sized fields, OCR option controls,
+sidecar Markdown and referenced `imgs` export, and Markdown attachment
+embedding into a PDF copy or the explicitly confirmed original.
 
 Direct module commands are:
 

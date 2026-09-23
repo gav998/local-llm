@@ -1,18 +1,16 @@
 # Portable PP-StructureV3 profile for one 8 GiB Pascal GPU.
 #
-# This is a high-quality text/layout/table pipeline. Table structure inference
-# runs only for table regions detected by the layout model and stays at batch 1.
-# Formulas, charts and seals remain disabled for the 8 GiB memory envelope.
+# This is a high-quality text/layout/table pipeline with selectable optional
+# models. All optional components are initialized so the gateway can enable
+# them per job; conservative request defaults keep only formula recognition on.
 pipeline_name: PP-StructureV3
 batch_size: 1
 
-use_doc_preprocessor: false
-use_doc_orientation_classify: false
-use_doc_unwarping: false
-use_seal_recognition: false
+use_doc_preprocessor: true
+use_seal_recognition: true
 use_table_recognition: true
-use_formula_recognition: false
-use_chart_recognition: false
+use_formula_recognition: true
+use_chart_recognition: true
 use_region_detection: true
 format_block_content: true
 markdown_ignore_labels:
@@ -35,6 +33,12 @@ SubModules:
     layout_unclip_ratio: [1.0, 1.0]
     layout_merge_bboxes_mode: union
 
+  ChartRecognition:
+    module_name: chart_recognition
+    model_name: PP-Chart2Table
+    model_dir: null
+    batch_size: 1
+
   RegionDetection:
     module_name: layout_detection
     model_name: PP-DocBlockLayout
@@ -44,12 +48,28 @@ SubModules:
     layout_merge_bboxes_mode: small
 
 SubPipelines:
+  DocPreprocessor:
+    pipeline_name: doc_preprocessor
+    batch_size: 1
+    use_doc_orientation_classify: true
+    use_doc_unwarping: true
+    SubModules:
+      DocOrientationClassify:
+        module_name: doc_text_orientation
+        model_name: PP-LCNet_x1_0_doc_ori
+        model_dir: null
+        batch_size: 1
+      DocUnwarping:
+        module_name: image_unwarping
+        model_name: UVDoc
+        model_dir: null
+
   GeneralOCR:
     pipeline_name: OCR
     batch_size: 1
     text_type: general
     use_doc_preprocessor: false
-    use_textline_orientation: false
+    use_textline_orientation: true
     SubModules:
       TextDetection:
         module_name: text_detection
@@ -63,6 +83,11 @@ SubPipelines:
         thresh: 0.3
         box_thresh: 0.6
         unclip_ratio: 1.5
+      TextLineOrientation:
+        module_name: textline_orientation
+        model_name: PP-LCNet_x1_0_textline_ori
+        model_dir: null
+        batch_size: 1
       TextRecognition:
         module_name: text_recognition
         # PP-OCRv6 medium recognition does not support Cyrillic. Keep the v6
@@ -86,3 +111,45 @@ SubPipelines:
         module_name: table_structure_recognition
         model_name: SLANet_plus
         model_dir: null
+
+  SealRecognition:
+    pipeline_name: seal_recognition
+    batch_size: 1
+    use_layout_detection: false
+    use_doc_preprocessor: false
+    SubPipelines:
+      SealOCR:
+        pipeline_name: OCR
+        batch_size: 1
+        text_type: seal
+        use_doc_preprocessor: false
+        use_textline_orientation: false
+        SubModules:
+          TextDetection:
+            module_name: seal_text_detection
+            model_name: PP-OCRv4_server_seal_det
+            model_dir: null
+            limit_side_len: 736
+            limit_type: min
+            max_side_limit: 4000
+            thresh: 0.2
+            box_thresh: 0.6
+            unclip_ratio: 0.5
+          TextRecognition:
+            module_name: text_recognition
+            model_name: eslav_PP-OCRv5_mobile_rec
+            model_dir: null
+            batch_size: 1
+            score_thresh: 0.0
+
+  FormulaRecognition:
+    pipeline_name: formula_recognition
+    batch_size: 1
+    use_layout_detection: false
+    use_doc_preprocessor: false
+    SubModules:
+      FormulaRecognition:
+        module_name: formula_recognition
+        model_name: PP-FormulaNet_plus-S
+        model_dir: null
+        batch_size: 1

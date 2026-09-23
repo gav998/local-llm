@@ -16,7 +16,8 @@ function Export-NativeOutput([string]$Executable,[object[]]$Arguments,[string]$O
     if($ExitCode -ne 0){throw "$FailureMessage (exit code $ExitCode; see $Log)"}
 }
 New-Item -ItemType Directory -Path $Wheelhouse -Force|Out-Null
-foreach($model in @('PP-DocLayout-L','PP-DocBlockLayout','PP-OCRv6_medium_det','eslav_PP-OCRv5_mobile_rec','SLANet_plus')){foreach($file in @('inference.json','inference.yml','inference.pdiparams')){if(-not(Test-Path (Join-Path $PayloadRoot "models\$model\$file") -PathType Leaf)){throw "Incomplete Paddle model: $model/$file"}}}
+foreach($model in @('PP-DocLayout-L','PP-DocBlockLayout','PP-OCRv6_medium_det','eslav_PP-OCRv5_mobile_rec','SLANet_plus','PP-LCNet_x1_0_doc_ori','UVDoc','PP-LCNet_x1_0_textline_ori','PP-OCRv4_server_seal_det','PP-FormulaNet_plus-S')){foreach($file in @('inference.json','inference.yml','inference.pdiparams')){if(-not(Test-Path (Join-Path $PayloadRoot "models\$model\$file") -PathType Leaf)){throw "Incomplete Paddle model: $model/$file"}}}
+foreach($file in @('config.json','inference.yml','model_state.pdparams')){if(-not(Test-Path (Join-Path $PayloadRoot "models\PP-Chart2Table\$file") -PathType Leaf)){throw "Incomplete Paddle model: PP-Chart2Table/$file"}}
 Invoke-LoggedNative $Uv @('pip','install','--python',$Python,'pip==26.2.1') 'pip bootstrap failed'
 Copy-Item $Wheel -Destination $Wheelhouse -Force
 Invoke-LoggedNative $Python @('-m','pip','download','--dest',$Wheelhouse,'--find-links',$Wheelhouse,'--only-binary=:all:',$Wheel,'--requirement',(Join-Path $PSScriptRoot 'requirements-ocr.txt')) 'OCR wheelhouse resolution failed'

@@ -6,14 +6,17 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import locale
 import os
+import shutil
 import subprocess
 import threading
 import time
 import uuid
 from html.parser import HTMLParser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 
 SUPPORTED_OPTIONS = {
@@ -40,6 +43,7 @@ SUPPORTED_OPTIONS = {
 }
 PDF_SUFFIX = ".pdf"
 MAX_TREE_ENTRIES = 20_000
+MAX_ASSET_BYTES = 512 << 20
 
 
 def import_pymupdf():
@@ -113,13 +117,40 @@ def block_to_markdown(block: dict[str, Any]) -> str:
     return content
 
 
-def parse_ocr_jsonl(value: str) -> list[str]:
+def normalize_asset_path(value: str) -> str:
+    path = PurePosixPath(value.replace("\\", "/"))
+    if (
+        not value.strip()
+        or path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or ":" in path.parts[0]
+    ):
+        raise ValueError(f"Некорректный путь изображения Markdown: {value!r}")
+    return path.as_posix()
+
+
+def parse_ocr_bundle(value: str) -> tuple[list[str], list[str]]:
     pages: list[str] = []
+    assets: list[str] = []
     for line in value.splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
-        layouts = payload.get("result", {}).get("layoutParsingResults", [])
+        result = payload.get("result", {})
+        markdown = result.get("markdown") or {}
+        markdown_text = markdown.get("text")
+        if isinstance(markdown_text, list):
+            markdown_text = "\n\n".join(str(part) for part in markdown_text)
+        if isinstance(markdown_text, str):
+            pages.append(markdown_text.strip())
+            for asset in markdown.get("assets") or []:
+                normalized = normalize_asset_path(str(asset))
+                if normalized not in assets:
+                    assets.append(normalized)
+            continue
+
+        layouts = result.get("layoutParsingResults", [])
         blocks: list[dict[str, Any]] = []
         for layout in layouts:
             candidate = layout.get("prunedResult", {}).get("parsing_res_list", [])
@@ -129,6 +160,11 @@ def parse_ocr_jsonl(value: str) -> list[str]:
         pages.append("\n\n".join(part for part in parts if part).strip())
     if not pages:
         raise RuntimeError("PaddleOCR returned an empty result")
+    return pages, assets
+
+
+def parse_ocr_jsonl(value: str) -> list[str]:
+    pages, _ = parse_ocr_bundle(value)
     return pages
 
 
@@ -245,15 +281,45 @@ class ResultStore:
                 return None
 
     def put(
-        self, source: Path, pages: list[str], options: dict[str, Any]
+        self,
+        source: Path,
+        pages: list[str],
+        options: dict[str, Any],
+        assets: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         key = self._key(source)
         with self._lock:
             record_name = self._index.get(key) or f"{uuid.uuid4().hex}.json"
+            existing: dict[str, Any] = {}
+            try:
+                existing = json.loads(
+                    (self.root / record_name).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                pass
+            asset_records = existing.get("assets", [])
+            if assets is not None:
+                bucket = Path(record_name).stem
+                asset_root = self.root / "assets" / bucket
+                if asset_root.exists():
+                    shutil.rmtree(asset_root)
+                asset_records = []
+                for relative, content in assets.items():
+                    normalized = normalize_asset_path(relative)
+                    destination = asset_root.joinpath(*PurePosixPath(normalized).parts)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(content)
+                    asset_records.append(
+                        {
+                            "path": normalized,
+                            "stored": destination.relative_to(self.root).as_posix(),
+                        }
+                    )
             record = {
                 "source": str(source),
                 "pages": pages,
                 "options": options,
+                "assets": asset_records,
                 "updated": time.time(),
             }
             temporary = self.root / f"{record_name}.tmp"
@@ -271,6 +337,29 @@ class ResultStore:
             os.replace(index_temporary, self.index_path)
             return record
 
+    def export_assets(self, source: Path, destination_root: Path) -> list[Path]:
+        record = self.get(source) or {}
+        exported: list[Path] = []
+        for asset in record.get("assets") or []:
+            normalized = normalize_asset_path(str(asset.get("path") or ""))
+            stored = (self.root / str(asset.get("stored") or "")).resolve(strict=True)
+            try:
+                stored.relative_to(self.root.resolve())
+            except ValueError as exc:
+                raise ValueError("Путь сохранённого изображения повреждён") from exc
+            destination = destination_root.joinpath(*PurePosixPath(normalized).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(
+                f".{destination.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                shutil.copyfile(stored, temporary)
+                os.replace(temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+            exported.append(destination)
+        return exported
+
 
 def powershell_dialog(script: str) -> str | None:
     if os.name != "nt":
@@ -284,12 +373,29 @@ def powershell_dialog(script: str) -> str | None:
     )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     completed = subprocess.run(
-        [str(executable), "-NoProfile", "-STA", "-EncodedCommand", encoded],
-        check=True,
+        [
+            str(executable),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-STA",
+            "-EncodedCommand",
+            encoded,
+        ],
+        check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=600,
     )
+    if completed.returncode:
+        encoding = locale.getpreferredencoding(False) or "utf-8"
+        detail = completed.stderr.decode(encoding, errors="replace").strip()
+        if not detail:
+            detail = completed.stdout.decode(encoding, errors="replace").strip()
+        raise RuntimeError(
+            f"Системный диалог PowerShell завершился с кодом "
+            f"{completed.returncode}: {detail or 'причина не сообщена'}"
+        )
     output = completed.stdout.decode("ascii", errors="strict").strip().splitlines()
     if not output or not output[-1].strip():
         return None
@@ -297,15 +403,63 @@ def powershell_dialog(script: str) -> str | None:
 
 
 def choose_directory() -> str | None:
-    return powershell_dialog(
-        "Add-Type -AssemblyName System.Windows.Forms;"
-        "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
-        "$d.Description='Выберите рабочий каталог документов';"
-        "$d.ShowNewFolderButton=$false;"
-        "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
-        "$b=[Text.Encoding]::UTF8.GetBytes($d.SelectedPath);"
-        "[Console]::Out.WriteLine([Convert]::ToBase64String($b))}"
+    if os.name != "nt":
+        raise RuntimeError("Стандартный системный диалог доступен только в Windows")
+
+    import ctypes
+    from ctypes import wintypes
+
+    class BrowseInfo(ctypes.Structure):
+        _fields_ = [
+            ("hwndOwner", wintypes.HWND),
+            ("pidlRoot", ctypes.c_void_p),
+            ("pszDisplayName", wintypes.LPWSTR),
+            ("lpszTitle", wintypes.LPCWSTR),
+            ("ulFlags", wintypes.UINT),
+            ("lpfn", ctypes.c_void_p),
+            ("lParam", wintypes.LPARAM),
+            ("iImage", ctypes.c_int),
+        ]
+
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(BrowseInfo)]
+    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+    shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
+    shell32.SHGetPathFromIDListW.restype = wintypes.BOOL
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoUninitialize.argtypes = []
+
+    initialized = ole32.CoInitializeEx(None, 0x2) >= 0
+    display_name = ctypes.create_unicode_buffer(260)
+    selected_path = ctypes.create_unicode_buffer(32_768)
+    dialog = BrowseInfo(
+        None,
+        None,
+        ctypes.cast(display_name, wintypes.LPWSTR),
+        "Выберите рабочий каталог документов",
+        0x0001 | 0x0040 | 0x0200,
+        None,
+        0,
+        0,
     )
+    item_id = None
+    try:
+        item_id = shell32.SHBrowseForFolderW(ctypes.byref(dialog))
+        if not item_id:
+            return None
+        if not shell32.SHGetPathFromIDListW(
+            item_id, ctypes.cast(selected_path, wintypes.LPWSTR)
+        ):
+            raise RuntimeError("Windows не вернула путь выбранного каталога")
+        return selected_path.value
+    finally:
+        if item_id:
+            ole32.CoTaskMemFree(item_id)
+        if initialized:
+            ole32.CoUninitialize()
 
 
 def choose_save_file(initial: Path, filter_value: str) -> str | None:
@@ -411,8 +565,22 @@ class OcrTasks:
                             f"{self.gateway_url}/api/v2/ocr/jobs/{job_id}/result"
                         )
                         result.raise_for_status()
-                        pages = parse_ocr_jsonl(result.text)
-                        record = self.store.put(source, pages, options)
+                        pages, asset_paths = parse_ocr_bundle(result.text)
+                        assets: dict[str, bytes] = {}
+                        total_asset_bytes = 0
+                        for asset_path in asset_paths:
+                            asset_response = client.get(
+                                f"{self.gateway_url}/api/v2/ocr/jobs/{job_id}/assets/"
+                                + quote(asset_path, safe="/")
+                            )
+                            asset_response.raise_for_status()
+                            total_asset_bytes += len(asset_response.content)
+                            if total_asset_bytes > MAX_ASSET_BYTES:
+                                raise RuntimeError(
+                                    "Изображения Markdown превышают локальный лимит 512 МБ"
+                                )
+                            assets[asset_path] = asset_response.content
+                        record = self.store.put(source, pages, options, assets)
                         self._set(task_id, state="done", result=record)
                         return
                     if data["state"] == "failed":
@@ -560,8 +728,9 @@ def create_app(
             else:
                 raise ValueError("Неизвестный режим сохранения")
             destination.write_text(markdown, encoding="utf-8", newline="\n")
+            exported = store.export_assets(source, destination.parent)
             store.put(source, pages, (store.get(source) or {}).get("options", {}))
-            return {"path": str(destination)}
+            return {"path": str(destination), "exportedImages": len(exported)}
         except Exception as exc:
             raise failure(exc) from exc
 

@@ -13,6 +13,8 @@ from document_workbench import (
     build_tree,
     html_table_to_markdown,
     join_markdown,
+    normalize_asset_path,
+    parse_ocr_bundle,
     parse_ocr_jsonl,
 )
 
@@ -40,6 +42,26 @@ def main() -> int:
     pages = parse_ocr_jsonl(json.dumps(payload, ensure_ascii=False))
     assert pages == ["# Документ\n\nТекст страницы"]
     assert join_markdown(pages).startswith("<!-- page: 1 -->")
+    markdown_payload = {
+        "result": {
+            "markdown": {
+                "text": "Текст с рисунком\n\n![Рисунок](imgs/figure.png)",
+                "assets": ["imgs/figure.png"],
+            }
+        }
+    }
+    markdown_pages, markdown_assets = parse_ocr_bundle(
+        json.dumps(markdown_payload, ensure_ascii=False)
+    )
+    assert markdown_pages == ["Текст с рисунком\n\n![Рисунок](imgs/figure.png)"]
+    assert markdown_assets == ["imgs/figure.png"]
+    for invalid_asset in ("../outside.png", "."):
+        try:
+            normalize_asset_path(invalid_asset)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Invalid Markdown asset path must be rejected")
 
     with tempfile.TemporaryDirectory(prefix="ocr-workbench-") as temporary:
         root = Path(temporary)
@@ -60,8 +82,26 @@ def main() -> int:
         tree = build_tree(documents)
         assert [item["kind"] for item in tree] == ["file", "pdf"]
         store = ResultStore(root / "state")
-        store.put(source, pages, {"useTableRecognition": True})
+        store.put(
+            source,
+            pages,
+            {"useTableRecognition": True},
+            {"imgs/figure.png": b"PNG-data"},
+        )
         assert store.get(source)["pages"] == pages
+        export_root = root / "export"
+        exported = store.export_assets(source, export_root)
+        assert exported == [export_root / "imgs" / "figure.png"]
+        assert exported[0].read_bytes() == b"PNG-data"
+        store.put(source, ["edited"], {"useTableRecognition": True})
+        assert store.get(source)["assets"][0]["path"] == "imgs/figure.png"
+
+    html = Path(__file__).with_name("document_workbench.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'data-option="useFormulaRecognition"' in html
+    assert 'data-option="useFormulaRecognition" data-type="bool" type="checkbox" checked' in html
+    assert "resize:none; overflow:hidden" in html
 
     print("Document workbench contract: OK")
     return 0

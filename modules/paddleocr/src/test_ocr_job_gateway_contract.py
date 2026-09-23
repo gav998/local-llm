@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import time
@@ -16,13 +17,26 @@ from ocr_job_gateway import (
     approximate_token_count,
     atomic_json,
     bound_result_blocks,
+    build_predict_options,
     create_app,
     read_json,
     validate_pipeline_profile,
 )
 
 
+class FakeImage:
+    def save(self, path: Path) -> None:
+        path.write_bytes(b"fake-png")
+
+
 class FakeResult:
+    @property
+    def markdown(self):
+        return {
+            "markdown_texts": "ПОРТАТИВНЫЙ ДОКУМЕНТ 2026\n\n![Схема](imgs/scheme.png)",
+            "markdown_images": {"imgs/scheme.png": FakeImage()},
+        }
+
     @property
     def json(self):
         return {
@@ -75,6 +89,7 @@ class FakePipeline:
             raise RuntimeError("intentional fake predictor failure")
         assert options["use_table_recognition"] is True
         assert options["use_ocr_results_with_table_cells"] is False
+        assert options["use_formula_recognition"] is True
         return [FakeResult()]
 
     def close(self):
@@ -106,14 +121,36 @@ def main() -> int:
     profile = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     validate_pipeline_profile(profile)
 
-    incomplete_profile = dict(profile)
-    incomplete_profile.pop("use_doc_unwarping")
+    incomplete_profile = copy.deepcopy(profile)
+    incomplete_profile["SubPipelines"]["DocPreprocessor"][
+        "use_doc_unwarping"
+    ] = False
     try:
         validate_pipeline_profile(incomplete_profile)
     except RuntimeError as exc:
-        assert "use_doc_unwarping: false" in str(exc)
+        assert "unwarping model" in str(exc)
     else:
-        raise AssertionError("Missing explicit DocPreprocessor switches must fail closed")
+        raise AssertionError("Unavailable selectable models must fail closed")
+
+    all_features = build_predict_options(
+        {
+            "useDocOrientationClassify": True,
+            "useDocUnwarping": True,
+            "useTextlineOrientation": True,
+            "useSealRecognition": True,
+            "useFormulaRecognition": True,
+            "useChartRecognition": True,
+        }
+    )
+    for option in (
+        "use_doc_orientation_classify",
+        "use_doc_unwarping",
+        "use_textline_orientation",
+        "use_seal_recognition",
+        "use_formula_recognition",
+        "use_chart_recognition",
+    ):
+        assert all_features[option] is True
 
     oversized = FakeResult().json["res"]
     bounded = bound_result_blocks(oversized, 40)
@@ -232,6 +269,13 @@ def main() -> int:
                 assert len(lines) == 1
                 payload = json.loads(lines[0])
                 pruned = payload["result"]["layoutParsingResults"][0]["prunedResult"]
+                markdown = payload["result"]["markdown"]
+                assert markdown["assets"] == ["imgs/scheme.png"]
+                asset = client.get(
+                    f"/api/v2/ocr/jobs/{job_id}/assets/imgs/scheme.png"
+                )
+                asset.raise_for_status()
+                assert asset.content == b"fake-png"
                 assert "input_path" not in pruned and "page_index" not in pruned
                 block = pruned["parsing_res_list"][0]
                 assert block["block_content"] and len(block["block_bbox"]) == 4

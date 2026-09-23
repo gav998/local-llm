@@ -23,7 +23,7 @@ import shutil
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 MODEL_NAMES = (
@@ -32,7 +32,13 @@ MODEL_NAMES = (
     "PP-OCRv6_medium_det",
     "eslav_PP-OCRv5_mobile_rec",
     "SLANet_plus",
+    "PP-LCNet_x1_0_doc_ori",
+    "UVDoc",
+    "PP-LCNet_x1_0_textline_ori",
+    "PP-OCRv4_server_seal_det",
+    "PP-FormulaNet_plus-S",
 )
+CHART_MODEL_NAME = "PP-Chart2Table"
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
 DEFAULT_TEXT_RECOGNITION_BATCH_SIZE = 8
 DEFAULT_MAX_BLOCK_TOKENS = 900
@@ -63,14 +69,6 @@ PREDICT_OPTION_MAP = {
     "textDetUnclipRatio": "text_det_unclip_ratio",
     "textRecScoreThresh": "text_rec_score_thresh",
     "markdownIgnoreLabels": "markdown_ignore_labels",
-}
-DISABLED_FEATURES = {
-    "useDocOrientationClassify",
-    "useDocUnwarping",
-    "useTextlineOrientation",
-    "useSealRecognition",
-    "useFormulaRecognition",
-    "useChartRecognition",
 }
 REQUIRED_FEATURES = {"useTableRecognition"}
 IGNORED_CLOUD_OPTIONS = {
@@ -373,6 +371,62 @@ def prune_result(value: Any) -> Any:
     return value
 
 
+def normalize_asset_path(value: str) -> str:
+    path = PurePosixPath(value.replace("\\", "/"))
+    if (
+        not value.strip()
+        or path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or ":" in path.parts[0]
+    ):
+        raise ValueError(f"Invalid Markdown asset path: {value!r}")
+    return path.as_posix()
+
+
+def save_markdown_assets(
+    result: Any,
+    asset_root: Path,
+    used_paths: set[str],
+    page_number: int,
+) -> dict[str, Any] | None:
+    markdown = getattr(result, "markdown", None)
+    if not isinstance(markdown, dict):
+        return None
+    text = markdown.get("markdown_texts")
+    if isinstance(text, list):
+        text = "\n\n".join(str(part) for part in text)
+    if not isinstance(text, str):
+        return None
+
+    exported: list[str] = []
+    images = markdown.get("markdown_images") or {}
+    if not isinstance(images, dict):
+        images = {}
+    for original_path, image in images.items():
+        original = str(original_path)
+        normalized = normalize_asset_path(original)
+        destination_path = normalized
+        if destination_path in used_paths:
+            path = PurePosixPath(normalized)
+            destination_path = (
+                path.parent / f"{path.stem}-page-{page_number}{path.suffix}"
+            ).as_posix()
+            text = text.replace(original, destination_path)
+            text = text.replace(normalized, destination_path)
+        used_paths.add(destination_path)
+        destination = asset_root.joinpath(*PurePosixPath(destination_path).parts)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        save = getattr(image, "save", None)
+        if save is None:
+            raise RuntimeError(
+                f"Markdown asset {original!r} is not a savable image"
+            )
+        save(destination)
+        exported.append(destination_path)
+    return {"text": text, "assets": exported}
+
+
 def detect_suffix(header: bytes) -> str:
     if header.startswith(b"%PDF-"):
         return ".pdf"
@@ -391,14 +445,6 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
     unknown = set(optional_payload) - set(PREDICT_OPTION_MAP) - IGNORED_CLOUD_OPTIONS
     if unknown:
         raise ValueError(f"Unsupported optionalPayload fields: {sorted(unknown)}")
-    enabled_but_unavailable = sorted(
-        key for key in DISABLED_FEATURES if optional_payload.get(key) is True
-    )
-    if enabled_but_unavailable:
-        raise ValueError(
-            "Features disabled by the 8 GiB profile were requested: "
-            + ", ".join(enabled_but_unavailable)
-        )
     disabled_but_required = sorted(
         key
         for key in REQUIRED_FEATURES
@@ -416,7 +462,7 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
         "use_textline_orientation": False,
         "use_seal_recognition": False,
         "use_table_recognition": True,
-        "use_formula_recognition": False,
+        "use_formula_recognition": True,
         "use_chart_recognition": False,
         "use_region_detection": True,
         "format_block_content": True,
@@ -426,25 +472,32 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
     }
     for api_name, python_name in PREDICT_OPTION_MAP.items():
         value = optional_payload.get(api_name)
-        if value is not None and api_name not in DISABLED_FEATURES:
+        if value is not None:
             options[python_name] = value
     return options
 
 
 def validate_pipeline_profile(config: dict[str, Any]) -> None:
-    """Reject profile values that make PaddleX load disabled GPU models."""
-    disabled_doc_preprocessor_options = (
-        "use_doc_preprocessor",
-        "use_doc_orientation_classify",
-        "use_doc_unwarping",
-    )
-    for option in disabled_doc_preprocessor_options:
-        if config.get(option) is not False:
-            raise RuntimeError(
-                f"The 8 GiB profile must explicitly set {option}: false"
-            )
+    """Ensure every workbench-selectable model is initialized locally."""
+    if config.get("use_doc_preprocessor") is not True:
+        raise RuntimeError("The selectable profile must initialize DocPreprocessor")
     if config.get("use_table_recognition") is not True:
         raise RuntimeError("PP-StructureV3 table recognition must be enabled")
+    for option in (
+        "use_seal_recognition",
+        "use_formula_recognition",
+        "use_chart_recognition",
+    ):
+        if config.get(option) is not True:
+            raise RuntimeError(f"The selectable profile must initialize {option}")
+    doc_config = config.get("SubPipelines", {}).get("DocPreprocessor", {})
+    if doc_config.get("use_doc_orientation_classify") is not True:
+        raise RuntimeError("Document orientation model must be initialized")
+    if doc_config.get("use_doc_unwarping") is not True:
+        raise RuntimeError("Document unwarping model must be initialized")
+    ocr_config = config.get("SubPipelines", {}).get("GeneralOCR", {})
+    if ocr_config.get("use_textline_orientation") is not True:
+        raise RuntimeError("Text-line orientation model must be initialized")
     table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
     if table_config.get("pipeline_name") != "table_recognition":
         raise RuntimeError("The audited compact table_recognition pipeline is missing")
@@ -541,6 +594,10 @@ def load_pipeline(config_path: Path, model_root: Path):
             key = model_root / name / filename
             if key.is_symlink() or not key.is_file():
                 raise RuntimeError(f"Prepared model is incomplete: {key}")
+    for filename in ("config.json", "inference.yml", "model_state.pdparams"):
+        key = model_root / CHART_MODEL_NAME / filename
+        if key.is_symlink() or not key.is_file():
+            raise RuntimeError(f"Prepared model is incomplete: {key}")
 
     import paddle
     import yaml
@@ -603,8 +660,18 @@ def load_pipeline(config_path: Path, model_root: Path):
         "LOCAL_OCR_TEXT_REC_BATCH_SIZE",
     )
     table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
+    doc_config = config["SubPipelines"]["DocPreprocessor"]
+    doc_config["SubModules"]["DocOrientationClassify"]["model_dir"] = str(
+        model_root / "PP-LCNet_x1_0_doc_ori"
+    )
+    doc_config["SubModules"]["DocUnwarping"]["model_dir"] = str(
+        model_root / "UVDoc"
+    )
     config["SubModules"]["LayoutDetection"]["model_dir"] = str(
         model_root / "PP-DocLayout-L"
+    )
+    config["SubModules"]["ChartRecognition"]["model_dir"] = str(
+        model_root / CHART_MODEL_NAME
     )
     config["SubModules"]["RegionDetection"]["model_dir"] = str(
         model_root / "PP-DocBlockLayout"
@@ -615,12 +682,25 @@ def load_pipeline(config_path: Path, model_root: Path):
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"]["model_dir"] = str(
         model_root / "eslav_PP-OCRv5_mobile_rec"
     )
+    config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextLineOrientation"]["model_dir"] = str(
+        model_root / "PP-LCNet_x1_0_textline_ori"
+    )
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"][
         "batch_size"
     ] = text_recognition_batch_size
     table_config["SubModules"]["TableStructureRecognition"]["model_dir"] = str(
         model_root / "SLANet_plus"
     )
+    seal_ocr = config["SubPipelines"]["SealRecognition"]["SubPipelines"]["SealOCR"]
+    seal_ocr["SubModules"]["TextDetection"]["model_dir"] = str(
+        model_root / "PP-OCRv4_server_seal_det"
+    )
+    seal_ocr["SubModules"]["TextRecognition"]["model_dir"] = str(
+        model_root / "eslav_PP-OCRv5_mobile_rec"
+    )
+    config["SubPipelines"]["FormulaRecognition"]["SubModules"][
+        "FormulaRecognition"
+    ]["model_dir"] = str(model_root / "PP-FormulaNet_plus-S")
 
     from paddleocr import PPStructureV3
 
@@ -647,6 +727,8 @@ def load_pipeline(config_path: Path, model_root: Path):
         "text_recognition_batch_size": text_recognition_batch_size,
         "table_recognition": True,
         "table_structure_model": "SLANet_plus",
+        "formula_recognition_model": "PP-FormulaNet_plus-S",
+        "optional_models_ready": True,
     }
     return pipeline, runtime_info
 
@@ -742,6 +824,18 @@ class JobManager:
             raise KeyError(job_id)
         return path
 
+    def asset_path(self, job_id: str, relative: str) -> Path:
+        normalized = normalize_asset_path(relative)
+        asset_root = (self.jobs_root / job_id / "assets").resolve()
+        path = asset_root.joinpath(*PurePosixPath(normalized).parts).resolve()
+        try:
+            path.relative_to(asset_root)
+        except ValueError as exc:
+            raise KeyError(relative) from exc
+        if not path.is_file():
+            raise KeyError(relative)
+        return path
+
     def _run(self) -> None:
         while True:
             item = self._queue.get()
@@ -758,9 +852,14 @@ class JobManager:
                     raise RuntimeError("PP-StructureV3 returned no page results")
 
                 result_path = self._result_path(job_id)
+                asset_root = result_path.parent / "assets"
+                used_asset_paths: set[str] = set()
                 temporary = result_path.with_suffix(".jsonl.tmp")
                 with temporary.open("w", encoding="utf-8", newline="\n") as output:
-                    for result in results:
+                    for page_number, result in enumerate(results, start=1):
+                        markdown = save_markdown_assets(
+                            result, asset_root, used_asset_paths, page_number
+                        )
                         pruned = prune_result(result.json["res"])
                         pruned = bound_result_blocks(pruned, self.max_block_tokens)
                         line = {
@@ -770,6 +869,7 @@ class JobManager:
                             "result": {
                                 "layoutParsingResults": [{"prunedResult": pruned}],
                                 "ocrResults": [],
+                                "markdown": markdown,
                             },
                         }
                         output.write(json.dumps(line, ensure_ascii=False) + "\n")
@@ -792,7 +892,7 @@ class JobManager:
             close()
 
 
-def create_app(manager: JobManager, token: str) -> FastAPI:
+def create_app(manager: JobManager, token: str) -> Any:
     from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.responses import FileResponse
 
@@ -866,6 +966,14 @@ def create_app(manager: JobManager, token: str) -> FastAPI:
             raise HTTPException(status_code=404, detail="Result not found") from exc
         # RAGFlow does not forward Authorization when it follows resultJsonUrl.
         return FileResponse(path, media_type="application/x-ndjson")
+
+    @app.get("/api/v2/ocr/jobs/{job_id}/assets/{asset_path:path}")
+    def fetch_asset(job_id: str, asset_path: str) -> FileResponse:
+        try:
+            path = manager.asset_path(job_id, asset_path)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Asset not found") from exc
+        return FileResponse(path)
 
     @app.get("/api/v2/ocr/jobs/{job_id}")
     def poll_job(

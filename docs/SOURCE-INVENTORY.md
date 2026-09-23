@@ -25,6 +25,12 @@
 | `PP-OCRv6_medium_det_infer.tar` | paddleocr |
 | `eslav_PP-OCRv5_mobile_rec_infer.tar` | paddleocr |
 | `SLANet_plus_infer.tar` | paddleocr |
+| `PP-LCNet_x1_0_doc_ori_infer.tar` | paddleocr |
+| `UVDoc_infer.tar` | paddleocr |
+| `PP-LCNet_x1_0_textline_ori_infer.tar` | paddleocr |
+| `PP-OCRv4_server_seal_det_infer.tar` | paddleocr |
+| `PP-FormulaNet_plus-S_infer.tar` | paddleocr |
+| `PP-Chart2Table_infer.tar` | paddleocr |
 | DejaVu Sans 2.37 | paddleocr |
 | Microsoft VC runtime 14.44.35211 (app-local DLL extraction) | ragflow, paddleocr |
 | MySQL 8.0.40 | mysql |
