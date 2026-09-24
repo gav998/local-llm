@@ -34,7 +34,7 @@ try{
     if(-not(Test-Path -LiteralPath $ArchiveRoot -PathType Container)){throw "Archive directory is not a directory: $ArchiveRoot"}
     $Manifest=Get-Content -LiteralPath $ManifestPath -Raw|ConvertFrom-Json
     $Archives=@($Manifest.archives)
-    if($Manifest.schema -ne 1 -or $Archives.Count -ne 8){throw 'Archive manifest must describe exactly eight module archives'}
+    if($Manifest.schema -ne 1 -or $Archives.Count -ne 9){throw 'Archive manifest must describe exactly nine module archives'}
 
     Write-Logged "[INFO] Archive directory: $ArchiveRoot" Cyan
     $Resolved=@()

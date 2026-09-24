@@ -13,7 +13,7 @@ echo.
 echo   1. Start core
 echo   2. Start ingestion
 echo   3. Start chat
-echo   4. Start PaddleOCR workbench
+echo   4. Start structured PDF digitizer
 echo   5. Stop all
 echo   6. Status
 echo   7. Verify
@@ -29,7 +29,7 @@ if "%MENU_CHOICE%"=="11" exit /b 0
 if "%MENU_CHOICE%"=="1" call :run_control start core
 if "%MENU_CHOICE%"=="2" call :run_control start ingestion
 if "%MENU_CHOICE%"=="3" call :run_control start chat
-if "%MENU_CHOICE%"=="4" call :run_control start paddleocr
+if "%MENU_CHOICE%"=="4" call :run_control start digitizer
 if "%MENU_CHOICE%"=="5" call :run_control stop
 if "%MENU_CHOICE%"=="6" call :run_control status
 if "%MENU_CHOICE%"=="7" call :run_control verify

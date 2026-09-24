@@ -18,7 +18,7 @@ class RepositoryContractTests(unittest.TestCase):
     def test_root_prepare_menu_dispatches_to_every_module_launcher(self) -> None:
         root = Path(__file__).parents[1]
         launcher = (root / "1.PREPARE-ONLINE.bat").read_text(encoding="utf-8")
-        self.assertIn("choice /C 123456780", launcher)
+        self.assertIn("choice /C 1234567890", launcher)
         for name in (
             "mysql",
             "elasticsearch",
@@ -28,6 +28,7 @@ class RepositoryContractTests(unittest.TestCase):
             "paddleocr",
             "ragflow",
             "web",
+            "digitizer",
         ):
             with self.subTest(module=name):
                 self.assertIn(f'set "MODULE={name}"', launcher)
@@ -250,25 +251,27 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("Wait-Healthy 'paddleocr' {", start)
         self.assertNotIn("Wait-Healthy 'paddleocr strict GPU API'", start)
 
-    def test_standalone_paddleocr_profile_bundles_document_workbench(self) -> None:
+    def test_digitizer_is_independent_from_paddleocr_runtime(self) -> None:
         root = Path(__file__).parents[1]
-        module = root / "modules" / "paddleocr"
+        module = root / "modules" / "digitizer"
         for name in (
-            "document_workbench.py",
-            "document_workbench.html",
-            "test_document_workbench.py",
+            "digitizer.py",
+            "digitizer.html",
+            "test_digitizer.py",
         ):
             self.assertTrue((module / "src" / name).is_file(), name)
         hook = (module / "src" / "build-hook.ps1").read_text(encoding="utf-8")
         control = (module / "control.ps1").read_text(encoding="utf-8")
         stack = (root / "stack" / "control.ps1").read_text(encoding="utf-8")
         launcher = (root / "LOCAL-LLM.bat").read_text(encoding="utf-8")
-        self.assertIn("document_workbench.py", hook)
-        self.assertIn("test_document_workbench.py", hook)
-        self.assertIn("$WorkbenchPort=9400", control)
-        self.assertIn("'workbench'{Assert-Installed;Start-OcrWorkbench", control)
-        self.assertIn("'paddleocr'{Start-PaddleOcr}", stack)
-        self.assertIn("start paddleocr", launcher)
+        manifest = json.loads((module / "module.json").read_text(encoding="utf-8"))
+        self.assertIn("digitizer.py", hook)
+        self.assertIn("test_digitizer.py", hook)
+        self.assertEqual(set(manifest["runtime_dependencies"]), {"paddleocr", "llama-cpp"})
+        self.assertIn("$PaddleConnection", control)
+        self.assertIn("$LlamaConnection", control)
+        self.assertIn("'digitizer'{Start-Digitizer}", stack)
+        self.assertIn("start digitizer", launcher)
 
     def test_ingestion_uses_separate_ocr_gpu_profile(self) -> None:
         stack = (

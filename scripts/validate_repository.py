@@ -13,7 +13,8 @@ EXPECTED = {
     "silo": "2026-08-06T00-00-00Z",
     "valkey": "8.1.6",
     "llama-cpp": "b10786",
-    "paddleocr": "3.3.1+3.7.0+3.7.2+workbench2",
+    "paddleocr": "3.3.1+3.7.0+3.7.2+api3",
+    "digitizer": "0.1.0",
     "ragflow": "0.27.1+jre21.0.8.9",
     "web": "0.27.1+caddy-2.11.4",
 }
@@ -134,4 +135,4 @@ if __name__ == "__main__":
     if failures:
         print("\n".join(f"ERROR: {item}" for item in failures))
         raise SystemExit(1)
-    print("OK: 8 independent modules, manifests, ports and local engines validated")
+    print("OK: 9 independent modules, manifests, ports and local engines validated")

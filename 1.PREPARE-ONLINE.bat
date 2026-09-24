@@ -15,11 +15,13 @@ echo   5. llama.cpp
 echo   6. PaddleOCR
 echo   7. RAGFlow
 echo   8. Web
+echo   9. PDF Digitizer
 echo   0. Exit
 echo.
-choice /C 123456780 /N /M "Select a module: "
+choice /C 1234567890 /N /M "Select a module: "
 
-if errorlevel 9 exit /b 0
+if errorlevel 10 exit /b 0
+if errorlevel 9 goto digitizer
 if errorlevel 8 goto web
 if errorlevel 7 goto ragflow
 if errorlevel 6 goto paddleocr
@@ -52,6 +54,9 @@ set "MODULE=ragflow"
 goto run
 :web
 set "MODULE=web"
+goto run
+:digitizer
+set "MODULE=digitizer"
 goto run
 
 :run

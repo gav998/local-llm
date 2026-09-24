@@ -28,9 +28,8 @@ Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'sanitize_python_runtime.
 Invoke-LoggedNative $Uv @('pip','check','--python',$Python) 'OCR pip check failed'
 Export-NativeOutput $Uv @('pip','freeze','--python',$Python) (Join-Path $PayloadRoot 'runtime\ocr-freeze.txt') 'OCR freeze failed'
 New-Item -ItemType Directory -Path (Join-Path $PayloadRoot 'service') -Force|Out-Null
-Copy-Item (Join-Path $PSScriptRoot 'ocr_job_gateway.py'),(Join-Path $PSScriptRoot 'document_workbench.py'),(Join-Path $PSScriptRoot 'document_workbench.html'),(Join-Path $PSScriptRoot 'test_ocr_job_gateway_contract.py'),(Join-Path $PSScriptRoot 'test_document_workbench.py'),(Join-Path $PSScriptRoot 'pp-structure-v3-8gb.yaml') -Destination (Join-Path $PayloadRoot 'service') -Force
+Copy-Item (Join-Path $PSScriptRoot 'ocr_job_gateway.py'),(Join-Path $PSScriptRoot 'test_ocr_job_gateway_contract.py'),(Join-Path $PSScriptRoot 'pp-structure-v3-8gb.yaml') -Destination (Join-Path $PayloadRoot 'service') -Force
 Invoke-LoggedNative $Python @('-c','import paddle,paddleocr,paddlex,pymupdf; print(paddle.__version__,paddleocr.__version__,paddlex.__version__,pymupdf.__version__)') 'OCR import smoke failed'
 Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'test_ocr_job_gateway_contract.py')) 'OCR API contract failed'
-Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'test_document_workbench.py')) 'OCR workbench contract failed'
 Remove-Item (Join-Path $PayloadRoot 'build') -Recurse -Force;Remove-Item (Join-Path $PayloadRoot 'vendor') -Recurse -Force
 Invoke-LoggedNative $Python @((Join-Path $PSScriptRoot 'audit_portability.py'),'--root',$PayloadRoot,'--build-root',$ModuleRoot,'--record',(Join-Path $PayloadRoot 'runtime\portability-audit.json')) 'OCR portability audit failed'

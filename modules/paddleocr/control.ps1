@@ -1,6 +1,6 @@
 [CmdletBinding()]param([string]$CommandName='help',[string]$Target='')
 . (Join-Path $PSScriptRoot 'lib\runtime.ps1');Initialize-Module $PSScriptRoot
-$Python=Join-Path $PSScriptRoot 'runtime\python\python.exe';$Gateway=Join-Path $PSScriptRoot 'service\ocr_job_gateway.py';$Workbench=Join-Path $PSScriptRoot 'service\document_workbench.py';$Port=9399;$WorkbenchPort=9400;$Secrets=Join-Path $StateRoot 'secrets.json'
+$Python=Join-Path $PSScriptRoot 'runtime\python\python.exe';$Gateway=Join-Path $PSScriptRoot 'service\ocr_job_gateway.py';$Port=9399;$Secrets=Join-Path $StateRoot 'secrets.json'
 function Has-Setting($Object,[string]$Name){return $Object.PSObject.Properties.Name -contains $Name}
 function Setting($Object,[string]$Name,$Default){if(Has-Setting $Object $Name){return $Object.PSObject.Properties[$Name].Value};return $Default}
 function Default-Secrets{return [ordered]@{token=New-HexSecret 32;gpu_index='auto';prefer_gpu_index=1;ingestion_gpu_index='auto';text_recognition_batch_size=8;max_block_tokens=900}}
@@ -8,7 +8,7 @@ function Sync-OcrServiceSource{
  $SrcDir=Join-Path $PSScriptRoot 'src';$SvcDir=Join-Path $PSScriptRoot 'service'
  if(-not(Test-Path $SrcDir -PathType Container)){return}
  New-Item -ItemType Directory -Path $SvcDir -Force|Out-Null
- foreach($Name in @('ocr_job_gateway.py','document_workbench.py','document_workbench.html','test_ocr_job_gateway_contract.py','test_document_workbench.py','pp-structure-v3-8gb.yaml')){
+ foreach($Name in @('ocr_job_gateway.py','test_ocr_job_gateway_contract.py','pp-structure-v3-8gb.yaml')){
   $Src=Join-Path $SrcDir $Name
   if(Test-Path $Src -PathType Leaf){Copy-Item -LiteralPath $Src -Destination (Join-Path $SvcDir $Name) -Force}
  }
@@ -77,9 +77,8 @@ function Set-OcrEnvironment($s,[string]$Target){
  $env:LOCAL_OCR_MAX_BLOCK_TOKENS=[string](Setting $s 'max_block_tokens' 900)
  $env:LOCAL_OCR_TOKEN=$s.token
 }
-function Install-Ocr{Begin-Install;Sync-OcrServiceSource;if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets;Write-JsonAtomic $Secrets $s};& $Python (Join-Path $PSScriptRoot 'service\test_ocr_job_gateway_contract.py');if($LASTEXITCODE -ne 0){throw 'OCR API contract failed'};& $Python (Join-Path $PSScriptRoot 'service\test_document_workbench.py');if($LASTEXITCODE -ne 0){throw 'OCR workbench contract failed'};Write-Connection ([ordered]@{schema=1;module='paddleocr';url="http://127.0.0.1:$Port";workbench_url="http://127.0.0.1:$WorkbenchPort";token=$s.token;strict_gpu=$true});Start-Ocr 'install';Stop-OwnedProcess 'paddleocr';Set-Installed;Write-Host '[OK] paddleocr installed; strict GPU pipeline passed'}
+function Install-Ocr{Begin-Install;Sync-OcrServiceSource;if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets;Write-JsonAtomic $Secrets $s};& $Python (Join-Path $PSScriptRoot 'service\test_ocr_job_gateway_contract.py');if($LASTEXITCODE -ne 0){throw 'OCR API contract failed'};Write-Connection ([ordered]@{schema=1;module='paddleocr';url="http://127.0.0.1:$Port";token=$s.token;strict_gpu=$true});Start-Ocr 'install';Stop-OwnedProcess 'paddleocr';Set-Installed;Write-Host '[OK] paddleocr installed; strict GPU pipeline passed'}
 function Start-Ocr{param([string]$Target='');Sync-OcrServiceSource;$s=Read-Json $Secrets;Set-OcrEnvironment $s $Target;Start-OwnedProcess 'paddleocr' $Python @($Gateway,'--config',(Join-Path $PSScriptRoot 'service\pp-structure-v3-8gb.yaml'),'--model-root',(Join-Path $PSScriptRoot 'models'),'--jobs-root',(Join-Path $DataRoot 'jobs'),'--host','127.0.0.1','--port',$Port,'--token',$s.token) (Join-Path $PSScriptRoot 'service');Wait-Healthy 'paddleocr' {Test-Http "http://127.0.0.1:$Port/health"}}
-function Start-OcrWorkbench{param([string]$Target='');Start-Ocr $Target;$s=Read-Json $Secrets;Start-OwnedProcess 'paddleocr-workbench' $Python @($Workbench,'--host','127.0.0.1','--port',$WorkbenchPort,'--gateway-url',"http://127.0.0.1:$Port",'--token',$s.token,'--data-root',$DataRoot) (Join-Path $PSScriptRoot 'service');Wait-Healthy 'paddleocr-workbench' {Test-Http "http://127.0.0.1:$WorkbenchPort/health"};try{Start-Process "http://127.0.0.1:$WorkbenchPort"}catch{Write-Warning "Open http://127.0.0.1:$WorkbenchPort in a browser"};Write-Host "[OK] PaddleOCR workbench: http://127.0.0.1:$WorkbenchPort" -ForegroundColor Green}
 function Show-OcrDevices{if(Test-Path $Secrets){$s=Read-Json $Secrets}else{$s=Default-Secrets};Set-OcrEnvironment $s 'ingestion';$Code=@'
 import json
 import os
@@ -129,4 +128,4 @@ for index in range(count):
     report["devices"].append({"index": index, "capability": capability})
 print(json.dumps(report, ensure_ascii=False, indent=2))
 '@;$Code | & $Python -;exit $LASTEXITCODE}
-switch($CommandName.ToLowerInvariant()){'install'{Install-Ocr}'start'{Assert-Installed;Start-Ocr $Target}'workbench'{Assert-Installed;Start-OcrWorkbench $Target}'stop'{Stop-OwnedProcess 'paddleocr-workbench';Stop-OwnedProcess 'paddleocr'}'status'{Show-ModuleStatus @('paddleocr','paddleocr-workbench')}'devices'{Show-OcrDevices}'verify'{& $Python -c 'import paddle,paddleocr,paddlex,pymupdf';if($LASTEXITCODE -ne 0){throw 'OCR imports failed'};if($Target -eq 'gpu'){Start-Ocr};Write-Host '[OK] paddleocr verified'}default{Write-Host 'Usage: MODULE.bat install|start [ingestion|cpu|auto|gpu-index]|workbench [cpu|auto|gpu-index]|stop|status|devices|verify [gpu]';if($CommandName -ne 'help' -and $CommandName){exit 2}}}
+switch($CommandName.ToLowerInvariant()){'install'{Install-Ocr}'start'{Assert-Installed;Start-Ocr $Target}'stop'{Stop-OwnedProcess 'paddleocr'}'status'{Show-ModuleStatus @('paddleocr')}'devices'{Show-OcrDevices}'verify'{& $Python -c 'import paddle,paddleocr,paddlex,pymupdf';if($LASTEXITCODE -ne 0){throw 'OCR imports failed'};if($Target -eq 'gpu'){Start-Ocr};Write-Host '[OK] paddleocr verified'}default{Write-Host 'Usage: MODULE.bat install|start [ingestion|cpu|auto|gpu-index]|stop|status|devices|verify [gpu]';if($CommandName -ne 'help' -and $CommandName){exit 2}}}

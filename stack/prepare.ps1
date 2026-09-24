@@ -3,7 +3,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Stage = Join-Path $PSScriptRoot '_build\package'
 $PreparedRoot = Join-Path $Root 'prepared'
 $Out = Join-Path $PreparedRoot 'local-llm-stack-2026.09.16.zip'
-$ModuleNames = @('mysql','elasticsearch','silo','valkey','llama-cpp','paddleocr','ragflow','web')
+$ModuleNames = @('mysql','elasticsearch','silo','valkey','llama-cpp','paddleocr','digitizer','ragflow','web')
 $SevenZipVersion = '26.02'
 $SevenZipTag = '2602'
 
@@ -68,7 +68,7 @@ try {
     if (Test-Path -LiteralPath $Out) { Remove-Item -LiteralPath $Out -Force }
     Compress-Archive -Path (Join-Path $Stage '*') -DestinationPath $Out -CompressionLevel Optimal
     Write-Host "[OK] Prepared orchestrator: $Out" -ForegroundColor Green
-    Write-Host '[NEXT] Put this ZIP and all eight module .7z files in one deployment directory and extract only this ZIP there.' -ForegroundColor Cyan
+    Write-Host '[NEXT] Put this ZIP and all nine module .7z files in one deployment directory and extract only this ZIP there.' -ForegroundColor Cyan
     Write-Host '[NEXT] Run EXTRACT-MODULES.bat, then LOCAL-LLM.bat install.' -ForegroundColor Cyan
 } finally {
     if (Test-Path -LiteralPath $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }

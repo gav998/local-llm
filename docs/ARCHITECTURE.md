@@ -6,7 +6,7 @@
 ```text
 1.PREPARE-ONLINE.bat     меню выбора модуля
 _src/                    общие исходные установочные архивы
-prepared/                восемь архивов модулей и ZIP оболочки stack
+prepared/                девять архивов модулей и ZIP оболочки stack
 modules/                 исходники независимых модулей
 modules/<name>/_src/     wheelhouse, online-cache, логи и прочие cache модуля
 stack/                   исходники оболочки управления
@@ -43,6 +43,7 @@ silo ──────────┼──> ragflow API/task ──> web gatew
 valkey ────────┤
 llama.cpp APIs ┤
 paddleocr API ─┘
+digitizer ───────> paddleocr API + опциональный llama.cpp chat API
 ```
 
 Зависимость означает только чтение connection contract и обращение к loopback

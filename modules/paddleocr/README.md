@@ -26,22 +26,15 @@ explicit `device: cpu`. The stack exposes this as
 strict GPU and fails instead of silently falling back to CPU.
 
 `LOCAL-LLM.bat start paddleocr` stops the other stack modules and starts this
-module alone: the compatibility API listens on `127.0.0.1:9399`, while the
-loopback-only document workbench listens on `127.0.0.1:9400`. The workbench
-uses this module's bundled Python and PyMuPDF. It provides a server-directory
-picker, recursive document tree, page-rendered PDF preview, synchronized
-per-page Markdown editing with content-sized fields, OCR option controls,
-sidecar Markdown and referenced `imgs` export, and Markdown attachment
-embedding into a PDF copy or the explicitly confirmed original.
+module alone. The image/PDF job API listens on `127.0.0.1:9399`. The separate
+`digitizer` module owns the operator interface and sends rasterized field and
+table-cell crops to this API.
 
 Direct module commands are:
 
 ```bat
 MODULE.bat start auto
-MODULE.bat workbench auto
 MODULE.bat stop
 ```
 
-The first command starts only the API. The second ensures that the API is
-ready, starts the workbench and opens it in the default browser. See the root
-README for the complete HTTP contract and `optionalPayload` fields.
+See the root README for the complete HTTP contract and `optionalPayload` fields.
