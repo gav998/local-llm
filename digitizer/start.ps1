@@ -129,7 +129,8 @@ function Install-Digitizer {
             Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    & $Python -c 'import fastapi,httpx,pymupdf,uvicorn; print("Digitizer runtime OK")'
+    $SmokeCode = "import fastapi,httpx,pymupdf,uvicorn; print('Digitizer runtime OK')"
+    & $Python -c $SmokeCode
     if ($LASTEXITCODE -ne 0) { throw 'Installed digitizer runtime cannot be imported.' }
     Set-Content -LiteralPath (Join-Path $Runtime '.installed') -Value 'digitizer portable runtime' -Encoding ASCII
     Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue

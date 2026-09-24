@@ -186,7 +186,8 @@ function Install-PaddleOcr {
         }
     }
 
-    & $Python -c 'import paddle,paddleocr,paddlex,pymupdf; print("PaddleOCR runtime OK")'
+    $SmokeCode = "import paddle,paddleocr,paddlex,pymupdf; print('PaddleOCR runtime OK')"
+    & $Python -c $SmokeCode
     if ($LASTEXITCODE -ne 0) { throw 'Installed PaddleOCR runtime cannot be imported.' }
     Set-Content -LiteralPath (Join-Path $Runtime '.installed') -Value 'PaddleOCR 3.7.0 / PaddlePaddle GPU 3.3.1' -Encoding ASCII
     Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue
