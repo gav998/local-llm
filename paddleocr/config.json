@@ -1,0 +1,9 @@
+{
+  "host": "127.0.0.1",
+  "port": 9399,
+  "api_key": "local-ocr",
+  "device": "auto",
+  "prefer_gpu": 1,
+  "text_recognition_batch_size": 8,
+  "max_block_tokens": 900
+}

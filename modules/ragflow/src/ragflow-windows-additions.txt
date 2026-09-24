@@ -1,9 +1,0 @@
-# Direct native-Windows GraphRAG dependency. The full graspologic fork remains
-# excluded because it requires NumPy <2 on RAGFlow's CPython 3.13 runtime.
-graspologic-native==1.2.5
-
-# RAGFlow imports sklearn from task_executor and deepdoc, but upstream 0.27.1
-# leaves scikit-learn in its disabled "not necessary" block.  Version 1.8.0
-# has a native Windows CPython 3.13 wheel and stays compatible with the pinned
-# NumPy 2.3.x runtime without adding the narwhals dependency introduced later.
-scikit-learn==1.8.0

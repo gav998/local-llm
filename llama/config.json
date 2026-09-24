@@ -1,0 +1,13 @@
+{
+  "host": "127.0.0.1",
+  "llm_port": 6381,
+  "embed_port": 6380,
+  "api_key": "local-llm",
+  "llm_context": 4096,
+  "llm_batch": 256,
+  "llm_main_gpu": 1,
+  "llm_tensor_split": "0.20,0.80",
+  "embed_context": 2048,
+  "embed_batch": 512,
+  "embed_gpu": 0
+}
