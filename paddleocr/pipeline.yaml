@@ -1,8 +1,8 @@
 # Portable PP-StructureV3 profile for one 8 GiB Pascal GPU.
 #
-# This is a high-quality text/layout/table pipeline with selectable optional
-# models. All optional components are initialized so the gateway can enable
-# them per job; conservative request defaults keep only formula recognition on.
+# Base PP-StructureV3 configuration. server.py applies the selected startup
+# profile before construction, replacing the layout/detection models and
+# disabling branches whose weights should not be loaded into memory.
 pipeline_name: PP-StructureV3
 batch_size: 1
 

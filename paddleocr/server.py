@@ -29,8 +29,10 @@ from typing import Any
 
 MODEL_NAMES = (
     "PP-DocLayout-L",
+    "PP-DocLayout-S",
     "PP-DocBlockLayout",
     "PP-OCRv6_medium_det",
+    "PP-OCRv6_tiny_det",
     "eslav_PP-OCRv5_mobile_rec",
     "SLANet_plus",
     "PP-LCNet_x1_0_doc_ori",
@@ -40,6 +42,54 @@ MODEL_NAMES = (
     "PP-FormulaNet_plus-S",
 )
 CHART_MODEL_NAME = "PP-Chart2Table"
+PROFILE_SPECS: dict[str, dict[str, Any]] = {
+    "fast-text": {
+        "name": "Быстрый текст",
+        "capabilities": ["text"],
+        "layout_model": "PP-DocLayout-S",
+        "det_model": "PP-OCRv6_tiny_det",
+    },
+    "accurate-text": {
+        "name": "Точный текст",
+        "capabilities": ["text"],
+        "layout_model": "PP-DocLayout-S",
+        "det_model": "PP-OCRv6_medium_det",
+    },
+    "text-seal": {
+        "name": "Текст + печати",
+        "capabilities": ["text", "seal"],
+        "layout_model": "PP-DocLayout-S",
+        "det_model": "PP-OCRv6_medium_det",
+    },
+    "text-formula": {
+        "name": "Текст + формулы",
+        "capabilities": ["text", "formula"],
+        "layout_model": "PP-DocLayout-S",
+        "det_model": "PP-OCRv6_medium_det",
+    },
+    "digitizer": {
+        "name": "Digitizer: текст + печати + формулы",
+        "capabilities": ["text", "seal", "formula"],
+        "layout_model": "PP-DocLayout-S",
+        "det_model": "PP-OCRv6_medium_det",
+    },
+    "documents": {
+        "name": "Документы и автоматические таблицы",
+        "capabilities": ["text", "table"],
+        "layout_model": "PP-DocLayout-L",
+        "det_model": "PP-OCRv6_medium_det",
+        "doc_preprocessor": True,
+        "textline_orientation": True,
+    },
+    "full-structure": {
+        "name": "Полный PP-StructureV3",
+        "capabilities": ["text", "table", "seal", "formula", "chart", "region"],
+        "layout_model": "PP-DocLayout-L",
+        "det_model": "PP-OCRv6_medium_det",
+        "doc_preprocessor": True,
+        "textline_orientation": True,
+    },
+}
 MAX_UPLOAD_BYTES = int(os.environ.get("LOCAL_OCR_MAX_UPLOAD_BYTES", str(512 << 20)))
 DEFAULT_TEXT_RECOGNITION_BATCH_SIZE = 8
 DEFAULT_MAX_BLOCK_TOKENS = 900
@@ -71,7 +121,10 @@ PREDICT_OPTION_MAP = {
     "textRecScoreThresh": "text_rec_score_thresh",
     "markdownIgnoreLabels": "markdown_ignore_labels",
 }
-REQUIRED_FEATURES = {"useTableRecognition"}
+# Optional branches are initialized by the selected startup profile, but a
+# client may skip any of them for a particular crop. This is essential for the
+# digitizer: its manually delimited cells need plain OCR, not table recovery.
+REQUIRED_FEATURES: set[str] = set()
 IGNORED_CLOUD_OPTIONS = {
     "prettifyMarkdown",
     "showFormulaNumber",
@@ -442,7 +495,9 @@ def detect_suffix(header: bytes) -> str:
     raise ValueError("Only PDF, PNG, JPEG, TIFF and BMP inputs are accepted")
 
 
-def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
+def build_predict_options(
+    optional_payload: dict[str, Any], capabilities: set[str] | None = None
+) -> dict[str, Any]:
     unknown = set(optional_payload) - set(PREDICT_OPTION_MAP) - IGNORED_CLOUD_OPTIONS
     if unknown:
         raise ValueError(f"Unsupported optionalPayload fields: {sorted(unknown)}")
@@ -457,15 +512,16 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
             + ", ".join(disabled_but_required)
         )
 
+    active = capabilities or set()
     options: dict[str, Any] = {
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
         "use_textline_orientation": False,
-        "use_seal_recognition": False,
-        "use_table_recognition": True,
-        "use_formula_recognition": True,
-        "use_chart_recognition": False,
-        "use_region_detection": True,
+        "use_seal_recognition": "seal" in active,
+        "use_table_recognition": "table" in active,
+        "use_formula_recognition": "formula" in active,
+        "use_chart_recognition": "chart" in active,
+        "use_region_detection": "region" in active,
         "format_block_content": True,
         # Reuse the page-wide East Slavic OCR boxes/text. The table model adds
         # structure without instantiating a second OCR pipeline per table.
@@ -475,35 +531,89 @@ def build_predict_options(optional_payload: dict[str, Any]) -> dict[str, Any]:
         value = optional_payload.get(api_name)
         if value is not None:
             options[python_name] = value
+    if capabilities is not None:
+        requested = {
+            "table": options["use_table_recognition"],
+            "seal": options["use_seal_recognition"],
+            "formula": options["use_formula_recognition"],
+            "chart": options["use_chart_recognition"],
+            "region": options["use_region_detection"],
+        }
+        unavailable = sorted(
+            name for name, enabled in requested.items() if enabled and name not in capabilities
+        )
+        if unavailable:
+            raise ValueError(
+                "The active PaddleOCR profile does not provide: "
+                + ", ".join(unavailable)
+            )
     return options
 
 
+def required_models_for_profile(profile: str) -> tuple[str, ...]:
+    spec = PROFILE_SPECS.get(profile)
+    if spec is None:
+        raise ValueError(f"Unknown PaddleOCR profile: {profile}")
+    capabilities = set(spec["capabilities"])
+    names = {
+        str(spec["layout_model"]),
+        str(spec["det_model"]),
+        "eslav_PP-OCRv5_mobile_rec",
+    }
+    if spec.get("doc_preprocessor"):
+        names.update({"PP-LCNet_x1_0_doc_ori", "UVDoc"})
+    if spec.get("textline_orientation"):
+        names.add("PP-LCNet_x1_0_textline_ori")
+    if "table" in capabilities:
+        names.add("SLANet_plus")
+    if "seal" in capabilities:
+        names.add("PP-OCRv4_server_seal_det")
+    if "formula" in capabilities:
+        names.add("PP-FormulaNet_plus-S")
+    if "chart" in capabilities:
+        names.add(CHART_MODEL_NAME)
+    if "region" in capabilities:
+        names.add("PP-DocBlockLayout")
+    return tuple(sorted(names))
+
+
+def apply_pipeline_profile(config: dict[str, Any], profile: str) -> dict[str, Any]:
+    spec = PROFILE_SPECS.get(profile)
+    if spec is None:
+        raise ValueError(f"Unknown PaddleOCR profile: {profile}")
+    capabilities = set(spec["capabilities"])
+    config["use_doc_preprocessor"] = bool(spec.get("doc_preprocessor"))
+    config["use_table_recognition"] = "table" in capabilities
+    config["use_seal_recognition"] = "seal" in capabilities
+    config["use_formula_recognition"] = "formula" in capabilities
+    config["use_chart_recognition"] = "chart" in capabilities
+    config["use_region_detection"] = "region" in capabilities
+    config["SubModules"]["LayoutDetection"]["model_name"] = spec["layout_model"]
+    general = config["SubPipelines"]["GeneralOCR"]
+    general["use_textline_orientation"] = bool(spec.get("textline_orientation"))
+    general["SubModules"]["TextDetection"]["model_name"] = spec["det_model"]
+    return config
+
+
 def validate_pipeline_profile(config: dict[str, Any]) -> None:
-    """Ensure every workbench-selectable model is initialized locally."""
-    if config.get("use_doc_preprocessor") is not True:
-        raise RuntimeError("The selectable profile must initialize DocPreprocessor")
-    if config.get("use_table_recognition") is not True:
-        raise RuntimeError("PP-StructureV3 table recognition must be enabled")
-    for option in (
-        "use_seal_recognition",
-        "use_formula_recognition",
-        "use_chart_recognition",
-    ):
-        if config.get(option) is not True:
-            raise RuntimeError(f"The selectable profile must initialize {option}")
+    """Validate only the branches enabled by the selected startup profile."""
     doc_config = config.get("SubPipelines", {}).get("DocPreprocessor", {})
-    if doc_config.get("use_doc_orientation_classify") is not True:
-        raise RuntimeError("Document orientation model must be initialized")
-    if doc_config.get("use_doc_unwarping") is not True:
-        raise RuntimeError("Document unwarping model must be initialized")
+    if config.get("use_doc_preprocessor"):
+        if doc_config.get("use_doc_orientation_classify") is not True:
+            raise RuntimeError("Document orientation model must be initialized")
+        if doc_config.get("use_doc_unwarping") is not True:
+            raise RuntimeError("Document unwarping model must be initialized")
     ocr_config = config.get("SubPipelines", {}).get("GeneralOCR", {})
-    if ocr_config.get("use_textline_orientation") is not True:
-        raise RuntimeError("Text-line orientation model must be initialized")
-    table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
-    if table_config.get("pipeline_name") != "table_recognition":
-        raise RuntimeError("The audited compact table_recognition pipeline is missing")
-    if table_config.get("use_ocr_model") is not False:
-        raise RuntimeError("Table recognition must reuse the page-wide OCR result")
+    if ocr_config.get("use_textline_orientation") and "TextLineOrientation" not in ocr_config.get(
+        "SubModules", {}
+    ):
+        raise RuntimeError("Text-line orientation model configuration is missing")
+    if config.get("use_table_recognition"):
+        table_config = config.get("SubPipelines", {}).get("TableRecognition", {})
+        if table_config.get("pipeline_name") != "table_recognition":
+            raise RuntimeError("The audited compact table_recognition pipeline is missing")
+        if table_config.get("use_ocr_model") is not False:
+            raise RuntimeError("Table recognition must reuse the page-wide OCR result")
 
 
 def parse_positive_int(value: str, name: str) -> int:
@@ -587,21 +697,28 @@ def list_cuda_devices() -> int:
     return 0
 
 
-def load_pipeline(config_path: Path, model_root: Path):
+def load_pipeline(
+    config_path: Path, model_root: Path, profile: str = "full-structure"
+):
     if os.environ.get("PADDLE_PDX_DISABLE_DEVICE_FALLBACK") != "1":
         raise RuntimeError("PADDLE_PDX_DISABLE_DEVICE_FALLBACK must be 1")
-    for name in MODEL_NAMES:
-        for filename in ("inference.json", "inference.yml", "inference.pdiparams"):
+    import paddle
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config = apply_pipeline_profile(config, profile)
+    validate_pipeline_profile(config)
+    required_models = required_models_for_profile(profile)
+    for name in required_models:
+        filenames = (
+            ("config.json", "inference.yml", "model_state.pdparams")
+            if name == CHART_MODEL_NAME
+            else ("inference.json", "inference.yml", "inference.pdiparams")
+        )
+        for filename in filenames:
             key = model_root / name / filename
             if key.is_symlink() or not key.is_file():
                 raise RuntimeError(f"Prepared model is incomplete: {key}")
-    for filename in ("config.json", "inference.yml", "model_state.pdparams"):
-        key = model_root / CHART_MODEL_NAME / filename
-        if key.is_symlink() or not key.is_file():
-            raise RuntimeError(f"Prepared model is incomplete: {key}")
-
-    import paddle
-    import yaml
 
     compiled_cuda = str(paddle.version.cuda)
     cuda_compiled = bool(paddle.is_compiled_with_cuda())
@@ -651,8 +768,6 @@ def load_pipeline(config_path: Path, model_root: Path):
     right = paddle.randn([256, 256], dtype="float32")
     probe_value = float(paddle.sum(paddle.matmul(left, right)).numpy().item())
 
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    validate_pipeline_profile(config)
     text_recognition_batch_size = parse_positive_int(
         os.environ.get(
             "LOCAL_OCR_TEXT_REC_BATCH_SIZE",
@@ -668,8 +783,9 @@ def load_pipeline(config_path: Path, model_root: Path):
     doc_config["SubModules"]["DocUnwarping"]["model_dir"] = str(
         model_root / "UVDoc"
     )
+    spec = PROFILE_SPECS[profile]
     config["SubModules"]["LayoutDetection"]["model_dir"] = str(
-        model_root / "PP-DocLayout-L"
+        model_root / str(spec["layout_model"])
     )
     config["SubModules"]["ChartRecognition"]["model_dir"] = str(
         model_root / CHART_MODEL_NAME
@@ -678,7 +794,7 @@ def load_pipeline(config_path: Path, model_root: Path):
         model_root / "PP-DocBlockLayout"
     )
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextDetection"]["model_dir"] = str(
-        model_root / "PP-OCRv6_medium_det"
+        model_root / str(spec["det_model"])
     )
     config["SubPipelines"]["GeneralOCR"]["SubModules"]["TextRecognition"]["model_dir"] = str(
         model_root / "eslav_PP-OCRv5_mobile_rec"
@@ -726,16 +842,26 @@ def load_pipeline(config_path: Path, model_root: Path):
         "cuda_tensor_probe_value": probe_value,
         "probe_tensor_device": probe_tensor_device,
         "text_recognition_batch_size": text_recognition_batch_size,
-        "table_recognition": True,
-        "table_structure_model": "SLANet_plus",
-        "formula_recognition_model": "PP-FormulaNet_plus-S",
-        "optional_models_ready": True,
+        "profile": profile,
+        "profile_name": spec["name"],
+        "capabilities": list(spec["capabilities"]),
+        "loaded_models": list(required_models),
+        "table_recognition": "table" in spec["capabilities"],
+        "table_structure_model": "SLANet_plus"
+        if "table" in spec["capabilities"]
+        else None,
+        "formula_recognition_model": "PP-FormulaNet_plus-S"
+        if "formula" in spec["capabilities"]
+        else None,
+        "optional_models_ready": len(spec["capabilities"]) > 1,
     }
     return pipeline, runtime_info
 
 
-def load_strict_gpu_pipeline(config_path: Path, model_root: Path):
-    pipeline, runtime_info = load_pipeline(config_path, model_root)
+def load_strict_gpu_pipeline(
+    config_path: Path, model_root: Path, profile: str = "full-structure"
+):
+    pipeline, runtime_info = load_pipeline(config_path, model_root, profile)
     if not runtime_info["strict_gpu"]:
         raise RuntimeError("Strict GPU startup resolved to CPU")
     return pipeline, runtime_info
@@ -910,7 +1036,29 @@ def create_app(manager: JobManager, token: str) -> Any:
             payload = json.loads(optional_payload or "{}")
             if not isinstance(payload, dict):
                 raise ValueError("optionalPayload must be a JSON object")
-            predict_options = build_predict_options(payload)
+            if manager.gpu_info.get("profile") in {"documents", "full-structure"}:
+                payload.setdefault("useDocOrientationClassify", True)
+                payload.setdefault("useDocUnwarping", True)
+                payload.setdefault("useTextlineOrientation", True)
+            loaded_models = set(manager.gpu_info.get("loaded_models") or [])
+            preprocessing_models = {
+                "useDocOrientationClassify": "PP-LCNet_x1_0_doc_ori",
+                "useDocUnwarping": "UVDoc",
+                "useTextlineOrientation": "PP-LCNet_x1_0_textline_ori",
+            }
+            unavailable_preprocessing = sorted(
+                option
+                for option, model in preprocessing_models.items()
+                if payload.get(option) is True and model not in loaded_models
+            )
+            if unavailable_preprocessing:
+                raise ValueError(
+                    "The active PaddleOCR profile does not provide: "
+                    + ", ".join(unavailable_preprocessing)
+                )
+            predict_options = build_predict_options(
+                payload, set(manager.gpu_info.get("capabilities") or ["text"])
+            )
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1047,6 +1195,9 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=9399, type=int)
     parser.add_argument("--token", default=os.environ.get("LOCAL_OCR_TOKEN", "local"))
+    parser.add_argument(
+        "--profile", choices=tuple(PROFILE_SPECS), default="full-structure"
+    )
     parser.add_argument("--list-devices", action="store_true")
     args = parser.parse_args()
     if args.list_devices:
@@ -1057,7 +1208,7 @@ def main() -> int:
     if args.host != "127.0.0.1":
         raise SystemExit("The local OCR gateway may bind only to 127.0.0.1")
 
-    pipeline, gpu_info = load_pipeline(args.config, args.model_root)
+    pipeline, gpu_info = load_pipeline(args.config, args.model_root, args.profile)
     max_block_tokens = parse_positive_int(
         os.environ.get("LOCAL_OCR_MAX_BLOCK_TOKENS", str(DEFAULT_MAX_BLOCK_TOKENS)).strip(),
         "LOCAL_OCR_MAX_BLOCK_TOKENS",

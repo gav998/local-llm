@@ -2,7 +2,8 @@
 param(
     [int]$Port = 0,
     [string]$ApiKey = '',
-    [string]$Device = ''
+    [string]$Device = '',
+    [string]$Profile = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +18,30 @@ $Models = Join-Path $Root 'models'
 $Downloads = Join-Path $Root '_download'
 $Logs = Join-Path $Root 'logs'
 $Jobs = Join-Path $Root 'data\jobs'
+$Profiles = @(
+    [pscustomobject]@{ Id='fast-text'; Name='Быстрый текст'; Description='минимум памяти, лёгкий детектор'; Capabilities=@('text') },
+    [pscustomobject]@{ Id='accurate-text'; Name='Точный текст'; Description='качественный детектор, без дополнительных ветвей'; Capabilities=@('text') },
+    [pscustomobject]@{ Id='text-seal'; Name='Текст + печати'; Description='текстовые поля и круглые печати'; Capabilities=@('text','seal') },
+    [pscustomobject]@{ Id='text-formula'; Name='Текст + формулы'; Description='текст и формулы в LaTeX'; Capabilities=@('text','formula') },
+    [pscustomobject]@{ Id='digitizer'; Name='Digitizer'; Description='текст + печати + формулы'; Capabilities=@('text','seal','formula') },
+    [pscustomobject]@{ Id='documents'; Name='Документы и таблицы'; Description='layout, точный OCR и автоструктура таблиц'; Capabilities=@('text','table') },
+    [pscustomobject]@{ Id='full-structure'; Name='Полный PP-StructureV3'; Description='все модели и функции'; Capabilities=@('text','table','seal','formula','chart','region') }
+)
+$ModelAssets = @{
+    'PP-DocLayout-L' = @('PP-DocLayout-L_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocLayout-L_infer.tar')
+    'PP-DocLayout-S' = @('PP-DocLayout-S_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocLayout-S_infer.tar')
+    'PP-DocBlockLayout' = @('PP-DocBlockLayout_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocBlockLayout_infer.tar')
+    'PP-OCRv6_medium_det' = @('PP-OCRv6_medium_det_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_infer.tar')
+    'PP-OCRv6_tiny_det' = @('PP-OCRv6_tiny_det_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_tiny_det_infer.tar')
+    'eslav_PP-OCRv5_mobile_rec' = @('eslav_PP-OCRv5_mobile_rec_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/eslav_PP-OCRv5_mobile_rec_infer.tar')
+    'SLANet_plus' = @('SLANet_plus_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_plus_infer.tar')
+    'PP-LCNet_x1_0_doc_ori' = @('PP-LCNet_x1_0_doc_ori_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_doc_ori_infer.tar')
+    'UVDoc' = @('UVDoc_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/UVDoc_infer.tar')
+    'PP-LCNet_x1_0_textline_ori' = @('PP-LCNet_x1_0_textline_ori_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_textline_ori_infer.tar')
+    'PP-OCRv4_server_seal_det' = @('PP-OCRv4_server_seal_det_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_server_seal_det_infer.tar')
+    'PP-FormulaNet_plus-S' = @('PP-FormulaNet_plus-S_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-FormulaNet_plus-S_infer.tar')
+    'PP-Chart2Table' = @('PP-Chart2Table_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-Chart2Table_infer.tar')
+}
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -117,11 +142,39 @@ function Test-Model([string]$Name) {
 }
 
 function Test-Installed {
-    if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $Runtime '.installed') -PathType Leaf)) { return $false }
-    foreach ($Name in @('PP-DocLayout-L','PP-DocBlockLayout','PP-OCRv6_medium_det','eslav_PP-OCRv5_mobile_rec','SLANet_plus','PP-LCNet_x1_0_doc_ori','UVDoc','PP-LCNet_x1_0_textline_ori','PP-OCRv4_server_seal_det','PP-FormulaNet_plus-S','PP-Chart2Table')) {
-        if (-not (Test-Model $Name)) { return $false }
+    return (Test-Path -LiteralPath $Python -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $Runtime '.installed') -PathType Leaf)
+}
+
+function Get-ProfileModels([string]$ProfileId) {
+    $Common = @('eslav_PP-OCRv5_mobile_rec')
+    switch ($ProfileId) {
+        'fast-text' { return $Common + @('PP-DocLayout-S','PP-OCRv6_tiny_det') }
+        'accurate-text' { return $Common + @('PP-DocLayout-S','PP-OCRv6_medium_det') }
+        'text-seal' { return $Common + @('PP-DocLayout-S','PP-OCRv6_medium_det','PP-OCRv4_server_seal_det') }
+        'text-formula' { return $Common + @('PP-DocLayout-S','PP-OCRv6_medium_det','PP-FormulaNet_plus-S') }
+        'digitizer' { return $Common + @('PP-DocLayout-S','PP-OCRv6_medium_det','PP-OCRv4_server_seal_det','PP-FormulaNet_plus-S') }
+        'documents' { return $Common + @('PP-DocLayout-L','PP-OCRv6_medium_det','SLANet_plus','PP-LCNet_x1_0_doc_ori','UVDoc','PP-LCNet_x1_0_textline_ori') }
+        'full-structure' { return $Common + @('PP-DocLayout-L','PP-DocBlockLayout','PP-OCRv6_medium_det','SLANet_plus','PP-LCNet_x1_0_doc_ori','UVDoc','PP-LCNet_x1_0_textline_ori','PP-OCRv4_server_seal_det','PP-FormulaNet_plus-S','PP-Chart2Table') }
+        default { throw "Unknown PaddleOCR profile: $ProfileId" }
     }
-    return $true
+}
+
+function Install-ProfileModels([string]$ProfileId) {
+    $Required = @(Get-ProfileModels $ProfileId)
+    $Missing = @($Required | Where-Object { -not (Test-Model $_) })
+    if (-not $Missing.Count) { return }
+    Write-Host "Preparing models for profile '$ProfileId'..." -ForegroundColor Cyan
+    $SevenZip = Get-7Zip
+    New-Item -ItemType Directory -Path $Models -Force | Out-Null
+    foreach ($Name in $Missing) {
+        $Asset = $ModelAssets[$Name]
+        if (-not $Asset) { throw "No download definition for model $Name" }
+        $Archive = Download-File $Asset[0] $Asset[1]
+        Expand-PortableArchive $Archive (Join-Path $Models $Name) $true $SevenZip
+        if (-not (Test-Model $Name)) { throw "Incomplete PaddleOCR model: $Name" }
+    }
+    Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $Root '_cache') -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Install-PaddleOcr {
@@ -138,28 +191,6 @@ function Install-PaddleOcr {
     if (-not (Test-Path -LiteralPath $Uv -PathType Leaf)) {
         $Archive = Download-File 'uv-x86_64-pc-windows-msvc.zip' 'https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-pc-windows-msvc.zip'
         Expand-PortableArchive $Archive (Join-Path $Runtime 'uv') $false $SevenZip
-    }
-
-    $ModelAssets = @(
-        @('PP-DocLayout-L','PP-DocLayout-L_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocLayout-L_infer.tar'),
-        @('PP-DocBlockLayout','PP-DocBlockLayout_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-DocBlockLayout_infer.tar'),
-        @('PP-OCRv6_medium_det','PP-OCRv6_medium_det_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_medium_det_infer.tar'),
-        @('eslav_PP-OCRv5_mobile_rec','eslav_PP-OCRv5_mobile_rec_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/eslav_PP-OCRv5_mobile_rec_infer.tar'),
-        @('SLANet_plus','SLANet_plus_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_plus_infer.tar'),
-        @('PP-LCNet_x1_0_doc_ori','PP-LCNet_x1_0_doc_ori_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_doc_ori_infer.tar'),
-        @('UVDoc','UVDoc_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/UVDoc_infer.tar'),
-        @('PP-LCNet_x1_0_textline_ori','PP-LCNet_x1_0_textline_ori_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_textline_ori_infer.tar'),
-        @('PP-OCRv4_server_seal_det','PP-OCRv4_server_seal_det_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv4_server_seal_det_infer.tar'),
-        @('PP-FormulaNet_plus-S','PP-FormulaNet_plus-S_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-FormulaNet_plus-S_infer.tar'),
-        @('PP-Chart2Table','PP-Chart2Table_infer.tar','https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-Chart2Table_infer.tar')
-    )
-    foreach ($Asset in $ModelAssets) {
-        $Target = Join-Path $Models $Asset[0]
-        if (-not (Test-Model $Asset[0])) {
-            $Archive = Download-File $Asset[1] $Asset[2]
-            Expand-PortableArchive $Archive $Target $true $SevenZip
-            if (-not (Test-Model $Asset[0])) { throw "Incomplete PaddleOCR model: $($Asset[0])" }
-        }
     }
 
     $PaddleWheel = Download-File 'paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl' 'https://paddle-whl.cdn.bcebos.com/stable/cu118/paddlepaddle-gpu/paddlepaddle_gpu-3.3.1-cp311-cp311-win_amd64.whl'
@@ -220,26 +251,96 @@ if (-not (Test-Installed)) {
     Initialize-PortableEnvironment
 }
 
-$Connection = [ordered]@{ schema=1; url="http://$($Config.host):$Port"; api_key=$ApiKey }
-$Connection | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
-$Arguments = @((Join-Path $Root 'server.py'),'--config',(Join-Path $Root 'pipeline.yaml'),'--model-root',$Models,'--jobs-root',$Jobs,'--host',$Config.host,'--port',$Port,'--token',$ApiKey)
-$ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
-$OutLog = Join-Path $Logs 'server.out.log'
-$ErrorLog = Join-Path $Logs 'server.error.log'
-Remove-Item -LiteralPath $OutLog,$ErrorLog -Force -ErrorAction SilentlyContinue
-$Process = $null
-try {
-    Write-Host "Starting PaddleOCR on GPU setting '$Device'. Initial model loading can take several minutes."
-    $Process = Start-Process -FilePath $Python -ArgumentList $ArgumentLine -WorkingDirectory $Root -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
-    Wait-Healthy "http://$($Config.host):$Port/health" $Process
-    Write-Host "[READY] PaddleOCR: http://$($Config.host):$Port" -ForegroundColor Green
-    Write-Host "Simple API: POST /v1/ocr (Bearer $ApiKey, multipart field: file)"
-    Read-Host 'Press Enter to stop PaddleOCR' | Out-Null
-} finally {
-    if ($Process -and -not $Process.HasExited) {
-        Write-Host 'Stopping PaddleOCR...'
-        $Process.Kill()
-        $Process.WaitForExit(10000) | Out-Null
+$Running = $null
+
+function Write-Connection([string]$ProfileId,[string[]]$Capabilities,[string]$Status) {
+    $Connection = [ordered]@{
+        schema = 2
+        url = "http://$($Config.host):$Port"
+        api_key = $ApiKey
+        status = $Status
+        profile = $ProfileId
+        capabilities = $Capabilities
     }
-    if ($Process) { $Process.Dispose() }
+    $Connection | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
+}
+
+function Stop-PaddleOcr {
+    if (-not $script:Running) { return }
+    if (-not $script:Running.Process.HasExited) {
+        Write-Host 'Stopping PaddleOCR...'
+        $script:Running.Process.Kill()
+        $script:Running.Process.WaitForExit(10000) | Out-Null
+    }
+    $script:Running.Process.Dispose()
+    Write-Connection -ProfileId $script:Running.Profile.Id -Capabilities $script:Running.Profile.Capabilities -Status 'stopped'
+    $script:Running = $null
+}
+
+function Start-Profile([string]$ProfileId) {
+    $Selected = $Profiles | Where-Object { $_.Id -eq $ProfileId } | Select-Object -First 1
+    if (-not $Selected) { throw "Unknown PaddleOCR profile: $ProfileId" }
+    Stop-PaddleOcr
+    Install-ProfileModels $ProfileId
+    Initialize-PortableEnvironment
+    $Arguments = @((Join-Path $Root 'server.py'),'--config',(Join-Path $Root 'pipeline.yaml'),'--profile',$ProfileId,'--model-root',$Models,'--jobs-root',$Jobs,'--host',$Config.host,'--port',$Port,'--token',$ApiKey)
+    $ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
+    $OutLog = Join-Path $Logs 'server.out.log'
+    $ErrorLog = Join-Path $Logs 'server.error.log'
+    Remove-Item -LiteralPath $OutLog,$ErrorLog -Force -ErrorAction SilentlyContinue
+    Write-Host "Starting '$($Selected.Name)' on GPU setting '$Device'. Model loading can take several minutes." -ForegroundColor Cyan
+    $Process = Start-Process -FilePath $Python -ArgumentList $ArgumentLine -WorkingDirectory $Root -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
+    try {
+        Wait-Healthy "http://$($Config.host):$Port/health" $Process
+        $script:Running = [pscustomobject]@{ Process=$Process; Profile=$Selected }
+        Write-Connection -ProfileId $Selected.Id -Capabilities $Selected.Capabilities -Status 'ready'
+        Write-Host "[READY] PaddleOCR: http://$($Config.host):$Port · $($Selected.Name)" -ForegroundColor Green
+        Write-Host "Capabilities: $($Selected.Capabilities -join ', ')"
+    } catch {
+        if (-not $Process.HasExited) { $Process.Kill() }
+        $Process.Dispose()
+        throw
+    }
+}
+
+function Show-Menu {
+    Clear-Host
+    Write-Host 'Portable PaddleOCR profiles' -ForegroundColor Cyan
+    if ($script:Running -and -not $script:Running.Process.HasExited) {
+        Write-Host "RUNNING  pid=$($script:Running.Process.Id)  profile=$($script:Running.Profile.Name)  GPU=$Device" -ForegroundColor Green
+    } else {
+        if ($script:Running) { Stop-PaddleOcr }
+        Write-Host "stopped  GPU=$Device"
+    }
+    Write-Host ''
+    for ($Index = 0; $Index -lt $Profiles.Count; $Index++) {
+        $Item = $Profiles[$Index]
+        $Installed = @((Get-ProfileModels $Item.Id) | Where-Object { -not (Test-Model $_) }).Count -eq 0
+        $Marker = if ($Installed) { 'ready' } else { 'download on first start' }
+        Write-Host ('[{0}] {1,-31} {2} ({3})' -f ($Index + 1),$Item.Name,$Item.Description,$Marker)
+    }
+    Write-Host '[S] Stop current profile'
+    Write-Host '[R] Refresh'
+    Write-Host '[Q] Stop and exit'
+}
+
+Write-Connection -ProfileId '' -Capabilities @() -Status 'stopped'
+try {
+    if ($Profile) {
+        Start-Profile $Profile
+        Read-Host 'Press Enter to stop PaddleOCR' | Out-Null
+    } else {
+        while ($true) {
+            Show-Menu
+            $Choice = (Read-Host 'Select').Trim()
+            if ($Choice -match '^[Qq]$') { break }
+            if ($Choice -match '^[Ss]$') { Stop-PaddleOcr; continue }
+            $Number = 0
+            if ([int]::TryParse($Choice,[ref]$Number) -and $Number -ge 1 -and $Number -le $Profiles.Count) {
+                Start-Profile $Profiles[$Number - 1].Id
+            }
+        }
+    }
+} finally {
+    Stop-PaddleOcr
 }

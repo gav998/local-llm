@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Portable loopback-only structured PDF digitizer backed by PaddleOCR and llama.cpp."""
+"""Portable loopback-only semantic PDF digitizer backed by PaddleOCR."""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import json
 import locale
 import os
@@ -14,17 +15,124 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import unquote, urlparse
 
 PDF_SUFFIX = ".pdf"
 MAX_PDF_BYTES = 1 << 30
+SCHEMA_VERSION = 2
+OCR_MODES = {"text", "seal", "formula", "text_seal", "text_formula", "none"}
+ORIENTATIONS = {0, 90, 180, 270}
 DEFAULT_PROMPT = (
     "Исправь только очевидные ошибки OCR в русском тексте, убери переносы слов "
     "между строками и лишние пробелы. Не добавляй факты. Верни только исправленный текст."
 )
-REGION_KINDS = {"field", "table_header", "table_rows", "group_value"}
-OBJECT_KINDS = {"field", "table"}
+
+
+PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "organization",
+        "name": "Название организации",
+        "description": "Наименование организации на титульном листе",
+        "fields": [("name", "Название организации", "text")],
+    },
+    {
+        "id": "approval",
+        "name": "Утверждение / подтверждение",
+        "description": "Должность, ФИО, дата, печать и подпись",
+        "fields": [
+            ("approval_block", "Блок целиком", "text_seal"),
+            ("position", "Должность", "text"),
+            ("full_name", "ФИО", "text"),
+            ("date", "Дата", "text"),
+            ("seal", "Печать", "seal"),
+            ("signature", "Подпись", "none"),
+        ],
+    },
+    {
+        "id": "product",
+        "name": "Наименование и уровень изделия",
+        "description": "Комплекс, изделие, агрегат или узел и номер техники",
+        "fields": [
+            ("name", "Наименование", "text"),
+            ("level", "Уровень (комплекс / изделие / агрегат / узел)", "text"),
+            ("equipment_number", "Номер техники", "text"),
+        ],
+    },
+    {
+        "id": "process_card",
+        "name": "Номер технологической карты",
+        "description": "Обозначение или номер технологической карты",
+        "fields": [("number", "Номер технологической карты", "text")],
+    },
+    {
+        "id": "agreement",
+        "name": "Согласование",
+        "description": "С кем согласовано: должность, ФИО и дата",
+        "fields": [
+            ("position", "Должность", "text"),
+            ("full_name", "ФИО", "text"),
+            ("date", "Дата", "text"),
+            ("seal", "Печать", "seal"),
+            ("signature", "Подпись", "none"),
+        ],
+    },
+    {
+        "id": "frame_inventory",
+        "name": "Рамка: инвентарный номер",
+        "description": "Инвентарный номер, подпись и дата",
+        "fields": [
+            ("inventory_number", "Инвентарный номер", "text"),
+            ("signature", "Подпись", "none"),
+            ("date", "Дата", "text"),
+        ],
+    },
+    {
+        "id": "frame_replacement",
+        "name": "Рамка: взамен инвентарного",
+        "description": "Инвентарный номер заменённого документа",
+        "fields": [("replacement_inventory_number", "Взамен инвентарного №", "text")],
+    },
+    {
+        "id": "frame_duplicate",
+        "name": "Рамка: дубликат",
+        "description": "Инвентарный номер дубликата, подпись и дата",
+        "fields": [
+            ("duplicate_inventory_number", "Инвентарный № дубликата", "text"),
+            ("signature", "Подпись", "none"),
+            ("date", "Дата", "text"),
+        ],
+    },
+    {
+        "id": "maintenance_periodicity",
+        "name": "Периодичность технического обслуживания",
+        "description": "Период или условие выполнения ТО",
+        "fields": [("periodicity", "Периодичность", "text")],
+    },
+    {
+        "id": "frame_people",
+        "name": "Рамка: разработал / утвердил",
+        "description": "Типовые поля основной надписи без OCR таблицы",
+        "fields": [
+            ("developed_by", "Разработал", "text"),
+            ("checked_by", "Проверил", "text"),
+            ("approved_by", "Утвердил", "text"),
+            ("date", "Дата", "text"),
+        ],
+    },
+    {
+        "id": "custom_field",
+        "name": "Произвольное поле",
+        "description": "Один текстовый объект с настраиваемым названием",
+        "fields": [("value", "Значение", "text")],
+    },
+    {
+        "id": "table",
+        "name": "Таблица",
+        "description": "Ручные заголовки, сетка строк и группирующие значения",
+        "type": "table",
+    },
+]
 
 
 def import_pymupdf():
@@ -38,9 +146,13 @@ def import_pymupdf():
         return fitz
 
 
+def uid() -> str:
+    return uuid.uuid4().hex
+
+
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = path.with_name(f".{path.name}.{uid()}.tmp")
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -52,26 +164,38 @@ def clean_text(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
 
 
-def flatten_ocr_result(value: str) -> str:
-    parts: list[str] = []
+def flatten_ocr_result(value: str, mode: str = "text") -> str:
+    wanted_labels = {
+        "seal": {"seal"},
+        "formula": {"formula", "formula_number"},
+    }.get(mode)
+    selected: list[str] = []
+    fallback: list[str] = []
+    markdown_parts: list[str] = []
     for line in value.splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
         result = payload.get("result") or {}
-        markdown = result.get("markdown") or {}
-        text = markdown.get("text")
-        if isinstance(text, list):
-            text = "\n".join(str(item) for item in text)
-        if isinstance(text, str) and text.strip():
-            parts.append(text.strip())
-            continue
+        markdown = (result.get("markdown") or {}).get("text")
+        if isinstance(markdown, list):
+            markdown = "\n".join(str(item) for item in markdown)
+        if isinstance(markdown, str) and markdown.strip():
+            markdown_parts.append(markdown.strip())
         for layout in result.get("layoutParsingResults") or []:
             blocks = (layout.get("prunedResult") or {}).get("parsing_res_list") or []
             for block in blocks:
-                content = block.get("block_content") if isinstance(block, dict) else None
-                if content:
-                    parts.append(str(content).strip())
+                if not isinstance(block, dict):
+                    continue
+                content = block.get("block_content")
+                if not content:
+                    continue
+                text = str(content).strip()
+                fallback.append(text)
+                label = str(block.get("block_label") or "").casefold()
+                if wanted_labels and any(token in label for token in wanted_labels):
+                    selected.append(text)
+    parts = selected if selected else (markdown_parts if markdown_parts else fallback)
     if not parts:
         raise RuntimeError("PaddleOCR вернул пустой результат")
     return clean_text("\n".join(parts))
@@ -103,6 +227,16 @@ def validate_rect(value: Any) -> dict[str, float]:
     return rect
 
 
+def normalize_orientation(value: Any) -> int:
+    try:
+        orientation = int(value or 0) % 360
+    except (TypeError, ValueError):
+        orientation = 0
+    if orientation not in ORIENTATIONS:
+        raise ValueError("Ориентация должна быть 0, 90, 180 или 270 градусов")
+    return orientation
+
+
 def sidecar_path(source: Path) -> Path:
     return source.with_name(source.name + ".digitizer.json")
 
@@ -111,10 +245,74 @@ def template_path(source: Path) -> Path:
     return source.with_name("digitizer.templates.json")
 
 
+def new_source(page: int, rect: dict[str, float], kind: str = "region") -> dict[str, Any]:
+    return {
+        "id": uid(),
+        "kind": kind,
+        "page": page,
+        "rect": validate_rect(rect),
+        "orientation": 0,
+        "properties": {"useLlm": False, "prompt": ""},
+        "status": "pending",
+        "output": None,
+        "error": None,
+    }
+
+
+def new_field(key: str, name: str, ocr_mode: str = "text") -> dict[str, Any]:
+    return {
+        "id": uid(),
+        "key": key,
+        "name": name,
+        "ocrMode": ocr_mode if ocr_mode in OCR_MODES else "text",
+        "orientation": 0,
+        "value": "",
+        "sources": [],
+    }
+
+
+def preset_catalog() -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for preset in PRESETS:
+        result.append(
+            {
+                "id": preset["id"],
+                "name": preset["name"],
+                "description": preset["description"],
+                "type": preset.get("type", "record"),
+                "fields": [
+                    {"key": key, "name": name, "ocrMode": mode}
+                    for key, name, mode in preset.get("fields", [])
+                ],
+            }
+        )
+    return result
+
+
+def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
+    preset = next((item for item in PRESETS if item["id"] == preset_id), None)
+    if preset is None:
+        raise ValueError("Неизвестный тип объекта")
+    object_type = preset.get("type", "record")
+    obj: dict[str, Any] = {
+        "id": uid(),
+        "type": object_type,
+        "preset": preset_id,
+        "name": (name or preset["name"]).strip(),
+        "key": preset_id,
+        "orientation": 0,
+    }
+    if object_type == "record":
+        obj["fields"] = [new_field(*field) for field in preset.get("fields", [])]
+    else:
+        obj.update({"columns": [], "rows": [], "blocks": [], "groups": []})
+    return obj
+
+
 def new_document(source: Path, page_count: int) -> dict[str, Any]:
     now = time.time()
     return {
-        "schema": 1,
+        "schema": SCHEMA_VERSION,
         "source": str(source),
         "pageCount": page_count,
         "templateId": None,
@@ -125,67 +323,248 @@ def new_document(source: Path, page_count: int) -> dict[str, Any]:
     }
 
 
+def unique_key(base: str, used: set[str]) -> str:
+    key = re.sub(r"[^\w-]+", "_", base.strip().casefold(), flags=re.UNICODE).strip("_")
+    key = key or "value"
+    candidate = key
+    number = 2
+    while candidate in used:
+        candidate = f"{key}_{number}"
+        number += 1
+    used.add(candidate)
+    return candidate
+
+
+def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
+    migrated = copy.deepcopy(document)
+    migrated["schema"] = SCHEMA_VERSION
+    objects: list[dict[str, Any]] = []
+    for legacy in migrated.get("objects") or []:
+        name = str(legacy.get("name") or legacy.get("key") or "Объект")
+        key = str(legacy.get("key") or name)
+        if legacy.get("type") == "field":
+            field = new_field("value", "Значение", "text")
+            field["value"] = str((legacy.get("result") or {}).get("value") or "")
+            field["sources"] = []
+            for region in legacy.get("regions") or []:
+                source = copy.deepcopy(region)
+                source["kind"] = "region"
+                source["orientation"] = normalize_orientation(
+                    (source.get("properties") or {}).get("orientation", 0)
+                )
+                field["sources"].append(source)
+            objects.append(
+                {
+                    "id": legacy.get("id") or uid(),
+                    "type": "record",
+                    "preset": "custom_field",
+                    "name": name,
+                    "key": key,
+                    "orientation": 0,
+                    "fields": [field],
+                }
+            )
+            continue
+        result = legacy.get("result") or {}
+        table: dict[str, Any] = {
+            "id": legacy.get("id") or uid(),
+            "type": "table",
+            "preset": "table",
+            "name": name,
+            "key": key,
+            "orientation": 0,
+            "columns": [],
+            "rows": [],
+            "blocks": [],
+            "groups": [],
+        }
+        used: set[str] = set()
+        headers = [str(item) for item in result.get("columns") or []]
+        rows = [list(item) for item in result.get("rows") or [] if isinstance(item, list)]
+        width = max([len(headers), *(len(row) for row in rows)], default=0)
+        for index in range(width):
+            title = headers[index] if index < len(headers) else f"Столбец {index + 1}"
+            column = new_field(unique_key(title, used), title, "text")
+            column["value"] = title
+            table["columns"].append(column)
+        for legacy_row in rows:
+            row_id = uid()
+            cells = []
+            for index, column in enumerate(table["columns"]):
+                cells.append(
+                    {
+                        "id": uid(),
+                        "columnId": column["id"],
+                        "value": str(legacy_row[index]) if index < len(legacy_row) else "",
+                        "orientation": None,
+                    }
+                )
+            table["rows"].append({"id": row_id, "blockId": None, "cells": cells})
+        for region in legacy.get("regions") or []:
+            kind = region.get("kind")
+            if kind == "table_rows":
+                source = copy.deepcopy(region)
+                source["kind"] = "table_block"
+                source["orientation"] = 0
+                table["blocks"].append(
+                    {
+                        "id": uid(),
+                        "name": f"Блок строк {len(table['blocks']) + 1}",
+                        "region": source,
+                        "grid": copy.deepcopy(region.get("grid") or {"columns": [], "rows": []}),
+                        "rowIds": [],
+                    }
+                )
+            elif kind == "group_value":
+                group = new_field(
+                    unique_key(str((region.get("properties") or {}).get("column") or "Группа"), used),
+                    str((region.get("properties") or {}).get("column") or "Группа"),
+                    "text",
+                )
+                group["value"] = str(region.get("output") or "")
+                group["rowIds"] = []
+                source = copy.deepcopy(region)
+                source["kind"] = "region"
+                source["orientation"] = 0
+                group["sources"] = [source]
+                table["groups"].append(group)
+        objects.append(table)
+    migrated["objects"] = objects
+    migrated["migratedFromSchema"] = 1
+    return migrated
+
+
+def normalize_source(source: dict[str, Any]) -> None:
+    source.setdefault("id", uid())
+    source["rect"] = validate_rect(source.get("rect"))
+    source["page"] = int(source.get("page", 0))
+    source["orientation"] = normalize_orientation(source.get("orientation", 0))
+    source.setdefault("properties", {"useLlm": False, "prompt": ""})
+    source.setdefault("status", "pending")
+    source.setdefault("output", None)
+    source.setdefault("error", None)
+
+
+def normalize_field(field: dict[str, Any]) -> None:
+    field.setdefault("id", uid())
+    field["name"] = str(field.get("name") or "Поле")
+    field["key"] = str(field.get("key") or "value")
+    mode = str(field.get("ocrMode") or "text")
+    field["ocrMode"] = mode if mode in OCR_MODES else "text"
+    field["orientation"] = normalize_orientation(field.get("orientation", 0))
+    field["value"] = str(field.get("value") or "")
+    field.setdefault("sources", [])
+    for source in field["sources"]:
+        normalize_source(source)
+
+
+def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
+    if document.get("schema", 1) == 1:
+        document = migrate_v1(document)
+    if document.get("schema") != SCHEMA_VERSION:
+        raise ValueError(f"Поддерживается схема документа {SCHEMA_VERSION}")
+    document.setdefault("objects", [])
+    for obj in document["objects"]:
+        obj.setdefault("id", uid())
+        obj["name"] = str(obj.get("name") or "Объект")
+        obj["key"] = str(obj.get("key") or obj["name"])
+        obj["orientation"] = normalize_orientation(obj.get("orientation", 0))
+        if obj.get("type") == "record":
+            obj.setdefault("fields", [])
+            for field in obj["fields"]:
+                normalize_field(field)
+        elif obj.get("type") == "table":
+            for name in ("columns", "groups"):
+                obj.setdefault(name, [])
+                for field in obj[name]:
+                    normalize_field(field)
+            obj.setdefault("rows", [])
+            obj.setdefault("blocks", [])
+            for block in obj["blocks"]:
+                block.setdefault("id", uid())
+                block.setdefault("name", "Блок строк")
+                block.setdefault("grid", {"columns": [], "rows": []})
+                block.setdefault("rowIds", [])
+                normalize_source(block["region"])
+                block["region"]["kind"] = "table_block"
+            for row in obj["rows"]:
+                row.setdefault("id", uid())
+                row.setdefault("blockId", None)
+                row.setdefault("cells", [])
+                for cell in row["cells"]:
+                    cell.setdefault("id", uid())
+                    cell["value"] = str(cell.get("value") or "")
+                    cell.setdefault("sources", [])
+                    for source in cell["sources"]:
+                        normalize_source(source)
+                    if cell.get("orientation") is not None:
+                        cell["orientation"] = normalize_orientation(cell["orientation"])
+            for group in obj["groups"]:
+                group.setdefault("rowIds", [])
+        else:
+            raise ValueError("Неизвестный тип объекта")
+    return document
+
+
 def materialize(document: dict[str, Any]) -> dict[str, Any]:
     data: dict[str, Any] = {}
     for obj in document.get("objects") or []:
-        key = str(obj.get("key") or obj.get("name") or obj.get("id") or "field")
-        if obj.get("type") == "field":
-            data[key] = str((obj.get("result") or {}).get("value") or "")
+        key = str(obj.get("key") or obj.get("name") or obj.get("id"))
+        if obj.get("type") == "record":
+            fields = obj.get("fields") or []
+            values = {str(field.get("key")): str(field.get("value") or "") for field in fields}
+            if obj.get("preset") == "custom_field" and len(fields) == 1:
+                data[key] = next(iter(values.values()), "")
+            else:
+                data[key] = values
             continue
-        result = obj.get("result") or {}
-        headers = [str(item) for item in result.get("columns") or []]
-        rows = [list(row) for row in result.get("rows") or [] if isinstance(row, list)]
-        width = max([len(headers), *(len(row) for row in rows)], default=0)
-        if len(headers) < width:
-            headers.extend(f"Столбец {index + 1}" for index in range(len(headers), width))
-        normalized_rows: list[dict[str, str]] = []
-        for row in rows:
-            row.extend([""] * (width - len(row)))
-            normalized_rows.append(
-                {headers[index]: str(row[index]) for index in range(width)}
-            )
-        data[key] = {"columns": headers, "rows": normalized_rows}
+        columns = obj.get("columns") or []
+        groups = obj.get("groups") or []
+        names = [str(group.get("name")) for group in groups] + [
+            str(column.get("value") or column.get("name")) for column in columns
+        ]
+        rows: list[dict[str, str]] = []
+        for row in obj.get("rows") or []:
+            row_id = row.get("id")
+            values: dict[str, str] = {}
+            for group in groups:
+                values[str(group.get("name"))] = (
+                    str(group.get("value") or "") if row_id in group.get("rowIds", []) else ""
+                )
+            cells = {cell.get("columnId"): cell for cell in row.get("cells") or []}
+            for column in columns:
+                cell = cells.get(column.get("id")) or {}
+                values[str(column.get("value") or column.get("name"))] = str(
+                    cell.get("value") or ""
+                )
+            rows.append(values)
+        data[key] = {"columns": names, "rows": rows}
     document["data"] = data
     document["updated"] = time.time()
     return document
 
 
-def rebuild_table_result(obj: dict[str, Any]) -> None:
-    """Serialize all recognized table fragments in page/markup order."""
-    indexed = list(enumerate(obj.get("regions") or []))
-    regions = [
-        region
-        for _index, region in sorted(
-            indexed, key=lambda item: (int(item[1].get("page", 0)), item[0])
-        )
-        if region.get("status") in {"recognized", "modified"}
-    ]
-    headers: list[str] = []
-    group_columns: list[str] = []
-    for region in regions:
-        if region.get("kind") == "table_header" and region.get("output"):
-            headers = [str(value) for value in region["output"][0]]
-        elif region.get("kind") == "group_value":
-            name = str((region.get("properties") or {}).get("column") or "Группа")
-            if name not in group_columns:
-                group_columns.append(name)
-    active_groups: dict[str, str] = {}
-    rows: list[list[str]] = []
-    for region in regions:
-        if region.get("kind") == "group_value":
-            name = str((region.get("properties") or {}).get("column") or "Группа")
-            active_groups[name] = str(region.get("output") or "")
-        elif region.get("kind") == "table_rows":
-            for row in region.get("output") or []:
-                rows.append(
-                    [active_groups.get(name, "") for name in group_columns]
-                    + [str(value) for value in row]
-                )
-    obj["result"] = {
-        "columns": group_columns + headers,
-        "rows": rows,
-        "groups": active_groups,
-    }
+def iter_regions(
+    document: dict[str, Any],
+) -> Iterator[tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]]:
+    for obj in document.get("objects") or []:
+        if obj.get("type") == "record":
+            for field in obj.get("fields") or []:
+                for source in field.get("sources") or []:
+                    yield obj, field, source, "field"
+        else:
+            for column in obj.get("columns") or []:
+                for source in column.get("sources") or []:
+                    yield obj, column, source, "column"
+            for group in obj.get("groups") or []:
+                for source in group.get("sources") or []:
+                    yield obj, group, source, "group"
+            for row in obj.get("rows") or []:
+                for cell in row.get("cells") or []:
+                    for source in cell.get("sources") or []:
+                        yield obj, cell, source, "cell"
+            for block in obj.get("blocks") or []:
+                yield obj, block, block["region"], "table_block"
 
 
 class SourceRegistry:
@@ -231,7 +610,7 @@ class SourceRegistry:
                 existing = (self.data_root / relative).resolve()
                 if existing.is_file():
                     return existing
-            bucket = self.data_root / "blob-cache" / uuid.uuid4().hex
+            bucket = self.data_root / "blob-cache" / uid()
             bucket.mkdir(parents=True)
             name = Path(urlparse(url).path).name or "document.pdf"
             if not name.lower().endswith(PDF_SUFFIX):
@@ -247,10 +626,9 @@ class SourceRegistry:
                             raise ValueError("PDF из blob-хранилища превышает 1 ГБ")
                         output.write(chunk)
             with destination.open("rb") as downloaded:
-                signature = downloaded.read(5)
-            if signature != b"%PDF-":
-                destination.unlink(missing_ok=True)
-                raise ValueError("Blob-хранилище вернуло не PDF")
+                if downloaded.read(5) != b"%PDF-":
+                    destination.unlink(missing_ok=True)
+                    raise ValueError("Blob-хранилище вернуло не PDF")
             self.remote_index[url] = destination.relative_to(self.data_root).as_posix()
             atomic_json(self.index_path, self.remote_index)
             return destination
@@ -271,19 +649,18 @@ class DocumentStore:
             pymupdf = import_pymupdf()
             with pymupdf.open(source) as pdf:
                 page_count = pdf.page_count
-            path = sidecar_path(source)
             try:
-                document = json.loads(path.read_text(encoding="utf-8"))
+                document = json.loads(sidecar_path(source).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 document = new_document(source, page_count)
+            document = normalize_document(document)
             document["source"] = str(source)
             document["pageCount"] = page_count
             return materialize(document)
 
     def save(self, source: Path, document: dict[str, Any]) -> dict[str, Any]:
         with self.lock(source):
-            if document.get("schema") != 1:
-                raise ValueError("Поддерживается только схема документа 1")
+            document = normalize_document(copy.deepcopy(document))
             document["source"] = str(source)
             normalized = materialize(document)
             atomic_json(sidecar_path(source), normalized)
@@ -303,9 +680,33 @@ class PaddleClient:
         self.url = url.rstrip("/")
         self.token = token
 
-    def recognize(self, image: bytes) -> str:
+    def health(self) -> dict[str, Any]:
         import httpx
 
+        try:
+            response = httpx.get(f"{self.url}/health", timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+            payload.setdefault("capabilities", ["text", "table", "seal", "formula"])
+            return payload
+        except Exception as exc:
+            return {"status": "unavailable", "error": str(exc), "capabilities": []}
+
+    def recognize(self, image: bytes, mode: str = "text") -> str:
+        import httpx
+
+        if mode not in OCR_MODES or mode == "none":
+            raise ValueError("Для области не выбран поддерживаемый OCR-режим")
+        options = {
+            "useTableRecognition": False,
+            "useSealRecognition": mode in {"seal", "text_seal"},
+            "useFormulaRecognition": mode in {"formula", "text_formula"},
+            "useRegionDetection": False,
+            "useDocOrientationClassify": False,
+            "useDocUnwarping": False,
+            "useTextlineOrientation": False,
+            "formatBlockContent": True,
+        }
         headers = {"Authorization": f"Bearer {self.token}"}
         with httpx.Client(timeout=httpx.Timeout(120.0, read=600.0)) as client:
             response = client.post(
@@ -313,14 +714,7 @@ class PaddleClient:
                 headers=headers,
                 data={
                     "model": "PP-StructureV3",
-                    "optionalPayload": json.dumps(
-                        {
-                            "useTableRecognition": True,
-                            "useFormulaRecognition": False,
-                            "useRegionDetection": False,
-                            "formatBlockContent": True,
-                        }
-                    ),
+                    "optionalPayload": json.dumps(options),
                 },
                 files={"file": ("region.png", image, "image/png")},
             )
@@ -328,18 +722,15 @@ class PaddleClient:
             job_id = response.json()["data"]["jobId"]
             deadline = time.monotonic() + 60 * 60
             while time.monotonic() < deadline:
-                status = client.get(
-                    f"{self.url}/api/v2/ocr/jobs/{job_id}", headers=headers
-                )
+                status = client.get(f"{self.url}/api/v2/ocr/jobs/{job_id}", headers=headers)
                 status.raise_for_status()
                 payload = status.json()["data"]
                 if payload["state"] == "done":
                     result = client.get(
-                        f"{self.url}/api/v2/ocr/jobs/{job_id}/result",
-                        headers=headers,
+                        f"{self.url}/api/v2/ocr/jobs/{job_id}/result", headers=headers
                     )
                     result.raise_for_status()
-                    return flatten_ocr_result(result.text)
+                    return flatten_ocr_result(result.text, mode)
                 if payload["state"] == "failed":
                     raise RuntimeError(payload.get("errorMsg") or "Ошибка PaddleOCR")
                 time.sleep(0.5)
@@ -354,10 +745,12 @@ class LlamaClient:
     def process(self, text: str, prompt: str) -> str:
         import httpx
 
+        if not self.url:
+            raise RuntimeError(
+                "llama.cpp не настроена; запустите её или отключите исправление через LLM"
+            )
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        with httpx.Client(
-            timeout=httpx.Timeout(30.0, read=600.0), headers=headers
-        ) as client:
+        with httpx.Client(timeout=httpx.Timeout(30.0, read=600.0), headers=headers) as client:
             models = client.get(f"{self.url}/models")
             models.raise_for_status()
             model = models.json().get("data", [{}])[0].get("id", "local-model")
@@ -379,7 +772,9 @@ class LlamaClient:
             return clean_text(response.json()["choices"][0]["message"]["content"])
 
 
-def render_crop(source: Path, page_number: int, rect: dict[str, float]) -> bytes:
+def render_crop(
+    source: Path, page_number: int, rect: dict[str, float], orientation: int = 0
+) -> bytes:
     pymupdf = import_pymupdf()
     with pymupdf.open(source) as pdf:
         if page_number < 1 or page_number > pdf.page_count:
@@ -392,8 +787,10 @@ def render_crop(source: Path, page_number: int, rect: dict[str, float]) -> bytes
             bounds.x0 + (rect["x"] + rect["w"]) * bounds.width,
             bounds.y0 + (rect["y"] + rect["h"]) * bounds.height,
         )
-        # Rasterization deliberately ignores any embedded PDF text layer.
-        pixmap = page.get_pixmap(matrix=pymupdf.Matrix(2.5, 2.5), clip=clip, alpha=False)
+        matrix = pymupdf.Matrix(2.5, 2.5)
+        if orientation:
+            matrix = matrix.prerotate(orientation)
+        pixmap = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
         return pixmap.tobytes("png")
 
 
@@ -416,14 +813,14 @@ class ExtractionTasks:
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
-    def submit(self, source: Path, object_id: str, region_id: str) -> str:
-        task_id = uuid.uuid4().hex
+    def submit(self, source: Path, region_id: str) -> str:
+        task_id = uid()
         with self._lock:
             self._tasks[task_id] = {"state": "queued", "regionId": region_id}
-        self._set_region(source, object_id, region_id, status="queued", error=None)
+        self._set_region(source, region_id, status="queued", error=None)
         threading.Thread(
             target=self._run,
-            args=(task_id, source, object_id, region_id),
+            args=(task_id, source, region_id),
             daemon=True,
             name=f"digitizer-{task_id[:8]}",
         ).start()
@@ -433,94 +830,207 @@ class ExtractionTasks:
         with self._lock:
             if task_id not in self._tasks:
                 raise KeyError(task_id)
-            return dict(self._tasks[task_id])
+            return copy.deepcopy(self._tasks[task_id])
 
     def _set_task(self, task_id: str, **values: Any) -> None:
         with self._lock:
             self._tasks[task_id].update(values)
 
     def _locate(
-        self, document: dict[str, Any], object_id: str, region_id: str
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        obj = next(
-            (item for item in document.get("objects") or [] if item.get("id") == object_id),
-            None,
-        )
-        if obj is None:
-            raise ValueError("Объект разметки не найден")
-        region = next(
-            (item for item in obj.get("regions") or [] if item.get("id") == region_id),
-            None,
-        )
-        if region is None:
+        self, document: dict[str, Any], region_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+        found = next((item for item in iter_regions(document) if item[2].get("id") == region_id), None)
+        if found is None:
             raise ValueError("Область разметки не найдена")
-        return obj, region
+        return found
 
-    def _set_region(
-        self, source: Path, object_id: str, region_id: str, **values: Any
-    ) -> None:
+    def _set_region(self, source: Path, region_id: str, **values: Any) -> None:
         def mutate(document: dict[str, Any]) -> None:
-            _obj, region = self._locate(document, object_id, region_id)
+            _obj, _owner, region, _kind = self._locate(document, region_id)
             region.update(values)
 
         self.store.mutate(source, mutate)
 
-    def _recognize(self, source: Path, page: int, rect: dict[str, float], region: dict[str, Any]) -> str:
-        text = self.paddle.recognize(render_crop(source, page, rect))
-        prompt = str((region.get("properties") or {}).get("prompt") or "").strip()
-        if (region.get("properties") or {}).get("useLlm"):
+    def _recognize(
+        self,
+        source: Path,
+        page: int,
+        rect: dict[str, float],
+        region: dict[str, Any],
+        mode: str,
+        orientation: int,
+    ) -> str:
+        text = self.paddle.recognize(
+            render_crop(source, page, rect, orientation), mode
+        )
+        properties = region.get("properties") or {}
+        if properties.get("useLlm"):
+            prompt = str(properties.get("prompt") or "").strip()
             text = self.llama.process(text, prompt or DEFAULT_PROMPT)
         return text
 
-    def _run(self, task_id: str, source: Path, object_id: str, region_id: str) -> None:
+    @staticmethod
+    def _sync_rows(obj: dict[str, Any], block: dict[str, Any], row_count: int) -> list[dict[str, Any]]:
+        columns = obj.get("columns") or []
+        current = [row for row in obj.get("rows") or [] if row.get("blockId") == block.get("id")]
+        other = [row for row in obj.get("rows") or [] if row.get("blockId") != block.get("id")]
+        rows: list[dict[str, Any]] = []
+        for row_index in range(row_count):
+            row = current[row_index] if row_index < len(current) else {
+                "id": uid(), "blockId": block["id"], "cells": []
+            }
+            cells_by_column = {cell.get("columnId"): cell for cell in row.get("cells") or []}
+            row["cells"] = [
+                cells_by_column.get(column["id"])
+                or {
+                    "id": uid(),
+                    "columnId": column["id"],
+                    "value": "",
+                    "orientation": None,
+                    "sources": [],
+                }
+                for column in columns
+            ]
+            rows.append(row)
+        obj["rows"] = other + rows
+        block["rowIds"] = [row["id"] for row in rows]
+        valid_ids = {row["id"] for row in obj["rows"]}
+        for group in obj.get("groups") or []:
+            group["rowIds"] = [row_id for row_id in group.get("rowIds", []) if row_id in valid_ids]
+        return rows
+
+    def _run(self, task_id: str, source: Path, region_id: str) -> None:
         try:
             self._set_task(task_id, state="running")
-            self._set_region(source, object_id, region_id, status="running")
+            self._set_region(source, region_id, status="running")
             snapshot = self.store.load(source)
-            obj, region = self._locate(snapshot, object_id, region_id)
-            kind = str(region.get("kind"))
-            if kind not in REGION_KINDS:
-                raise ValueError("Неизвестный тип области")
+            obj, owner, region, kind = self._locate(snapshot, region_id)
             page = int(region.get("page", 0))
             rect = validate_rect(region.get("rect"))
             output: Any
-            if kind in {"field", "group_value"}:
-                output = self._recognize(source, page, rect, region)
+            if kind != "table_block":
+                if kind == "cell":
+                    column = next(
+                        (
+                            item
+                            for item in obj.get("columns") or []
+                            if item.get("id") == owner.get("columnId")
+                        ),
+                        {},
+                    )
+                    mode = str(
+                        column.get("ocrMode")
+                        or (region.get("properties") or {}).get("ocrMode")
+                        or "text"
+                    )
+                    inherited_orientation = owner.get("orientation")
+                    if inherited_orientation is None:
+                        inherited_orientation = column.get(
+                            "orientation", obj.get("orientation", 0)
+                        )
+                else:
+                    mode = str(owner.get("ocrMode") or "text")
+                    inherited_orientation = owner.get("orientation", 0)
+                if mode == "none":
+                    raise ValueError("Для этого поля OCR отключён; заполните его вручную")
+                orientation = normalize_orientation(
+                    region.get("orientation", inherited_orientation)
+                )
+                output = self._recognize(source, page, rect, region, mode, orientation)
             else:
-                grid = region.get("grid") or {}
+                grid = owner.get("grid") or {}
                 x_cuts = normalized_cuts(grid.get("columns"))
-                y_cuts = [0.0, 1.0] if kind == "table_header" else normalized_cuts(grid.get("rows"))
+                y_cuts = normalized_cuts(grid.get("rows"))
+                columns = obj.get("columns") or []
+                if len(x_cuts) - 1 != len(columns):
+                    raise ValueError(
+                        "Число ячеек по горизонтали должно совпадать с числом заголовков таблицы"
+                    )
                 output = []
-                for y0, y1 in zip(y_cuts, y_cuts[1:]):
-                    row: list[str] = []
-                    for x0, x1 in zip(x_cuts, x_cuts[1:]):
-                        row.append(
+                rows = self._sync_rows(obj, owner, len(y_cuts) - 1)
+                for row_index, (y0, y1) in enumerate(zip(y_cuts, y_cuts[1:])):
+                    values: list[str] = []
+                    for column_index, (x0, x1) in enumerate(zip(x_cuts, x_cuts[1:])):
+                        column = columns[column_index]
+                        cell = rows[row_index]["cells"][column_index]
+                        orientation = cell.get("orientation")
+                        if orientation is None:
+                            orientation = column.get("orientation", obj.get("orientation", 0))
+                        values.append(
                             self._recognize(
-                                source, page, cell_rect(rect, x0, x1, y0, y1), region
+                                source,
+                                page,
+                                cell_rect(rect, x0, x1, y0, y1),
+                                region,
+                                str(column.get("ocrMode") or "text"),
+                                normalize_orientation(orientation),
                             )
                         )
-                    output.append(row)
+                    output.append(values)
 
             def save_output(document: dict[str, Any]) -> None:
-                target_obj, target = self._locate(document, object_id, region_id)
+                target_obj, target_owner, target, target_kind = self._locate(document, region_id)
                 target.update(
                     {"status": "recognized", "output": output, "error": None, "updated": time.time()}
                 )
-                result = target_obj.setdefault("result", {})
-                if kind == "field":
-                    result["value"] = output
+                if target_kind != "table_block":
+                    values = [
+                        str(item.get("output") or "").strip()
+                        for item in target_owner.get("sources") or []
+                        if item.get("status") in {"recognized", "modified"} and item.get("output")
+                    ]
+                    target_owner["value"] = "\n".join(values)
                 else:
-                    rebuild_table_result(target_obj)
+                    rows = self._sync_rows(target_obj, target_owner, len(output))
+                    for row, values in zip(rows, output):
+                        for cell, value in zip(row.get("cells") or [], values):
+                            cell["value"] = str(value)
 
             document = self.store.mutate(source, save_output)
             self._set_task(task_id, state="done", document=document)
         except Exception as exc:
             try:
-                self._set_region(
-                    source, object_id, region_id, status="error", error=str(exc)
-                )
+                self._set_region(source, region_id, status="error", error=str(exc))
             finally:
                 self._set_task(task_id, state="failed", error=str(exc))
+
+
+def reset_template_objects(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    copied = copy.deepcopy(objects)
+    for obj in copied:
+        if obj.get("type") == "record":
+            fields = obj.get("fields") or []
+        else:
+            fields = (obj.get("columns") or []) + (obj.get("groups") or [])
+            for row in obj.get("rows") or []:
+                for cell in row.get("cells") or []:
+                    cell["value"] = ""
+                    for source in cell.get("sources") or []:
+                        source.update(
+                            {"status": "pending", "output": None, "error": None}
+                        )
+        for field in fields:
+            field["value"] = ""
+            for source in field.get("sources") or []:
+                source.update({"status": "pending", "output": None, "error": None})
+        for block in obj.get("blocks") or []:
+            block["region"].update({"status": "pending", "output": None, "error": None})
+    return copied
+
+
+def normalize_template_catalog(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"schema": SCHEMA_VERSION, "templates": []}
+    catalog = copy.deepcopy(value)
+    if catalog.get("schema", 1) == 1:
+        for template in catalog.get("templates") or []:
+            migrated = migrate_v1(
+                {"schema": 1, "objects": template.get("objects") or []}
+            )
+            template["objects"] = migrated["objects"]
+        catalog["schema"] = SCHEMA_VERSION
+    catalog.setdefault("templates", [])
+    return catalog
 
 
 def choose_pdf() -> str | None:
@@ -559,7 +1069,7 @@ def create_app(
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-    app = FastAPI(title="Structured PDF digitizer")
+    app = FastAPI(title="Semantic PDF digitizer")
 
     def bad(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
@@ -569,8 +1079,17 @@ def create_app(
         return html_path.read_text(encoding="utf-8")
 
     @app.get("/health")
-    def health() -> dict[str, str]:
-        return {"status": "ready"}
+    def health() -> dict[str, Any]:
+        return {"status": "ready", "schema": SCHEMA_VERSION, "ocr": tasks.paddle.health()}
+
+    @app.get("/api/catalog")
+    def catalog() -> dict[str, Any]:
+        return {
+            "schema": SCHEMA_VERSION,
+            "presets": preset_catalog(),
+            "ocrModes": sorted(OCR_MODES),
+            "ocr": tasks.paddle.health(),
+        }
 
     @app.post("/api/open/dialog")
     def open_dialog() -> dict[str, Any]:
@@ -617,11 +1136,7 @@ def create_app(
     def run_ocr(payload: dict[str, Any]) -> dict[str, str]:
         try:
             source = registry.resolve(str(payload.get("source") or ""))
-            return {
-                "taskId": tasks.submit(
-                    source, str(payload.get("objectId") or ""), str(payload.get("regionId") or "")
-                )
-            }
+            return {"taskId": tasks.submit(source, str(payload.get("regionId") or ""))}
         except Exception as exc:
             raise bad(exc) from exc
 
@@ -637,9 +1152,11 @@ def create_app(
         try:
             path = template_path(registry.resolve(source))
             try:
-                values = json.loads(path.read_text(encoding="utf-8"))
+                values = normalize_template_catalog(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
             except (OSError, ValueError):
-                values = {"schema": 1, "templates": []}
+                values = {"schema": SCHEMA_VERSION, "templates": []}
             return values
         except Exception as exc:
             raise bad(exc) from exc
@@ -649,30 +1166,26 @@ def create_app(
         try:
             source = registry.resolve(str(payload.get("source") or ""))
             name = str(payload.get("name") or "").strip()
-            document = payload.get("document") or {}
+            document = normalize_document(payload.get("document") or {})
             if not name:
                 raise ValueError("Укажите название шаблона")
             path = template_path(source)
             try:
-                catalog = json.loads(path.read_text(encoding="utf-8"))
+                catalog_value = normalize_template_catalog(
+                    json.loads(path.read_text(encoding="utf-8"))
+                )
             except (OSError, ValueError):
-                catalog = {"schema": 1, "templates": []}
+                catalog_value = {"schema": SCHEMA_VERSION, "templates": []}
             template = {
-                "id": uuid.uuid4().hex,
+                "id": uid(),
                 "name": name,
-                "objects": [],
+                "objects": reset_template_objects(document.get("objects") or []),
                 "created": time.time(),
             }
-            for obj in document.get("objects") or []:
-                copied = json.loads(json.dumps(obj, ensure_ascii=False))
-                copied["status"] = "pending"
-                copied["result"] = {"value": ""} if copied.get("type") == "field" else {"columns": [], "rows": []}
-                for region in copied.get("regions") or []:
-                    region.update({"status": "pending", "output": None, "error": None})
-                template["objects"].append(copied)
-            catalog.setdefault("templates", []).append(template)
-            atomic_json(path, catalog)
-            return catalog
+            catalog_value["schema"] = SCHEMA_VERSION
+            catalog_value.setdefault("templates", []).append(template)
+            atomic_json(path, catalog_value)
+            return catalog_value
         except Exception as exc:
             raise bad(exc) from exc
 
@@ -681,16 +1194,18 @@ def create_app(
         try:
             source = registry.resolve(str(payload.get("source") or ""))
             template_id = str(payload.get("templateId") or "")
-            catalog = json.loads(template_path(source).read_text(encoding="utf-8"))
+            catalog_value = normalize_template_catalog(
+                json.loads(template_path(source).read_text(encoding="utf-8"))
+            )
             template = next(
-                (item for item in catalog.get("templates") or [] if item.get("id") == template_id),
+                (item for item in catalog_value.get("templates") or [] if item.get("id") == template_id),
                 None,
             )
             if template is None:
                 raise ValueError("Шаблон не найден")
             document = store.load(source)
             document["templateId"] = template_id
-            document["objects"] = json.loads(json.dumps(template.get("objects") or []))
+            document["objects"] = reset_template_objects(template.get("objects") or [])
             return {"document": store.save(source, document)}
         except Exception as exc:
             raise bad(exc) from exc
@@ -722,7 +1237,6 @@ def main() -> int:
     args = parser.parse_args()
     if args.host != "127.0.0.1":
         raise SystemExit("Digitizer may bind only to 127.0.0.1")
-    html_path = Path(__file__).with_name("app.html")
     registry = SourceRegistry(args.data_root)
     store = DocumentStore()
     tasks = ExtractionTasks(
@@ -730,7 +1244,7 @@ def main() -> int:
         PaddleClient(args.paddle_url, args.paddle_token),
         LlamaClient(args.llama_url, args.llama_key),
     )
-    app = create_app(registry, store, tasks, html_path)
+    app = create_app(registry, store, tasks, Path(__file__).with_name("app.html"))
     import uvicorn
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

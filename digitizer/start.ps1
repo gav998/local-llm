@@ -164,7 +164,7 @@ function Resolve-Connections {
     if (-not $LlamaUrl -and $LlamaConnection) { $script:LlamaUrl = [string]$LlamaConnection.chat_url }
     if (-not $LlamaKey -and $LlamaConnection) { $script:LlamaKey = [string]$LlamaConnection.chat_api_key }
     if (-not $PaddleUrl -or -not $PaddleKey) { throw 'PaddleOCR settings not found. Use -PaddleUrl URL -PaddleKey KEY.' }
-    if (-not $LlamaUrl) { throw 'llama.cpp settings not found. Use -LlamaUrl URL [-LlamaKey KEY].' }
+    if (-not $LlamaUrl) { Write-Warning 'llama.cpp settings not found. OCR will work; optional LLM correction will be unavailable.' }
 }
 
 function Quote-Argument([object]$Value) {
