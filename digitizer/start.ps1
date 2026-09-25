@@ -16,6 +16,8 @@ $Python = Join-Path $Runtime 'python\python.exe'
 $Downloads = Join-Path $Root '_download'
 $Logs = Join-Path $Root 'logs'
 $Data = Join-Path $Root 'data'
+$RuntimeMarker = Join-Path $Runtime '.installed'
+$RuntimeVersion = 'digitizer portable runtime v2-yaml'
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -129,10 +131,10 @@ function Install-Digitizer {
             Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    $SmokeCode = "import fastapi,httpx,pymupdf,uvicorn; print('Digitizer runtime OK')"
+    $SmokeCode = "import fastapi,httpx,pymupdf,uvicorn,yaml; print('Digitizer runtime OK')"
     & $Python -c $SmokeCode
     if ($LASTEXITCODE -ne 0) { throw 'Installed digitizer runtime cannot be imported.' }
-    Set-Content -LiteralPath (Join-Path $Runtime '.installed') -Value 'digitizer portable runtime' -Encoding ASCII
+    Set-Content -LiteralPath $RuntimeMarker -Value $RuntimeVersion -Encoding ASCII
     Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $Root '_cache') -Recurse -Force -ErrorAction SilentlyContinue
 }
@@ -188,7 +190,8 @@ function Wait-Healthy([string]$Url,[Diagnostics.Process]$Process) {
 }
 
 Initialize-PortableEnvironment
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $Runtime '.installed') -PathType Leaf)) {
+$InstalledVersion = if (Test-Path -LiteralPath $RuntimeMarker -PathType Leaf) { (Get-Content -LiteralPath $RuntimeMarker -Raw).Trim() } else { '' }
+if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -ne $RuntimeVersion) {
     Install-Digitizer
     Initialize-PortableEnvironment
 }

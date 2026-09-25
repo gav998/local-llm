@@ -18,121 +18,76 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import unquote, urlparse
 
+import yaml
+
 PDF_SUFFIX = ".pdf"
 MAX_PDF_BYTES = 1 << 30
 SCHEMA_VERSION = 2
 OCR_MODES = {"text", "seal", "formula", "text_seal", "text_formula", "none"}
 ORIENTATIONS = {0, 90, 180, 270}
-DEFAULT_PROMPT = (
-    "Исправь только очевидные ошибки OCR в русском тексте, убери переносы слов "
-    "между строками и лишние пробелы. Не добавляй факты. Верни только исправленный текст."
-)
 
 
-PRESETS: list[dict[str, Any]] = [
-    {
-        "id": "organization",
-        "name": "Название организации",
-        "description": "Наименование организации на титульном листе",
-        "fields": [("name", "Название организации", "text")],
-    },
-    {
-        "id": "approval",
-        "name": "Утверждение / подтверждение",
-        "description": "Должность, ФИО, дата, печать и подпись",
-        "fields": [
-            ("approval_block", "Блок целиком", "text_seal"),
-            ("position", "Должность", "text"),
-            ("full_name", "ФИО", "text"),
-            ("date", "Дата", "text"),
-            ("seal", "Печать", "seal"),
-            ("signature", "Подпись", "none"),
-        ],
-    },
-    {
-        "id": "product",
-        "name": "Наименование и уровень изделия",
-        "description": "Комплекс, изделие, агрегат или узел и номер техники",
-        "fields": [
-            ("name", "Наименование", "text"),
-            ("level", "Уровень (комплекс / изделие / агрегат / узел)", "text"),
-            ("equipment_number", "Номер техники", "text"),
-        ],
-    },
-    {
-        "id": "process_card",
-        "name": "Номер технологической карты",
-        "description": "Обозначение или номер технологической карты",
-        "fields": [("number", "Номер технологической карты", "text")],
-    },
-    {
-        "id": "agreement",
-        "name": "Согласование",
-        "description": "С кем согласовано: должность, ФИО и дата",
-        "fields": [
-            ("position", "Должность", "text"),
-            ("full_name", "ФИО", "text"),
-            ("date", "Дата", "text"),
-            ("seal", "Печать", "seal"),
-            ("signature", "Подпись", "none"),
-        ],
-    },
-    {
-        "id": "frame_inventory",
-        "name": "Рамка: инвентарный номер",
-        "description": "Инвентарный номер, подпись и дата",
-        "fields": [
-            ("inventory_number", "Инвентарный номер", "text"),
-            ("signature", "Подпись", "none"),
-            ("date", "Дата", "text"),
-        ],
-    },
-    {
-        "id": "frame_replacement",
-        "name": "Рамка: взамен инвентарного",
-        "description": "Инвентарный номер заменённого документа",
-        "fields": [("replacement_inventory_number", "Взамен инвентарного №", "text")],
-    },
-    {
-        "id": "frame_duplicate",
-        "name": "Рамка: дубликат",
-        "description": "Инвентарный номер дубликата, подпись и дата",
-        "fields": [
-            ("duplicate_inventory_number", "Инвентарный № дубликата", "text"),
-            ("signature", "Подпись", "none"),
-            ("date", "Дата", "text"),
-        ],
-    },
-    {
-        "id": "maintenance_periodicity",
-        "name": "Периодичность технического обслуживания",
-        "description": "Период или условие выполнения ТО",
-        "fields": [("periodicity", "Периодичность", "text")],
-    },
-    {
-        "id": "frame_people",
-        "name": "Рамка: разработал / утвердил",
-        "description": "Типовые поля основной надписи без OCR таблицы",
-        "fields": [
-            ("developed_by", "Разработал", "text"),
-            ("checked_by", "Проверил", "text"),
-            ("approved_by", "Утвердил", "text"),
-            ("date", "Дата", "text"),
-        ],
-    },
-    {
-        "id": "custom_field",
-        "name": "Произвольное поле",
-        "description": "Один текстовый объект с настраиваемым названием",
-        "fields": [("value", "Значение", "text")],
-    },
-    {
-        "id": "table",
-        "name": "Таблица",
-        "description": "Ручные заголовки, сетка строк и группирующие значения",
-        "type": "table",
-    },
-]
+def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
+    config_path = path or Path(__file__).with_name("presets.yaml")
+    with config_path.open("r", encoding="utf-8") as stream:
+        value = yaml.safe_load(stream)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Конфигурация {config_path} должна содержать YAML-объект")
+    default_prompt = str(value.get("default_prompt") or "").strip()
+    presets = value.get("presets")
+    if not default_prompt or not isinstance(presets, list) or not presets:
+        raise RuntimeError(
+            f"В {config_path} обязательны default_prompt и непустой список presets"
+        )
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_preset in presets:
+        if not isinstance(raw_preset, dict):
+            raise RuntimeError("Каждый preset в YAML должен быть объектом")
+        preset = copy.deepcopy(raw_preset)
+        preset_id = str(preset.get("id") or "").strip()
+        if not preset_id or preset_id in seen:
+            raise RuntimeError("Каждому preset в YAML нужен уникальный id")
+        seen.add(preset_id)
+        preset["id"] = preset_id
+        preset["name"] = str(preset.get("name") or preset_id)
+        preset["description"] = str(preset.get("description") or "")
+        preset["type"] = str(preset.get("type") or "record")
+        fields: list[dict[str, str]] = []
+        for raw_field in preset.get("fields") or []:
+            if not isinstance(raw_field, dict):
+                raise RuntimeError(f"Поля preset {preset_id} должны быть YAML-объектами")
+            field = {
+                "key": str(raw_field.get("key") or "").strip(),
+                "name": str(raw_field.get("name") or "").strip(),
+                "ocrMode": str(
+                    raw_field.get("ocr_mode")
+                    or raw_field.get("ocrMode")
+                    or "text"
+                ),
+                "aiPrompt": str(raw_field.get("prompt") or "").strip(),
+            }
+            if not field["key"] or not field["name"] or not field["aiPrompt"]:
+                raise RuntimeError(
+                    f"Каждому полю preset {preset_id} нужны key, name и prompt"
+                )
+            if field["ocrMode"] not in OCR_MODES:
+                raise RuntimeError(f"Неизвестный OCR-режим у {preset_id}.{field['key']}")
+            fields.append(field)
+        preset["fields"] = fields
+        preset["dynamicFieldPrompt"] = str(
+            preset.get("dynamic_field_prompt") or default_prompt
+        ).strip()
+        preset["cellPrompt"] = str(
+            preset.get("cell_prompt") or preset["dynamicFieldPrompt"]
+        ).strip()
+        normalized.append(preset)
+    return {"defaultPrompt": default_prompt, "presets": normalized}
+
+
+DIGITIZER_CONFIG = load_digitizer_config()
+DEFAULT_PROMPT = DIGITIZER_CONFIG["defaultPrompt"]
+PRESETS: list[dict[str, Any]] = DIGITIZER_CONFIG["presets"]
 
 
 def import_pymupdf():
@@ -252,19 +207,25 @@ def new_source(page: int, rect: dict[str, float], kind: str = "region") -> dict[
         "page": page,
         "rect": validate_rect(rect),
         "orientation": 0,
-        "properties": {"useLlm": False, "prompt": ""},
+        "properties": {"useLlm": False},
         "status": "pending",
         "output": None,
         "error": None,
     }
 
 
-def new_field(key: str, name: str, ocr_mode: str = "text") -> dict[str, Any]:
+def new_field(
+    key: str,
+    name: str,
+    ocr_mode: str = "text",
+    ai_prompt: str = "",
+) -> dict[str, Any]:
     return {
         "id": uid(),
         "key": key,
         "name": name,
         "ocrMode": ocr_mode if ocr_mode in OCR_MODES else "text",
+        "aiPrompt": ai_prompt.strip() or DEFAULT_PROMPT,
         "orientation": 0,
         "value": "",
         "sources": [],
@@ -280,10 +241,9 @@ def preset_catalog() -> list[dict[str, Any]]:
                 "name": preset["name"],
                 "description": preset["description"],
                 "type": preset.get("type", "record"),
-                "fields": [
-                    {"key": key, "name": name, "ocrMode": mode}
-                    for key, name, mode in preset.get("fields", [])
-                ],
+                "dynamicFieldPrompt": preset.get("dynamicFieldPrompt", DEFAULT_PROMPT),
+                "cellPrompt": preset.get("cellPrompt", DEFAULT_PROMPT),
+                "fields": copy.deepcopy(preset.get("fields", [])),
             }
         )
     return result
@@ -303,7 +263,12 @@ def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
         "orientation": 0,
     }
     if object_type == "record":
-        obj["fields"] = [new_field(*field) for field in preset.get("fields", [])]
+        obj["fields"] = [
+            new_field(
+                field["key"], field["name"], field["ocrMode"], field["aiPrompt"]
+            )
+            for field in preset.get("fields", [])
+        ]
     else:
         obj.update({"columns": [], "rows": [], "blocks": [], "groups": []})
     return obj
@@ -445,12 +410,15 @@ def normalize_source(source: dict[str, Any]) -> None:
     source.setdefault("error", None)
 
 
-def normalize_field(field: dict[str, Any]) -> None:
+def normalize_field(field: dict[str, Any], default_prompt: str | None = None) -> None:
     field.setdefault("id", uid())
     field["name"] = str(field.get("name") or "Поле")
     field["key"] = str(field.get("key") or "value")
     mode = str(field.get("ocrMode") or "text")
     field["ocrMode"] = mode if mode in OCR_MODES else "text"
+    field["aiPrompt"] = str(
+        default_prompt if default_prompt is not None else field.get("aiPrompt") or DEFAULT_PROMPT
+    ).strip()
     field["orientation"] = normalize_orientation(field.get("orientation", 0))
     field["value"] = str(field.get("value") or "")
     field.setdefault("sources", [])
@@ -469,15 +437,31 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
         obj["name"] = str(obj.get("name") or "Объект")
         obj["key"] = str(obj.get("key") or obj["name"])
         obj["orientation"] = normalize_orientation(obj.get("orientation", 0))
+        preset = next(
+            (item for item in PRESETS if item["id"] == obj.get("preset")), None
+        )
+        configured_fields = {
+            item["key"]: item for item in (preset or {}).get("fields", [])
+        }
+        dynamic_prompt = str(
+            (preset or {}).get("dynamicFieldPrompt") or DEFAULT_PROMPT
+        )
         if obj.get("type") == "record":
             obj.setdefault("fields", [])
             for field in obj["fields"]:
-                normalize_field(field)
+                configured = configured_fields.get(str(field.get("key") or "")) or {}
+                normalize_field(field, str(configured.get("aiPrompt") or dynamic_prompt))
         elif obj.get("type") == "table":
             for name in ("columns", "groups"):
                 obj.setdefault(name, [])
                 for field in obj[name]:
-                    normalize_field(field)
+                    normalize_field(field, dynamic_prompt)
+                    if name == "columns":
+                        field["cellPrompt"] = str(
+                            (preset or {}).get("cellPrompt")
+                            or field.get("cellPrompt")
+                            or dynamic_prompt
+                        ).strip()
             obj.setdefault("rows", [])
             obj.setdefault("blocks", [])
             for block in obj["blocks"]:
@@ -826,6 +810,22 @@ class ExtractionTasks:
         ).start()
         return task_id
 
+    def submit_correction(self, source: Path, target_id: str) -> str:
+        task_id = uid()
+        with self._lock:
+            self._tasks[task_id] = {
+                "state": "queued",
+                "type": "ai-correction",
+                "targetId": target_id,
+            }
+        threading.Thread(
+            target=self._run_correction,
+            args=(task_id, source, target_id),
+            daemon=True,
+            name=f"digitizer-ai-{task_id[:8]}",
+        ).start()
+        return task_id
+
     def status(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             if task_id not in self._tasks:
@@ -851,6 +851,31 @@ class ExtractionTasks:
 
         self.store.mutate(source, mutate)
 
+    @staticmethod
+    def _locate_text(
+        document: dict[str, Any], target_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+        for obj in document.get("objects") or []:
+            for field in obj.get("fields") or []:
+                if field.get("id") == target_id:
+                    return obj, field, str(field.get("aiPrompt") or DEFAULT_PROMPT), "field"
+            for collection, kind in (("columns", "column"), ("groups", "group")):
+                for field in obj.get(collection) or []:
+                    if field.get("id") == target_id:
+                        return obj, field, str(field.get("aiPrompt") or DEFAULT_PROMPT), kind
+            columns = {item.get("id"): item for item in obj.get("columns") or []}
+            for row in obj.get("rows") or []:
+                for cell in row.get("cells") or []:
+                    if cell.get("id") == target_id:
+                        column = columns.get(cell.get("columnId")) or {}
+                        prompt = str(
+                            column.get("cellPrompt")
+                            or column.get("aiPrompt")
+                            or DEFAULT_PROMPT
+                        )
+                        return obj, cell, prompt, "cell"
+        raise ValueError("Поле для коррекции не найдено")
+
     def _recognize(
         self,
         source: Path,
@@ -859,14 +884,14 @@ class ExtractionTasks:
         region: dict[str, Any],
         mode: str,
         orientation: int,
+        prompt: str = "",
     ) -> str:
         text = self.paddle.recognize(
             render_crop(source, page, rect, orientation), mode
         )
         properties = region.get("properties") or {}
         if properties.get("useLlm"):
-            prompt = str(properties.get("prompt") or "").strip()
-            text = self.llama.process(text, prompt or DEFAULT_PROMPT)
+            text = self.llama.process(text, prompt.strip() or DEFAULT_PROMPT)
         return text
 
     @staticmethod
@@ -928,15 +953,29 @@ class ExtractionTasks:
                         inherited_orientation = column.get(
                             "orientation", obj.get("orientation", 0)
                         )
+                    correction_prompt = str(
+                        column.get("cellPrompt")
+                        or column.get("aiPrompt")
+                        or DEFAULT_PROMPT
+                    )
                 else:
                     mode = str(owner.get("ocrMode") or "text")
                     inherited_orientation = owner.get("orientation", 0)
+                    correction_prompt = str(owner.get("aiPrompt") or DEFAULT_PROMPT)
                 if mode == "none":
                     raise ValueError("Для этого поля OCR отключён; заполните его вручную")
                 orientation = normalize_orientation(
                     region.get("orientation", inherited_orientation)
                 )
-                output = self._recognize(source, page, rect, region, mode, orientation)
+                output = self._recognize(
+                    source,
+                    page,
+                    rect,
+                    region,
+                    mode,
+                    orientation,
+                    correction_prompt,
+                )
             else:
                 grid = owner.get("grid") or {}
                 x_cuts = normalized_cuts(grid.get("columns"))
@@ -955,7 +994,9 @@ class ExtractionTasks:
                         cell = rows[row_index]["cells"][column_index]
                         orientation = cell.get("orientation")
                         if orientation is None:
-                            orientation = column.get("orientation", obj.get("orientation", 0))
+                            orientation = column.get(
+                                "orientation", obj.get("orientation", 0)
+                            )
                         values.append(
                             self._recognize(
                                 source,
@@ -964,19 +1005,31 @@ class ExtractionTasks:
                                 region,
                                 str(column.get("ocrMode") or "text"),
                                 normalize_orientation(orientation),
+                                str(
+                                    column.get("cellPrompt")
+                                    or column.get("aiPrompt")
+                                    or DEFAULT_PROMPT
+                                ),
                             )
                         )
                     output.append(values)
 
             def save_output(document: dict[str, Any]) -> None:
-                target_obj, target_owner, target, target_kind = self._locate(document, region_id)
+                target_obj, target_owner, target, target_kind = self._locate(
+                    document, region_id
+                )
                 # A geometry or value edit made while OCR was running wins over the
                 # stale background result.  The user can explicitly repeat OCR.
                 if target.get("status") == "modified":
                     target["error"] = None
                     return
                 target.update(
-                    {"status": "recognized", "output": output, "error": None, "updated": time.time()}
+                    {
+                        "status": "recognized",
+                        "output": output,
+                        "error": None,
+                        "updated": time.time(),
+                    }
                 )
                 if target_kind != "table_block":
                     values = [
@@ -998,6 +1051,59 @@ class ExtractionTasks:
                 self._set_region(source, region_id, status="error", error=str(exc))
             finally:
                 self._set_task(task_id, state="failed", error=str(exc))
+
+    def _run_correction(self, task_id: str, source: Path, target_id: str) -> None:
+        try:
+            self._set_task(task_id, state="running")
+            snapshot = self.store.load(source)
+            _obj, target, prompt, _kind = self._locate_text(snapshot, target_id)
+            original = str(target.get("value") or "")
+            if not original.strip():
+                raise ValueError("Нечего корректировать: значение пусто")
+            corrected = self.llama.process(original, prompt)
+            applied = False
+
+            def save_output(document: dict[str, Any]) -> None:
+                nonlocal applied
+                obj, current, _prompt, kind = self._locate_text(document, target_id)
+                if str(current.get("value") or "") != original:
+                    return
+                current["value"] = corrected
+                current["aiUpdated"] = time.time()
+                sources = list(current.get("sources") or [])
+                if kind == "cell" and not sources:
+                    row = next(
+                        (
+                            item
+                            for item in obj.get("rows") or []
+                            if current in (item.get("cells") or [])
+                        ),
+                        None,
+                    )
+                    block = next(
+                        (
+                            item
+                            for item in obj.get("blocks") or []
+                            if item.get("id") == (row or {}).get("blockId")
+                        ),
+                        None,
+                    )
+                    if block and block.get("region"):
+                        sources.append(block["region"])
+                for region in sources:
+                    region.update({"status": "modified", "error": None})
+                applied = True
+
+            document = self.store.mutate(source, save_output)
+            self._set_task(
+                task_id,
+                state="done",
+                document=document,
+                applied=applied,
+                targetId=target_id,
+            )
+        except Exception as exc:
+            self._set_task(task_id, state="failed", error=str(exc), targetId=target_id)
 
 
 def reset_template_objects(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1091,6 +1197,7 @@ def create_app(
     def catalog() -> dict[str, Any]:
         return {
             "schema": SCHEMA_VERSION,
+            "defaultPrompt": DEFAULT_PROMPT,
             "presets": preset_catalog(),
             "ocrModes": sorted(OCR_MODES),
             "ocr": tasks.paddle.health(),
@@ -1119,7 +1226,10 @@ def create_app(
             document = payload.get("document")
             if not isinstance(document, dict):
                 raise ValueError("document должен быть JSON-объектом")
-            return {"document": store.save(source, document), "path": str(sidecar_path(source))}
+            return {
+                "document": store.save(source, document),
+                "path": str(sidecar_path(source)),
+            }
         except Exception as exc:
             raise bad(exc) from exc
 
@@ -1142,6 +1252,17 @@ def create_app(
         try:
             source = registry.resolve(str(payload.get("source") or ""))
             return {"taskId": tasks.submit(source, str(payload.get("regionId") or ""))}
+        except Exception as exc:
+            raise bad(exc) from exc
+
+    @app.post("/api/correct")
+    def correct_text(payload: dict[str, Any]) -> dict[str, str]:
+        try:
+            source = registry.resolve(str(payload.get("source") or ""))
+            target_id = str(payload.get("targetId") or "")
+            if not target_id:
+                raise ValueError("Не указано поле для коррекции")
+            return {"taskId": tasks.submit_correction(source, target_id)}
         except Exception as exc:
             raise bad(exc) from exc
 

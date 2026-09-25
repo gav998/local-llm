@@ -31,7 +31,11 @@ class FakePaddle:
 
 
 class FakeLlama:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
     def process(self, text: str, prompt: str) -> str:
+        self.calls.append((text, prompt))
         return f"fixed:{text}"
 
 
@@ -63,6 +67,26 @@ class DigitizerSchemaTests(unittest.TestCase):
         table = app.create_object("table")
         self.assertEqual(table["type"], "table")
         self.assertEqual(table["rows"], [])
+
+    def test_every_configured_field_has_its_own_ai_prompt(self) -> None:
+        fields = [
+            field
+            for preset in app.preset_catalog()
+            for field in preset.get("fields") or []
+        ]
+        self.assertTrue(fields)
+        self.assertTrue(all(field.get("aiPrompt") for field in fields))
+
+        document = app.new_document(Path("sample.pdf"), 1)
+        approval = app.create_object("approval")
+        approval["fields"][0]["aiPrompt"] = "устаревший промпт"
+        document["objects"].append(approval)
+        normalized = app.normalize_document(document)
+        configured = next(item for item in app.PRESETS if item["id"] == "approval")
+        self.assertEqual(
+            normalized["objects"][0]["fields"][0]["aiPrompt"],
+            configured["fields"][0]["aiPrompt"],
+        )
 
     def test_schema_one_is_migrated_without_losing_values(self) -> None:
         legacy = {
@@ -241,6 +265,8 @@ class DigitizerExtractionTests(unittest.TestCase):
         saved_field = saved["objects"][0]["fields"][4]
         self.assertTrue(saved_field["value"].startswith("fixed:result:seal"))
         self.assertTrue(self.paddle.calls[0][1].endswith(b":90"))
+        self.assertEqual(self.tasks.llama.calls[-1][1], saved_field["aiPrompt"])
+        self.assertNotEqual(self.tasks.llama.calls[-1][1], "correct")
 
     def test_table_block_recognizes_each_manual_cell_without_table_model(self) -> None:
         document = app.new_document(self.pdf_path, 1)
@@ -278,6 +304,7 @@ class DigitizerExtractionTests(unittest.TestCase):
         table = app.create_object("table")
         column = app.new_field("formula", "Формула", "formula")
         source = app.new_source(1, {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})
+        source["properties"]["useLlm"] = True
         table["columns"] = [column]
         table["rows"] = [
             {
@@ -304,8 +331,10 @@ class DigitizerExtractionTests(unittest.TestCase):
         saved = self.store.load(self.pdf_path)
         self.assertEqual(
             saved["objects"][0]["rows"][0]["cells"][0]["value"],
-            "result:formula:1",
+            "fixed:result:formula:1",
         )
+        preset = next(item for item in app.PRESETS if item["id"] == "table")
+        self.assertEqual(self.tasks.llama.calls[-1][1], preset["cellPrompt"])
 
     def test_manual_edit_during_ocr_is_not_overwritten(self) -> None:
         document = app.new_document(self.pdf_path, 1)
@@ -338,6 +367,86 @@ class DigitizerExtractionTests(unittest.TestCase):
         saved_field = saved["objects"][0]["fields"][0]
         self.assertEqual(saved_field["value"], "Исправлено вручную")
         self.assertEqual(saved_field["sources"][0]["status"], "modified")
+
+    def test_ai_correction_uses_field_prompt_and_updates_value(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        obj = app.create_object("organization")
+        field = obj["fields"][0]
+        field["value"] = "OОO  Ромашка"
+        document["objects"].append(obj)
+        self.store.save(self.pdf_path, document)
+
+        self.tasks._tasks["ai-task"] = {"state": "queued"}
+        self.tasks._run_correction("ai-task", self.pdf_path, field["id"])
+
+        result = self.tasks.status("ai-task")
+        self.assertEqual(result["state"], "done")
+        self.assertTrue(result["applied"])
+        self.assertEqual(
+            self.tasks.llama.calls,
+            [("OОO  Ромашка", field["aiPrompt"])],
+        )
+        saved = self.store.load(self.pdf_path)
+        self.assertEqual(
+            saved["objects"][0]["fields"][0]["value"],
+            "fixed:OОO  Ромашка",
+        )
+
+    def test_table_cell_ai_correction_inherits_cell_prompt(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        table = app.create_object("table")
+        preset = next(item for item in app.PRESETS if item["id"] == "table")
+        column = app.new_field(
+            "operation", "Операция", "text", preset["dynamicFieldPrompt"]
+        )
+        column["cellPrompt"] = preset["cellPrompt"]
+        cell = {
+            "id": app.uid(),
+            "columnId": column["id"],
+            "value": "Осмотр  узла",
+            "orientation": None,
+            "sources": [],
+        }
+        table["columns"] = [column]
+        table["rows"] = [{"id": app.uid(), "blockId": None, "cells": [cell]}]
+        document["objects"].append(table)
+        self.store.save(self.pdf_path, document)
+
+        self.tasks._tasks["cell-ai"] = {"state": "queued"}
+        self.tasks._run_correction("cell-ai", self.pdf_path, cell["id"])
+
+        self.assertEqual(self.tasks.status("cell-ai")["state"], "done")
+        self.assertEqual(self.tasks.llama.calls[-1][1], preset["cellPrompt"])
+
+    def test_manual_edit_during_ai_correction_is_not_overwritten(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        obj = app.create_object("custom_field")
+        field = obj["fields"][0]
+        field["value"] = "Исходный OCR"
+        document["objects"].append(obj)
+        self.store.save(self.pdf_path, document)
+        original_process = self.tasks.llama.process
+
+        def process_and_edit(text: str, prompt: str) -> str:
+            result = original_process(text, prompt)
+
+            def edit(current):
+                current["objects"][0]["fields"][0]["value"] = "Ручная правка"
+
+            self.store.mutate(self.pdf_path, edit)
+            return result
+
+        self.tasks.llama.process = process_and_edit
+        self.tasks._tasks["stale-ai"] = {"state": "queued"}
+        self.tasks._run_correction("stale-ai", self.pdf_path, field["id"])
+
+        result = self.tasks.status("stale-ai")
+        self.assertEqual(result["state"], "done")
+        self.assertFalse(result["applied"])
+        saved = self.store.load(self.pdf_path)
+        self.assertEqual(
+            saved["objects"][0]["fields"][0]["value"], "Ручная правка"
+        )
 
 
 if __name__ == "__main__":
