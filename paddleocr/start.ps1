@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [int]$Port = 0,
     [string]$ApiKey = '',
