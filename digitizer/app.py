@@ -970,6 +970,11 @@ class ExtractionTasks:
 
             def save_output(document: dict[str, Any]) -> None:
                 target_obj, target_owner, target, target_kind = self._locate(document, region_id)
+                # A geometry or value edit made while OCR was running wins over the
+                # stale background result.  The user can explicitly repeat OCR.
+                if target.get("status") == "modified":
+                    target["error"] = None
+                    return
                 target.update(
                     {"status": "recognized", "output": output, "error": None, "updated": time.time()}
                 )

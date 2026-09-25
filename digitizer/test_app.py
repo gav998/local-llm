@@ -307,6 +307,38 @@ class DigitizerExtractionTests(unittest.TestCase):
             "result:formula:1",
         )
 
+    def test_manual_edit_during_ocr_is_not_overwritten(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        obj = app.create_object("custom_field")
+        field = obj["fields"][0]
+        field["value"] = "Исправлено вручную"
+        source = app.new_source(1, {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})
+        source["output"] = "Старый OCR"
+        field["sources"].append(source)
+        document["objects"].append(obj)
+        self.store.save(self.pdf_path, document)
+
+        original_recognize = self.paddle.recognize
+
+        def recognize_and_edit(image: bytes, mode: str = "text") -> str:
+            result = original_recognize(image, mode)
+
+            def mark_modified(current):
+                next(app.iter_regions(current))[2]["status"] = "modified"
+
+            self.store.mutate(self.pdf_path, mark_modified)
+            return result
+
+        self.paddle.recognize = recognize_and_edit
+
+        self.tasks._tasks["task"] = {"state": "running"}
+        self.tasks._run("task", self.pdf_path, source["id"])
+
+        saved = self.store.load(self.pdf_path)
+        saved_field = saved["objects"][0]["fields"][0]
+        self.assertEqual(saved_field["value"], "Исправлено вручную")
+        self.assertEqual(saved_field["sources"][0]["status"], "modified")
+
 
 if __name__ == "__main__":
     unittest.main()
