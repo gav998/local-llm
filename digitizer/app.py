@@ -27,6 +27,7 @@ MAX_PDF_BYTES = 1 << 30
 SCHEMA_VERSION = 2
 OCR_MODES = {"text", "seal", "formula", "text_seal", "text_formula", "none"}
 ORIENTATIONS = {0, 90, 180, 270}
+TABLE_CORRECTION_ROWS = 12
 
 
 def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
@@ -58,14 +59,14 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
         fields: list[dict[str, str]] = []
         for raw_field in preset.get("fields") or []:
             if not isinstance(raw_field, dict):
-                raise RuntimeError(f"Поля preset {preset_id} должны быть YAML-объектами")
+                raise RuntimeError(
+                    f"Поля preset {preset_id} должны быть YAML-объектами"
+                )
             field = {
                 "key": str(raw_field.get("key") or "").strip(),
                 "name": str(raw_field.get("name") or "").strip(),
                 "ocrMode": str(
-                    raw_field.get("ocr_mode")
-                    or raw_field.get("ocrMode")
-                    or "text"
+                    raw_field.get("ocr_mode") or raw_field.get("ocrMode") or "text"
                 ),
                 "aiPrompt": str(raw_field.get("prompt") or "").strip(),
             }
@@ -74,7 +75,9 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
                     f"Каждому полю preset {preset_id} нужны key, name и prompt"
                 )
             if field["ocrMode"] not in OCR_MODES:
-                raise RuntimeError(f"Неизвестный OCR-режим у {preset_id}.{field['key']}")
+                raise RuntimeError(
+                    f"Неизвестный OCR-режим у {preset_id}.{field['key']}"
+                )
             fields.append(field)
         preset["fields"] = fields
         preset["dynamicFieldPrompt"] = str(
@@ -121,6 +124,24 @@ def clean_text(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
 
 
+def parse_json_response(value: str) -> dict[str, Any]:
+    """Parse a JSON object returned by the local model without accepting prose."""
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip(), flags=re.I)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("ИИ вернул ответ не в формате JSON") from None
+        try:
+            parsed = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ValueError("ИИ вернул повреждённый JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("ИИ должен вернуть JSON-объект")
+    return parsed
+
+
 def clean_ocr_markup(value: str) -> str:
     """Keep OCR text while dropping image placeholders emitted by PP-StructureV3."""
     value = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", value, flags=re.S)
@@ -149,7 +170,9 @@ def _ocr_recognized_texts(value: Any) -> list[str]:
     texts = value.get("rec_texts") or value.get("recTexts") or []
     if not isinstance(texts, list):
         return []
-    return [clean_ocr_markup(str(item)) for item in texts if clean_ocr_markup(str(item))]
+    return [
+        clean_ocr_markup(str(item)) for item in texts if clean_ocr_markup(str(item))
+    ]
 
 
 def flatten_ocr_result(value: str, mode: str = "text") -> str:
@@ -190,7 +213,9 @@ def flatten_ocr_result(value: str, mode: str = "text") -> str:
                 label = str(block.get("block_label") or "").casefold()
                 if not any(token in label for token in ("image", "figure", "chart")):
                     fallback.append(text)
-                if wanted_labels and any(token == label or token in label for token in wanted_labels):
+                if wanted_labels and any(
+                    token == label or token in label for token in wanted_labels
+                ):
                     selected.append(text)
     if mode == "text":
         parts = general or fallback or markdown_parts
@@ -223,7 +248,9 @@ def validate_rect(value: Any) -> dict[str, float]:
     try:
         rect = {key: float(value.get(key, -1)) for key in ("x", "y", "w", "h")}
     except (TypeError, ValueError) as exc:
-        raise ValueError("Координаты области повреждены; выделите область повторно") from exc
+        raise ValueError(
+            "Координаты области повреждены; выделите область повторно"
+        ) from exc
     if (
         not all(math.isfinite(number) for number in rect.values())
         or rect["x"] < 0
@@ -255,7 +282,9 @@ def template_path(source: Path) -> Path:
     return source.with_name("digitizer.templates.json")
 
 
-def new_source(page: int, rect: dict[str, float], kind: str = "region") -> dict[str, Any]:
+def new_source(
+    page: int, rect: dict[str, float], kind: str = "region"
+) -> dict[str, Any]:
     return {
         "id": uid(),
         "kind": kind,
@@ -319,9 +348,7 @@ def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
     }
     if object_type == "record":
         obj["fields"] = [
-            new_field(
-                field["key"], field["name"], field["ocrMode"], field["aiPrompt"]
-            )
+            new_field(field["key"], field["name"], field["ocrMode"], field["aiPrompt"])
             for field in preset.get("fields", [])
         ]
     else:
@@ -414,7 +441,9 @@ def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
         }
         used: set[str] = set()
         headers = [str(item) for item in result.get("columns") or []]
-        rows = [list(item) for item in result.get("rows") or [] if isinstance(item, list)]
+        rows = [
+            list(item) for item in result.get("rows") or [] if isinstance(item, list)
+        ]
         width = max([len(headers), *(len(row) for row in rows)], default=0)
         for index in range(width):
             title = headers[index] if index < len(headers) else f"Столбец {index + 1}"
@@ -429,7 +458,9 @@ def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
                     {
                         "id": uid(),
                         "columnId": column["id"],
-                        "value": str(legacy_row[index]) if index < len(legacy_row) else "",
+                        "value": str(legacy_row[index])
+                        if index < len(legacy_row)
+                        else "",
                         "orientation": None,
                     }
                 )
@@ -445,13 +476,18 @@ def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
                         "id": uid(),
                         "name": f"Блок строк {len(table['blocks']) + 1}",
                         "region": source,
-                        "grid": copy.deepcopy(region.get("grid") or {"columns": [], "rows": []}),
+                        "grid": copy.deepcopy(
+                            region.get("grid") or {"columns": [], "rows": []}
+                        ),
                         "rowIds": [],
                     }
                 )
             elif kind == "group_value":
                 group = new_field(
-                    unique_key(str((region.get("properties") or {}).get("column") or "Группа"), used),
+                    unique_key(
+                        str((region.get("properties") or {}).get("column") or "Группа"),
+                        used,
+                    ),
                     str((region.get("properties") or {}).get("column") or "Группа"),
                     "text",
                 )
@@ -486,7 +522,9 @@ def normalize_field(field: dict[str, Any], default_prompt: str | None = None) ->
     mode = str(field.get("ocrMode") or "text")
     field["ocrMode"] = mode if mode in OCR_MODES else "text"
     field["aiPrompt"] = str(
-        default_prompt if default_prompt is not None else field.get("aiPrompt") or DEFAULT_PROMPT
+        default_prompt
+        if default_prompt is not None
+        else field.get("aiPrompt") or DEFAULT_PROMPT
     ).strip()
     field["orientation"] = normalize_orientation(field.get("orientation", 0))
     field["value"] = str(field.get("value") or "")
@@ -512,14 +550,18 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
         configured_fields = {
             item["key"]: item for item in (preset or {}).get("fields", [])
         }
-        dynamic_prompt = str(
-            (preset or {}).get("dynamicFieldPrompt") or DEFAULT_PROMPT
-        )
+        dynamic_prompt = str((preset or {}).get("dynamicFieldPrompt") or DEFAULT_PROMPT)
         if obj.get("type") == "record":
             obj.setdefault("fields", [])
             for field in obj["fields"]:
                 configured = configured_fields.get(str(field.get("key") or "")) or {}
-                normalize_field(field, str(configured.get("aiPrompt") or dynamic_prompt))
+                normalize_field(
+                    field, str(configured.get("aiPrompt") or dynamic_prompt)
+                )
+                if configured:
+                    field["name"] = str(configured["name"])
+                    field["key"] = str(configured["key"])
+                    field["ocrMode"] = str(configured["ocrMode"])
         elif obj.get("type") == "table":
             title = obj.setdefault(
                 "title", new_field("title", "Название таблицы", "text", dynamic_prompt)
@@ -569,7 +611,9 @@ def materialize(document: dict[str, Any]) -> dict[str, Any]:
         key = str(obj.get("key") or obj.get("name") or obj.get("id"))
         if obj.get("type") == "record":
             fields = obj.get("fields") or []
-            values = {str(field.get("key")): str(field.get("value") or "") for field in fields}
+            values = {
+                str(field.get("key")): str(field.get("value") or "") for field in fields
+            }
             if obj.get("preset") == "custom_field" and len(fields) == 1:
                 data[key] = next(iter(values.values()), "")
             else:
@@ -586,7 +630,9 @@ def materialize(document: dict[str, Any]) -> dict[str, Any]:
             values: dict[str, str] = {}
             for group in groups:
                 values[str(group.get("name"))] = (
-                    str(group.get("value") or "") if row_id in group.get("rowIds", []) else ""
+                    str(group.get("value") or "")
+                    if row_id in group.get("rowIds", [])
+                    else ""
                 )
             cells = {cell.get("columnId"): cell for cell in row.get("cells") or []}
             for column in columns:
@@ -681,7 +727,9 @@ class SourceRegistry:
                 name += PDF_SUFFIX
             destination = bucket / name
             total = 0
-            with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as response:
+            with httpx.stream(
+                "GET", url, timeout=120.0, follow_redirects=True
+            ) as response:
                 response.raise_for_status()
                 with destination.open("wb") as output:
                     for chunk in response.iter_bytes():
@@ -786,7 +834,9 @@ class PaddleClient:
             job_id = response.json()["data"]["jobId"]
             deadline = time.monotonic() + 60 * 60
             while time.monotonic() < deadline:
-                status = client.get(f"{self.url}/api/v2/ocr/jobs/{job_id}", headers=headers)
+                status = client.get(
+                    f"{self.url}/api/v2/ocr/jobs/{job_id}", headers=headers
+                )
                 status.raise_for_status()
                 payload = status.json()["data"]
                 if payload["state"] == "done":
@@ -806,7 +856,7 @@ class LlamaClient:
         self.url = url.rstrip("/")
         self.api_key = api_key
 
-    def process(self, text: str, prompt: str) -> str:
+    def _chat(self, system: str, user: str) -> str:
         import httpx
 
         if not self.url:
@@ -814,7 +864,9 @@ class LlamaClient:
                 "llama.cpp не настроена; запустите её или отключите исправление через LLM"
             )
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        with httpx.Client(timeout=httpx.Timeout(30.0, read=600.0), headers=headers) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(30.0, read=600.0), headers=headers
+        ) as client:
             models = client.get(f"{self.url}/models")
             models.raise_for_status()
             model = models.json().get("data", [{}])[0].get("id", "local-model")
@@ -824,16 +876,32 @@ class LlamaClient:
                     "model": model,
                     "temperature": 0,
                     "messages": [
-                        {
-                            "role": "system",
-                            "content": "Ты исправляешь OCR. Ответ должен содержать только итоговый текст.",
-                        },
-                        {"role": "user", "content": f"{prompt}\n\nOCR:\n{text}"},
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
                     ],
                 },
             )
             response.raise_for_status()
-            return clean_text(response.json()["choices"][0]["message"]["content"])
+            return str(response.json()["choices"][0]["message"]["content"])
+
+    def process(self, text: str, prompt: str) -> str:
+        return clean_text(
+            self._chat(
+                "Ты исправляешь OCR. Ответ должен содержать только итоговый текст.",
+                f"{prompt}\n\nOCR:\n{text}",
+            )
+        )
+
+    def process_json(self, payload: dict[str, Any], prompt: str) -> dict[str, Any]:
+        response = self._chat(
+            (
+                "Ты исправляешь ошибки OCR в структурированных данных. "
+                "Строго сохрани идентификаторы, количество и порядок элементов. "
+                "Не добавляй факты и не меняй структуру. Ответь только JSON-объектом."
+            ),
+            f"{prompt}\n\nВходной JSON:\n{json.dumps(payload, ensure_ascii=False)}",
+        )
+        return parse_json_response(response)
 
 
 def render_crop(
@@ -906,6 +974,22 @@ class ExtractionTasks:
         ).start()
         return task_id
 
+    def submit_object_correction(self, source: Path, object_id: str) -> str:
+        task_id = uid()
+        with self._lock:
+            self._tasks[task_id] = {
+                "state": "queued",
+                "type": "ai-object-correction",
+                "objectId": object_id,
+            }
+        threading.Thread(
+            target=self._run_object_correction,
+            args=(task_id, source, object_id),
+            daemon=True,
+            name=f"digitizer-ai-object-{task_id[:8]}",
+        ).start()
+        return task_id
+
     def status(self, task_id: str) -> dict[str, Any]:
         with self._lock:
             if task_id not in self._tasks:
@@ -919,7 +1003,10 @@ class ExtractionTasks:
     def _locate(
         self, document: dict[str, Any], region_id: str
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
-        found = next((item for item in iter_regions(document) if item[2].get("id") == region_id), None)
+        found = next(
+            (item for item in iter_regions(document) if item[2].get("id") == region_id),
+            None,
+        )
         if found is None:
             raise ValueError("Область разметки не найдена")
         return found
@@ -938,11 +1025,21 @@ class ExtractionTasks:
         for obj in document.get("objects") or []:
             for field in obj.get("fields") or []:
                 if field.get("id") == target_id:
-                    return obj, field, str(field.get("aiPrompt") or DEFAULT_PROMPT), "field"
+                    return (
+                        obj,
+                        field,
+                        str(field.get("aiPrompt") or DEFAULT_PROMPT),
+                        "field",
+                    )
             for collection, kind in (("columns", "column"), ("groups", "group")):
                 for field in obj.get(collection) or []:
                     if field.get("id") == target_id:
-                        return obj, field, str(field.get("aiPrompt") or DEFAULT_PROMPT), kind
+                        return (
+                            obj,
+                            field,
+                            str(field.get("aiPrompt") or DEFAULT_PROMPT),
+                            kind,
+                        )
             title = obj.get("title") or {}
             if title.get("id") == target_id:
                 return obj, title, str(title.get("aiPrompt") or DEFAULT_PROMPT), "title"
@@ -969,25 +1066,37 @@ class ExtractionTasks:
         orientation: int,
         prompt: str = "",
     ) -> str:
-        text = self.paddle.recognize(
-            render_crop(source, page, rect, orientation), mode
-        )
+        text = self.paddle.recognize(render_crop(source, page, rect, orientation), mode)
         properties = region.get("properties") or {}
         if properties.get("useLlm"):
             text = self.llama.process(text, prompt.strip() or DEFAULT_PROMPT)
         return text
 
     @staticmethod
-    def _sync_rows(obj: dict[str, Any], block: dict[str, Any], row_count: int) -> list[dict[str, Any]]:
+    def _sync_rows(
+        obj: dict[str, Any], block: dict[str, Any], row_count: int
+    ) -> list[dict[str, Any]]:
         columns = obj.get("columns") or []
-        current = [row for row in obj.get("rows") or [] if row.get("blockId") == block.get("id")]
-        other = [row for row in obj.get("rows") or [] if row.get("blockId") != block.get("id")]
+        current = [
+            row
+            for row in obj.get("rows") or []
+            if row.get("blockId") == block.get("id")
+        ]
+        other = [
+            row
+            for row in obj.get("rows") or []
+            if row.get("blockId") != block.get("id")
+        ]
         rows: list[dict[str, Any]] = []
         for row_index in range(row_count):
-            row = current[row_index] if row_index < len(current) else {
-                "id": uid(), "blockId": block["id"], "cells": []
+            row = (
+                current[row_index]
+                if row_index < len(current)
+                else {"id": uid(), "blockId": block["id"], "cells": []}
+            )
+            cells_by_column = {
+                cell.get("columnId"): cell for cell in row.get("cells") or []
             }
-            cells_by_column = {cell.get("columnId"): cell for cell in row.get("cells") or []}
             row["cells"] = [
                 cells_by_column.get(column["id"])
                 or {
@@ -1004,7 +1113,9 @@ class ExtractionTasks:
         block["rowIds"] = [row["id"] for row in rows]
         valid_ids = {row["id"] for row in obj["rows"]}
         for group in obj.get("groups") or []:
-            group["rowIds"] = [row_id for row_id in group.get("rowIds", []) if row_id in valid_ids]
+            group["rowIds"] = [
+                row_id for row_id in group.get("rowIds", []) if row_id in valid_ids
+            ]
         return rows
 
     def _run(self, task_id: str, source: Path, region_id: str) -> None:
@@ -1046,7 +1157,9 @@ class ExtractionTasks:
                     inherited_orientation = owner.get("orientation", 0)
                     correction_prompt = str(owner.get("aiPrompt") or DEFAULT_PROMPT)
                 if mode == "none":
-                    raise ValueError("Для этого поля OCR отключён; заполните его вручную")
+                    raise ValueError(
+                        "Для этого поля OCR отключён; заполните его вручную"
+                    )
                 orientation = normalize_orientation(
                     region.get("orientation", inherited_orientation)
                 )
@@ -1077,9 +1190,9 @@ class ExtractionTasks:
                         cell = rows[row_index]["cells"][column_index]
                         orientation = cell.get("orientation")
                         if orientation is None:
-                            orientation = column.get(
-                                "orientation", obj.get("orientation", 0)
-                            )
+                            orientation = region.get("orientation")
+                        if orientation is None:
+                            orientation = column.get("orientation", 0)
                         values.append(
                             self._recognize(
                                 source,
@@ -1185,6 +1298,224 @@ class ExtractionTasks:
         except Exception as exc:
             self._set_task(task_id, state="failed", error=str(exc), targetId=target_id)
 
+    @staticmethod
+    def _value_targets(obj: dict[str, Any]) -> list[dict[str, Any]]:
+        if obj.get("type") == "record":
+            return list(obj.get("fields") or [])
+        targets: list[dict[str, Any]] = []
+        for row in obj.get("rows") or []:
+            targets.extend(row.get("cells") or [])
+        return targets
+
+    @staticmethod
+    def _structured_updates(
+        result: dict[str, Any], allowed_ids: set[str], collection: str
+    ) -> dict[str, str]:
+        updates: dict[str, str] = {}
+        containers = result.get(collection)
+        if not isinstance(containers, list):
+            raise ValueError("ИИ вернул JSON без ожидаемого списка значений")
+        if collection == "fields":
+            values = containers
+        else:
+            values = []
+            for row in containers:
+                if not isinstance(row, dict) or not isinstance(row.get("cells"), list):
+                    raise ValueError("ИИ повредил структуру строк таблицы")
+                values.extend(row["cells"])
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValueError("ИИ повредил структуру значения")
+            target_id = str(item.get("id") or "")
+            if target_id not in allowed_ids or target_id in updates:
+                raise ValueError("ИИ изменил идентификаторы структуры")
+            updates[target_id] = str(item.get("value") or "")
+        if set(updates) != allowed_ids:
+            raise ValueError("ИИ вернул не все значения объекта")
+        return updates
+
+    def _correct_record_object(self, obj: dict[str, Any]) -> dict[str, str]:
+        fields = [
+            field
+            for field in obj.get("fields") or []
+            if str(field.get("value") or "").strip()
+        ]
+        if not fields:
+            raise ValueError("В объекте нет текста для коррекции")
+        payload = {
+            "object": str(obj.get("name") or "Объект"),
+            "fields": [
+                {
+                    "id": field["id"],
+                    "name": field.get("name") or "Поле",
+                    "value": field.get("value") or "",
+                    "instruction": field.get("aiPrompt") or DEFAULT_PROMPT,
+                }
+                for field in fields
+            ],
+        }
+        result = self.llama.process_json(
+            payload,
+            (
+                "Исправь значения полей с учётом контекста всего объекта. "
+                "Названия полей и id неизменяемы. Верни объект с массивом fields; "
+                "для каждого входного поля верни id, name и исправленное value."
+            ),
+        )
+        return self._structured_updates(
+            result, {str(field["id"]) for field in fields}, "fields"
+        )
+
+    def _correct_table_object(self, obj: dict[str, Any]) -> dict[str, str]:
+        columns = list(obj.get("columns") or [])
+        rows = list(obj.get("rows") or [])
+        if not columns or not rows:
+            raise ValueError("В таблице нет строк для коррекции")
+        updates: dict[str, str] = {}
+        for offset in range(0, len(rows), TABLE_CORRECTION_ROWS):
+            chunk = rows[offset : offset + TABLE_CORRECTION_ROWS]
+            cell_ids = {
+                str(cell["id"]) for row in chunk for cell in row.get("cells") or []
+            }
+            payload = {
+                "table": str(
+                    (obj.get("title") or {}).get("value")
+                    or obj.get("name")
+                    or "Таблица"
+                ),
+                "headers": [
+                    {
+                        "id": column["id"],
+                        "value": column.get("value") or column.get("name") or "",
+                        "instruction": column.get("cellPrompt")
+                        or column.get("aiPrompt")
+                        or DEFAULT_PROMPT,
+                    }
+                    for column in columns
+                ],
+                "rows": [
+                    {
+                        "id": row["id"],
+                        "cells": [
+                            {
+                                "id": cell["id"],
+                                "columnId": cell.get("columnId"),
+                                "value": cell.get("value") or "",
+                            }
+                            for cell in row.get("cells") or []
+                        ],
+                    }
+                    for row in chunk
+                ],
+            }
+            result = self.llama.process_json(
+                payload,
+                (
+                    "Исправь OCR только в value ячеек таблицы. Заголовки headers "
+                    "даны как контекст и должны остаться без изменений. Сохрани все "
+                    "строки, id, columnId, порядок и пустые ячейки. Верни объект с "
+                    "массивом rows той же структуры."
+                ),
+            )
+            chunk_updates = self._structured_updates(result, cell_ids, "rows")
+            original_values = {
+                str(cell["id"]): str(cell.get("value") or "")
+                for row in chunk
+                for cell in row.get("cells") or []
+            }
+            # Empty cells carry structural meaning. Never let the model invent
+            # content for one even if it ignores the explicit prompt.
+            for cell_id, original in original_values.items():
+                if not original.strip():
+                    chunk_updates[cell_id] = original
+            updates.update(chunk_updates)
+        return updates
+
+    def _run_object_correction(
+        self, task_id: str, source: Path, object_id: str
+    ) -> None:
+        try:
+            self._set_task(task_id, state="running")
+            snapshot = self.store.load(source)
+            obj = next(
+                (
+                    item
+                    for item in snapshot.get("objects") or []
+                    if item.get("id") == object_id
+                ),
+                None,
+            )
+            if obj is None:
+                raise ValueError("Объект для коррекции не найден")
+            targets = self._value_targets(obj)
+            originals = {
+                str(target["id"]): str(target.get("value") or "") for target in targets
+            }
+            updates = (
+                self._correct_record_object(obj)
+                if obj.get("type") == "record"
+                else self._correct_table_object(obj)
+            )
+            applied = False
+
+            def save_output(document: dict[str, Any]) -> None:
+                nonlocal applied
+                current_obj = next(
+                    (
+                        item
+                        for item in document.get("objects") or []
+                        if item.get("id") == object_id
+                    ),
+                    None,
+                )
+                if current_obj is None:
+                    return
+                current_targets = {
+                    str(target["id"]): target
+                    for target in self._value_targets(current_obj)
+                }
+                if any(
+                    target_id not in current_targets
+                    or str(current_targets[target_id].get("value") or "") != original
+                    for target_id, original in originals.items()
+                ):
+                    return
+                changed_ids = {
+                    target_id
+                    for target_id, value in updates.items()
+                    if value != originals.get(target_id, "")
+                }
+                for target_id, value in updates.items():
+                    current_targets[target_id]["value"] = value
+                    current_targets[target_id]["aiUpdated"] = time.time()
+                for field in current_obj.get("fields") or []:
+                    if str(field.get("id")) in changed_ids:
+                        for region in field.get("sources") or []:
+                            region.update({"status": "modified", "error": None})
+                changed_blocks = {
+                    row.get("blockId")
+                    for row in current_obj.get("rows") or []
+                    if any(
+                        str(cell.get("id")) in changed_ids
+                        for cell in row.get("cells") or []
+                    )
+                }
+                for block in current_obj.get("blocks") or []:
+                    if block.get("id") in changed_blocks and block.get("region"):
+                        block["region"].update({"status": "modified", "error": None})
+                applied = True
+
+            document = self.store.mutate(source, save_output)
+            self._set_task(
+                task_id,
+                state="done",
+                document=document,
+                applied=applied,
+                objectId=object_id,
+            )
+        except Exception as exc:
+            self._set_task(task_id, state="failed", error=str(exc), objectId=object_id)
+
 
 def reset_template_objects(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     copied = copy.deepcopy(objects)
@@ -1243,13 +1574,17 @@ def choose_pdf(initial_directory: Path | None = None) -> str | None:
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$d=New-Object System.Windows.Forms.OpenFileDialog;"
         "$d.Filter='PDF (*.pdf)|*.pdf';$d.Multiselect=$false;"
+        "$d.AutoUpgradeEnabled=$false;"
         f"$i=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_initial}'));"
         "$d.InitialDirectory=$i;$d.RestoreDirectory=$true;$d.CheckPathExists=$true;"
         "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
         "$b=[Text.Encoding]::UTF8.GetBytes($d.FileName);"
         "[Console]::Out.WriteLine([Convert]::ToBase64String($b))}"
     )
-    executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    executable = (
+        Path(os.environ["SystemRoot"])
+        / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     completed = subprocess.run(
         [str(executable), "-NoProfile", "-STA", "-EncodedCommand", encoded],
@@ -1285,7 +1620,11 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"status": "ready", "schema": SCHEMA_VERSION, "ocr": tasks.paddle.health()}
+        return {
+            "status": "ready",
+            "schema": SCHEMA_VERSION,
+            "ocr": tasks.paddle.health(),
+        }
 
     @app.get("/api/catalog")
     def catalog() -> dict[str, Any]:
@@ -1300,7 +1639,10 @@ def create_app(
     @app.post("/api/open/dialog")
     def open_dialog(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            initial = registry.workspace or Path.cwd()
+            configured_initial = os.environ.get("DIGITIZER_OPEN_DIRECTORY", "").strip()
+            initial = registry.workspace or (
+                Path(configured_initial) if configured_initial else Path.cwd()
+            )
             raw_source = str((payload or {}).get("source") or "").strip()
             if raw_source and not urlparse(raw_source).scheme:
                 candidate = Path(raw_source).expanduser()
@@ -1317,7 +1659,11 @@ def create_app(
     def get_document(source: str = Query(...)) -> dict[str, Any]:
         try:
             path = registry.resolve(source)
-            return {"source": str(path), "name": path.name, "document": store.load(path)}
+            return {
+                "source": str(path),
+                "name": path.name,
+                "document": store.load(path),
+            }
         except Exception as exc:
             raise bad(exc) from exc
 
@@ -1361,6 +1707,9 @@ def create_app(
     def correct_text(payload: dict[str, Any]) -> dict[str, str]:
         try:
             source = registry.resolve(str(payload.get("source") or ""))
+            object_id = str(payload.get("objectId") or "")
+            if object_id:
+                return {"taskId": tasks.submit_object_correction(source, object_id)}
             target_id = str(payload.get("targetId") or "")
             if not target_id:
                 raise ValueError("Не указано поле для коррекции")
@@ -1426,7 +1775,11 @@ def create_app(
                 json.loads(template_path(source).read_text(encoding="utf-8"))
             )
             template = next(
-                (item for item in catalog_value.get("templates") or [] if item.get("id") == template_id),
+                (
+                    item
+                    for item in catalog_value.get("templates") or []
+                    if item.get("id") == template_id
+                ),
                 None,
             )
             if template is None:
@@ -1445,7 +1798,9 @@ def create_app(
             document = store.load(path)
             return JSONResponse(
                 document,
-                headers={"Content-Disposition": f'attachment; filename="{path.stem}.json"'},
+                headers={
+                    "Content-Disposition": f'attachment; filename="{path.stem}.json"'
+                },
             )
         except Exception as exc:
             raise bad(exc) from exc

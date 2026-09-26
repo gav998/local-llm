@@ -18,11 +18,17 @@ $Logs = Join-Path $Root 'logs'
 $Data = Join-Path $Root 'data'
 $RuntimeMarker = Join-Path $Runtime '.installed'
 $RuntimeVersion = 'digitizer portable runtime v2-yaml'
+$InitialOpenDirectory = if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE 'Downloads') -PathType Container) {
+    Join-Path $env:USERPROFILE 'Downloads'
+} else {
+    $Root
+}
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
     $PortableTemp = Join-Path $Root '_temp'
-    New-Item -ItemType Directory -Path $PortableProfile,$PortableTemp,$Logs,$Data,$Downloads -Force | Out-Null
+    $PortableDesktop = Join-Path $PortableProfile 'Desktop'
+    New-Item -ItemType Directory -Path $PortableProfile,$PortableDesktop,$PortableTemp,$Logs,$Data,$Downloads -Force | Out-Null
     $env:USERPROFILE = $PortableProfile
     $env:APPDATA = Join-Path $PortableProfile 'AppData\Roaming'
     $env:LOCALAPPDATA = Join-Path $PortableProfile 'AppData\Local'
@@ -34,6 +40,7 @@ function Initialize-PortableEnvironment {
     $env:UV_LINK_MODE = 'copy'
     $env:PYTHONNOUSERSITE = '1'
     $env:PYTHONPYCACHEPREFIX = Join-Path $Root '_cache\pyc'
+    $env:DIGITIZER_OPEN_DIRECTORY = $InitialOpenDirectory
     $env:PATH = (Join-Path $Runtime 'vc') + ';' + (Split-Path $Python -Parent) + ';' + $env:SystemRoot + '\System32'
 }
 

@@ -34,10 +34,23 @@ class FakePaddle:
 class FakeLlama:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.structured_calls: list[tuple[dict, str]] = []
 
     def process(self, text: str, prompt: str) -> str:
         self.calls.append((text, prompt))
         return f"fixed:{text}"
+
+    def process_json(self, payload: dict, prompt: str) -> dict:
+        self.structured_calls.append((copy.deepcopy(payload), prompt))
+        result = copy.deepcopy(payload)
+        if "fields" in result:
+            for field in result["fields"]:
+                field["value"] = f"fixed:{field['value']}"
+        if "rows" in result:
+            for row in result["rows"]:
+                for cell in row["cells"]:
+                    cell["value"] = f"fixed:{cell['value']}"
+        return result
 
 
 class MemoryStore:
@@ -163,6 +176,34 @@ class DigitizerSchemaTests(unittest.TestCase):
             configured["fields"][0]["aiPrompt"],
         )
 
+    def test_configured_field_key_name_and_ocr_mode_are_pinned_by_yaml(self) -> None:
+        document = app.new_document(Path("sample.pdf"), 1)
+        approval = app.create_object("approval")
+        configured = next(item for item in app.PRESETS if item["id"] == "approval")
+        field = approval["fields"][0]
+        field.update({"key": "changed", "name": "Изменено", "ocrMode": "formula"})
+        # Keep the configured key available for matching a stale editable document.
+        field["key"] = configured["fields"][0]["key"]
+        document["objects"].append(approval)
+
+        normalized = app.normalize_document(document)
+
+        self.assertEqual(
+            normalized["objects"][0]["fields"][0]["name"],
+            configured["fields"][0]["name"],
+        )
+        self.assertEqual(
+            normalized["objects"][0]["fields"][0]["ocrMode"],
+            configured["fields"][0]["ocrMode"],
+        )
+
+    def test_json_response_accepts_fenced_object_and_rejects_prose(self) -> None:
+        self.assertEqual(
+            app.parse_json_response('```json\n{"value": 1}\n```'), {"value": 1}
+        )
+        with self.assertRaisesRegex(ValueError, "формате JSON"):
+            app.parse_json_response("готово")
+
     def test_schema_one_is_migrated_without_losing_values(self) -> None:
         legacy = {
             "schema": 1,
@@ -201,10 +242,10 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(
             migrated["objects"][0]["fields"][0]["sources"][0]["orientation"], 90
         )
+        self.assertEqual(migrated["objects"][1]["title"]["name"], "Название таблицы")
         self.assertEqual(
-            migrated["objects"][1]["title"]["name"], "Название таблицы"
+            migrated["objects"][1]["rows"][0]["cells"][0]["value"], "Осмотр"
         )
-        self.assertEqual(migrated["objects"][1]["rows"][0]["cells"][0]["value"], "Осмотр")
 
     def test_materialize_applies_groups_only_to_selected_rows(self) -> None:
         document = app.new_document(Path("sample.pdf"), 1)
@@ -255,9 +296,7 @@ class DigitizerSchemaTests(unittest.TestCase):
             "orientation": 270,
             "sources": [source],
         }
-        table["rows"].append(
-            {"id": app.uid(), "blockId": None, "cells": [cell]}
-        )
+        table["rows"].append({"id": app.uid(), "blockId": None, "cells": [cell]})
         document["objects"].append(table)
         found = list(app.iter_regions(document))
         self.assertEqual(found[0][2]["id"], source["id"])
@@ -364,6 +403,7 @@ class DigitizerExtractionTests(unittest.TestCase):
             "grid": {"columns": [0.5], "rows": [0.5]},
             "rowIds": [],
         }
+        block["region"]["orientation"] = 90
         table["blocks"] = [block]
         app.ExtractionTasks._sync_rows(table, block, 2)
         document["objects"].append(table)
@@ -373,10 +413,18 @@ class DigitizerExtractionTests(unittest.TestCase):
         self.tasks._run("task", self.pdf_path, block["region"]["id"])
 
         self.assertEqual(self.tasks.status("task")["state"], "done")
-        self.assertEqual([mode for mode, _image in self.paddle.calls], ["text", "formula", "text", "formula"])
+        self.assertEqual(
+            [mode for mode, _image in self.paddle.calls],
+            ["text", "formula", "text", "formula"],
+        )
+        self.assertTrue(
+            all(image.endswith(b":90") for _mode, image in self.paddle.calls)
+        )
         saved = self.store.load(self.pdf_path)
         self.assertEqual(len(saved["objects"][0]["rows"]), 2)
-        self.assertEqual(saved["objects"][0]["rows"][1]["cells"][1]["value"], "result:formula:4")
+        self.assertEqual(
+            saved["objects"][0]["rows"][1]["cells"][1]["value"], "result:formula:4"
+        )
 
     def test_cell_source_inherits_column_mode(self) -> None:
         document = app.new_document(self.pdf_path, 1)
@@ -523,8 +571,118 @@ class DigitizerExtractionTests(unittest.TestCase):
         self.assertEqual(result["state"], "done")
         self.assertFalse(result["applied"])
         saved = self.store.load(self.pdf_path)
+        self.assertEqual(saved["objects"][0]["fields"][0]["value"], "Ручная правка")
+
+    def test_record_object_ai_correction_uses_one_shared_context(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        obj = app.create_object("approval")
+        obj["fields"][0]["value"] = "Иванов  И.И."
+        obj["fields"][1]["value"] = "Нач. отдела"
+        document["objects"].append(obj)
+        self.store.save(self.pdf_path, document)
+        self.tasks._tasks["object-ai"] = {"state": "queued"}
+
+        self.tasks._run_object_correction("object-ai", self.pdf_path, obj["id"])
+
+        result = self.tasks.status("object-ai")
+        self.assertEqual(result["state"], "done")
+        self.assertTrue(result["applied"])
+        self.assertEqual(len(self.tasks.llama.structured_calls), 1)
+        payload, _prompt = self.tasks.llama.structured_calls[0]
         self.assertEqual(
-            saved["objects"][0]["fields"][0]["value"], "Ручная правка"
+            [field["value"] for field in payload["fields"]],
+            ["Иванов  И.И.", "Нач. отдела"],
+        )
+        saved = self.store.load(self.pdf_path)
+        self.assertEqual(
+            saved["objects"][0]["fields"][0]["value"], "fixed:Иванов  И.И."
+        )
+
+    def test_manual_edit_during_object_ai_correction_is_not_overwritten(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        obj = app.create_object("approval")
+        obj["fields"][0]["value"] = "Исходное имя"
+        obj["fields"][1]["value"] = "Исходная должность"
+        document["objects"].append(obj)
+        self.store.save(self.pdf_path, document)
+        original_process = self.tasks.llama.process_json
+
+        def process_and_edit(payload: dict, prompt: str) -> dict:
+            result = original_process(payload, prompt)
+
+            def edit(current):
+                current["objects"][0]["fields"][0]["value"] = "Ручная правка"
+
+            self.store.mutate(self.pdf_path, edit)
+            return result
+
+        self.tasks.llama.process_json = process_and_edit
+        self.tasks._tasks["stale-object-ai"] = {"state": "queued"}
+
+        self.tasks._run_object_correction("stale-object-ai", self.pdf_path, obj["id"])
+
+        result = self.tasks.status("stale-object-ai")
+        self.assertEqual(result["state"], "done")
+        self.assertFalse(result["applied"])
+        saved = self.store.load(self.pdf_path)
+        self.assertEqual(saved["objects"][0]["fields"][0]["value"], "Ручная правка")
+
+    def test_table_object_ai_repeats_headers_in_twelve_row_chunks(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        table = app.create_object("table")
+        first = app.new_field("operation", "Операция")
+        first["value"] = "Операция"
+        second = app.new_field("result", "Результат")
+        second["value"] = "Результат"
+        table["columns"] = [first, second]
+        for row_index in range(25):
+            table["rows"].append(
+                {
+                    "id": app.uid(),
+                    "blockId": None,
+                    "cells": [
+                        {
+                            "id": app.uid(),
+                            "columnId": first["id"],
+                            "value": f"Операция {row_index}",
+                            "orientation": None,
+                            "sources": [],
+                        },
+                        {
+                            "id": app.uid(),
+                            "columnId": second["id"],
+                            "value": f"Результат {row_index}",
+                            "orientation": None,
+                            "sources": [],
+                        },
+                    ],
+                }
+            )
+        table["rows"][0]["cells"][1]["value"] = ""
+        document["objects"].append(table)
+        self.store.save(self.pdf_path, document)
+        self.tasks._tasks["table-ai"] = {"state": "queued"}
+
+        self.tasks._run_object_correction("table-ai", self.pdf_path, table["id"])
+
+        result = self.tasks.status("table-ai")
+        self.assertEqual(result["state"], "done")
+        self.assertTrue(result["applied"])
+        calls = self.tasks.llama.structured_calls
+        self.assertEqual(
+            [len(payload["rows"]) for payload, _prompt in calls], [12, 12, 1]
+        )
+        self.assertTrue(
+            all(
+                [header["value"] for header in payload["headers"]]
+                == ["Операция", "Результат"]
+                for payload, _prompt in calls
+            )
+        )
+        saved = self.store.load(self.pdf_path)
+        self.assertEqual(saved["objects"][0]["rows"][0]["cells"][1]["value"], "")
+        self.assertEqual(
+            saved["objects"][0]["rows"][24]["cells"][1]["value"], "fixed:Результат 24"
         )
 
 
