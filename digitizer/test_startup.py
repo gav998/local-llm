@@ -50,6 +50,23 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:6381/v1", script)
         self.assertNotIn("PaddleOCR is not running", script)
         self.assertNotIn("DIGITIZER_OPEN_DIRECTORY", script)
+        self.assertNotIn("Start-Process $Url", script)
+
+    def test_editor_source_preserves_focus_and_limits_object_actions(self) -> None:
+        html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
+
+        self.assertIn("function previewFocusSnapshot()", html)
+        self.assertIn("restorePreviewFocus(focus)", html)
+        self.assertIn("state.paneSyncPaused", html)
+        self.assertIn("showObjectOcr=ocrSources.length>1", html)
+        self.assertIn("background:var(--violet)", html)
+        self.assertIn(".object-ocr{right:3px;top:3px;z-index:12;background:var(--blue)", html)
+        self.assertNotIn("menuItem('Периодичность'", html)
+        new_object_menu = html.index(
+            "const presets=[menuItem('Текст',()=>withMenuAssignment"
+        )
+        organization = html.index("for(const preset of availablePresets())", new_object_menu)
+        self.assertLess(new_object_menu, organization)
 
 
 if __name__ == "__main__":

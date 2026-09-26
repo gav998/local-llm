@@ -571,6 +571,51 @@ def order_table_rows(obj: dict[str, Any]) -> list[dict[str, Any]]:
     return ordered
 
 
+def consolidate_person_block(
+    obj: dict[str, Any], preset: dict[str, Any] | None
+) -> None:
+    """Migrate old split approval/agreement fields to one editable OCR block."""
+    if obj.get("preset") not in {"approval", "agreement"} or not preset:
+        return
+    configured = list(preset.get("fields") or [])
+    fields = list(obj.get("fields") or [])
+    if len(configured) != 1 or not fields:
+        return
+    target_config = configured[0]
+    target_key = str(target_config["key"])
+    primary = next(
+        (field for field in fields if str(field.get("key") or "") == target_key),
+        fields[0],
+    )
+    values: list[str] = []
+    sources: list[dict[str, Any]] = []
+    source_ids: set[str] = set()
+    for field in fields:
+        value = str(field.get("value") or "").strip()
+        if value and value not in values:
+            values.append(value)
+        for source in field.get("sources") or []:
+            source_id = str(source.get("id") or "")
+            if source_id and source_id in source_ids:
+                continue
+            if source_id:
+                source_ids.add(source_id)
+            sources.append(source)
+    primary["key"] = target_key
+    primary["name"] = str(target_config["name"])
+    primary["ocrMode"] = str(target_config["ocrMode"])
+    primary["aiPrompt"] = str(target_config["aiPrompt"])
+    primary["value"] = ", ".join(values)
+    primary["sources"] = sources
+    obj["fields"] = [primary]
+    legacy_names = {
+        "approval": {"Утверждение / подтверждение", "Утверждение", "Подтверждение"},
+        "agreement": {"Согласование"},
+    }
+    if str(obj.get("name") or "") in legacy_names[str(obj["preset"])]:
+        obj["name"] = str(preset["name"])
+
+
 def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schema", 1) == 1:
         document = migrate_v1(document)
@@ -591,6 +636,7 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
         dynamic_prompt = str((preset or {}).get("dynamicFieldPrompt") or DEFAULT_PROMPT)
         if obj.get("type") == "record":
             obj.setdefault("fields", [])
+            consolidate_person_block(obj, preset)
             for field in obj["fields"]:
                 configured = configured_fields.get(str(field.get("key") or "")) or {}
                 normalize_field(

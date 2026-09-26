@@ -128,14 +128,57 @@ class DigitizerSchemaTests(unittest.TestCase):
     def test_catalog_builds_semantic_record_and_table(self) -> None:
         approval = app.create_object("approval")
         self.assertEqual(approval["type"], "record")
-        self.assertEqual(
-            {field["ocrMode"] for field in approval["fields"]},
-            {"text", "text_seal", "seal", "none"},
-        )
+        self.assertEqual(approval["name"], "Кем утверждено")
+        self.assertEqual(len(approval["fields"]), 1)
+        self.assertEqual(approval["fields"][0]["ocrMode"], "text_seal")
+        self.assertIn("звание", approval["fields"][0]["aiPrompt"])
+        agreement = app.create_object("agreement")
+        self.assertEqual(agreement["name"], "Кем согласовано")
+        self.assertEqual(len(agreement["fields"]), 1)
+        process_card = app.create_object("process_card")
+        self.assertEqual(process_card["name"], "Номер химмотологической карты")
         table = app.create_object("table")
         self.assertEqual(table["type"], "table")
         self.assertEqual(table["title"]["name"], "Название таблицы")
         self.assertEqual(table["rows"], [])
+
+    def test_old_split_approval_is_consolidated_without_losing_data(self) -> None:
+        document = app.new_document(Path("sample.pdf"), 1)
+        approval = app.create_object("approval")
+        approval["name"] = "Утверждение / подтверждение"
+        approval["fields"] = [
+            {
+                **app.new_field("position", "Должность"),
+                "value": "Начальник отдела",
+                "sources": [
+                    app.new_source(
+                        1, {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
+                    )
+                ],
+            },
+            {
+                **app.new_field("full_name", "ФИО"),
+                "value": "Иванов Иван Иванович",
+                "sources": [
+                    app.new_source(
+                        1, {"x": 0.1, "y": 0.3, "w": 0.2, "h": 0.1}
+                    )
+                ],
+            },
+        ]
+        document["objects"].append(approval)
+
+        normalized = app.normalize_document(document)
+        result = normalized["objects"][0]
+
+        self.assertEqual(result["name"], "Кем утверждено")
+        self.assertEqual(len(result["fields"]), 1)
+        self.assertEqual(result["fields"][0]["key"], "approval_block")
+        self.assertEqual(
+            result["fields"][0]["value"],
+            "Начальник отдела, Иванов Иван Иванович",
+        )
+        self.assertEqual(len(result["fields"][0]["sources"]), 2)
 
     def test_consolidated_frame_preset_contains_main_caption_fields(self) -> None:
         frame = app.create_object("frame")
@@ -418,8 +461,16 @@ class DigitizerExtractionTests(unittest.TestCase):
 
     def test_field_uses_its_mode_orientation_and_llm(self) -> None:
         document = app.new_document(self.pdf_path, 1)
-        obj = app.create_object("approval")
-        field = next(item for item in obj["fields"] if item["ocrMode"] == "seal")
+        field = app.new_field("seal", "Печать", "seal", "Исправь печать")
+        obj = {
+            "id": app.uid(),
+            "type": "record",
+            "preset": "manual_test",
+            "name": "Печать",
+            "key": "seal",
+            "orientation": 0,
+            "fields": [field],
+        }
         source = app.new_source(1, {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5})
         source["orientation"] = 90
         source["properties"] = {"useLlm": True, "prompt": "correct"}
@@ -434,7 +485,7 @@ class DigitizerExtractionTests(unittest.TestCase):
         self.assertEqual(result["state"], "done")
         self.assertEqual(self.paddle.calls[0][0], "seal")
         saved = self.store.load(self.pdf_path)
-        saved_field = saved["objects"][0]["fields"][4]
+        saved_field = saved["objects"][0]["fields"][0]
         self.assertTrue(saved_field["value"].startswith("fixed:result:seal"))
         self.assertTrue(self.paddle.calls[0][1].endswith(b":90"))
         self.assertEqual(self.tasks.llama.calls[-1][1], saved_field["aiPrompt"])
@@ -702,7 +753,7 @@ class DigitizerExtractionTests(unittest.TestCase):
 
     def test_record_object_ai_correction_uses_one_shared_context(self) -> None:
         document = app.new_document(self.pdf_path, 1)
-        obj = app.create_object("approval")
+        obj = app.create_object("frame")
         obj["fields"][0]["value"] = "Иванов  И.И."
         obj["fields"][1]["value"] = "Нач. отдела"
         document["objects"].append(obj)
@@ -727,7 +778,7 @@ class DigitizerExtractionTests(unittest.TestCase):
 
     def test_manual_edit_during_object_ai_correction_is_not_overwritten(self) -> None:
         document = app.new_document(self.pdf_path, 1)
-        obj = app.create_object("approval")
+        obj = app.create_object("frame")
         obj["fields"][0]["value"] = "Исходное имя"
         obj["fields"][1]["value"] = "Исходная должность"
         document["objects"].append(obj)

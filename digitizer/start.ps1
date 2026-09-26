@@ -211,7 +211,6 @@ try {
     $Url = "http://$($Config.host):$Port"
     Wait-Healthy "$Url/health" $Process
     Write-Host "[READY] Digitizer: $Url" -ForegroundColor Green
-    try { Start-Process $Url } catch { Write-Warning "Open $Url in a browser." }
     Read-Host 'Press Enter to stop digitizer' | Out-Null
 } finally {
     if ($Process -and -not $Process.HasExited) {
