@@ -1733,27 +1733,22 @@ def normalize_template_catalog(value: Any) -> dict[str, Any]:
     return catalog
 
 
-def choose_pdf(initial_directory: Path | None = None) -> str | None:
+def choose_pdf() -> str | None:
     if os.name != "nt":
         raise RuntimeError("Системный диалог выбора PDF доступен только в Windows")
-    initial = initial_directory or Path.cwd()
-    try:
-        initial = initial.resolve(strict=True)
-    except OSError:
-        initial = Path.cwd().resolve()
-    if not initial.is_dir():
-        initial = initial.parent
-    encoded_initial = base64.b64encode(str(initial).encode("utf-8")).decode("ascii")
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
+        "$owner=New-Object System.Windows.Forms.Form;"
+        "$owner.ShowInTaskbar=$false;$owner.TopMost=$true;$owner.Opacity=0;"
+        "$owner.Width=1;$owner.Height=1;"
         "$d=New-Object System.Windows.Forms.OpenFileDialog;"
         "$d.Filter='PDF (*.pdf)|*.pdf';$d.Multiselect=$false;"
-        "$d.AutoUpgradeEnabled=$false;"
-        f"$i=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_initial}'));"
-        "$d.InitialDirectory=$i;$d.RestoreDirectory=$true;$d.CheckPathExists=$true;"
-        "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
+        "$d.AutoUpgradeEnabled=$true;$d.RestoreDirectory=$true;$d.CheckPathExists=$true;"
+        "$owner.Show();$owner.Activate();"
+        "if($d.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK){"
         "$b=[Text.Encoding]::UTF8.GetBytes($d.FileName);"
-        "[Console]::Out.WriteLine([Convert]::ToBase64String($b))}"
+        "[Console]::Out.WriteLine([Convert]::ToBase64String($b))};"
+        "$owner.Close();$owner.Dispose();$d.Dispose()"
     )
     executable = (
         Path(os.environ["SystemRoot"])
@@ -1794,11 +1789,7 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {
-            "status": "ready",
-            "schema": SCHEMA_VERSION,
-            "ocr": tasks.paddle.health(),
-        }
+        return {"status": "ready", "schema": SCHEMA_VERSION}
 
     @app.get("/api/catalog")
     def catalog() -> dict[str, Any]:
@@ -1811,20 +1802,9 @@ def create_app(
         }
 
     @app.post("/api/open/dialog")
-    def open_dialog(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def open_dialog() -> dict[str, Any]:
         try:
-            configured_initial = os.environ.get("DIGITIZER_OPEN_DIRECTORY", "").strip()
-            initial = registry.workspace or (
-                Path(configured_initial) if configured_initial else Path.cwd()
-            )
-            raw_source = str((payload or {}).get("source") or "").strip()
-            if raw_source and not urlparse(raw_source).scheme:
-                candidate = Path(raw_source).expanduser()
-                if candidate.is_file():
-                    initial = candidate.parent
-                elif candidate.is_dir():
-                    initial = candidate
-            selected = choose_pdf(initial)
+            selected = choose_pdf()
             return {"cancelled": selected is None, "source": selected}
         except Exception as exc:
             raise bad(exc) from exc

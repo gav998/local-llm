@@ -18,11 +18,6 @@ $Logs = Join-Path $Root 'logs'
 $Data = Join-Path $Root 'data'
 $RuntimeMarker = Join-Path $Runtime '.installed'
 $RuntimeVersion = 'digitizer portable runtime v2-yaml'
-$InitialOpenDirectory = if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE 'Downloads') -PathType Container) {
-    Join-Path $env:USERPROFILE 'Downloads'
-} else {
-    $Root
-}
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -40,7 +35,6 @@ function Initialize-PortableEnvironment {
     $env:UV_LINK_MODE = 'copy'
     $env:PYTHONNOUSERSITE = '1'
     $env:PYTHONPYCACHEPREFIX = Join-Path $Root '_cache\pyc'
-    $env:DIGITIZER_OPEN_DIRECTORY = $InitialOpenDirectory
     $env:PATH = (Join-Path $Runtime 'vc') + ';' + (Split-Path $Python -Parent) + ';' + $env:SystemRoot + '\System32'
 }
 
@@ -172,8 +166,10 @@ function Resolve-Connections {
     if (-not $PaddleKey -and $PaddleConnection) { $script:PaddleKey = [string]$PaddleConnection.api_key }
     if (-not $LlamaUrl -and $LlamaConnection) { $script:LlamaUrl = [string]$LlamaConnection.chat_url }
     if (-not $LlamaKey -and $LlamaConnection) { $script:LlamaKey = [string]$LlamaConnection.chat_api_key }
-    if (-not $PaddleUrl -or -not $PaddleKey) { throw 'PaddleOCR settings not found. Use -PaddleUrl URL -PaddleKey KEY.' }
-    if (-not $LlamaUrl) { Write-Warning 'llama.cpp settings not found. OCR will work; optional LLM correction will be unavailable.' }
+    if (-not $PaddleUrl) { $script:PaddleUrl = 'http://127.0.0.1:9399' }
+    if (-not $PaddleKey) { $script:PaddleKey = 'local-ocr' }
+    if (-not $LlamaUrl) { $script:LlamaUrl = 'http://127.0.0.1:6381/v1' }
+    if (-not $LlamaKey) { $script:LlamaKey = 'local-llm' }
 }
 
 function Quote-Argument([object]$Value) {
@@ -203,11 +199,6 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -
     Initialize-PortableEnvironment
 }
 Resolve-Connections
-try {
-    Invoke-WebRequest -UseBasicParsing -Uri "$($PaddleUrl.TrimEnd('/'))/health" -TimeoutSec 5 | Out-Null
-} catch {
-    throw "PaddleOCR is not running at $PaddleUrl. Start paddleocr\start.bat first or pass another URL."
-}
 
 $Arguments = @((Join-Path $Root 'app.py'),'--host',$Config.host,'--port',$Port,'--data-root',$Data,'--paddle-url',$PaddleUrl,'--paddle-token',$PaddleKey,'--llama-url',$LlamaUrl,'--llama-key',$LlamaKey)
 $ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
