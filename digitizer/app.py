@@ -126,7 +126,21 @@ def clean_ocr_markup(value: str) -> str:
     value = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", value, flags=re.S)
     value = re.sub(r"<img\b[^>]*>", "", value, flags=re.I | re.S)
     value = re.sub(r"</?(?:div|p|span)\b[^>]*>", "", value, flags=re.I | re.S)
+    # PP-StructureV3 emits short detected fragments as Markdown headings.  A
+    # digitizer field is plain text, so keeping the leading "# " only adds
+    # OCR noise to numbers, names and other values.
+    value = re.sub(r"(?m)^\s{0,3}#{1,6}[ \t]+", "", value)
     return clean_text(html.unescape(value))
+
+
+def combine_ocr_outputs(sources: list[dict[str, Any]]) -> str:
+    """Combine several selections belonging to one semantic value."""
+    values = [
+        str(item.get("output") or "").strip()
+        for item in sources
+        if item.get("status") in {"recognized", "modified"} and item.get("output")
+    ]
+    return " ".join(values)
 
 
 def _ocr_recognized_texts(value: Any) -> list[str]:
@@ -135,7 +149,7 @@ def _ocr_recognized_texts(value: Any) -> list[str]:
     texts = value.get("rec_texts") or value.get("recTexts") or []
     if not isinstance(texts, list):
         return []
-    return [clean_text(str(item)) for item in texts if clean_text(str(item))]
+    return [clean_ocr_markup(str(item)) for item in texts if clean_ocr_markup(str(item))]
 
 
 def flatten_ocr_result(value: str, mode: str = "text") -> str:
@@ -311,7 +325,20 @@ def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
             for field in preset.get("fields", [])
         ]
     else:
-        obj.update({"columns": [], "rows": [], "blocks": [], "groups": []})
+        obj.update(
+            {
+                "title": new_field(
+                    "title",
+                    "Название таблицы",
+                    "text",
+                    str(preset.get("dynamicFieldPrompt") or DEFAULT_PROMPT),
+                ),
+                "columns": [],
+                "rows": [],
+                "blocks": [],
+                "groups": [],
+            }
+        )
     return obj
 
 
@@ -379,6 +406,7 @@ def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
             "name": name,
             "key": key,
             "orientation": 0,
+            "title": new_field("title", "Название таблицы", "text"),
             "columns": [],
             "rows": [],
             "blocks": [],
@@ -493,6 +521,10 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
                 configured = configured_fields.get(str(field.get("key") or "")) or {}
                 normalize_field(field, str(configured.get("aiPrompt") or dynamic_prompt))
         elif obj.get("type") == "table":
+            title = obj.setdefault(
+                "title", new_field("title", "Название таблицы", "text", dynamic_prompt)
+            )
+            normalize_field(title, dynamic_prompt)
             for name in ("columns", "groups"):
                 obj.setdefault(name, [])
                 for field in obj[name]:
@@ -563,7 +595,11 @@ def materialize(document: dict[str, Any]) -> dict[str, Any]:
                     cell.get("value") or ""
                 )
             rows.append(values)
-        data[key] = {"columns": names, "rows": rows}
+        data[key] = {
+            "title": str((obj.get("title") or {}).get("value") or ""),
+            "columns": names,
+            "rows": rows,
+        }
     document["data"] = data
     document["updated"] = time.time()
     return document
@@ -578,6 +614,9 @@ def iter_regions(
                 for source in field.get("sources") or []:
                     yield obj, field, source, "field"
         else:
+            title = obj.get("title") or {}
+            for source in title.get("sources") or []:
+                yield obj, title, source, "title"
             for column in obj.get("columns") or []:
                 for source in column.get("sources") or []:
                     yield obj, column, source, "column"
@@ -904,6 +943,9 @@ class ExtractionTasks:
                 for field in obj.get(collection) or []:
                     if field.get("id") == target_id:
                         return obj, field, str(field.get("aiPrompt") or DEFAULT_PROMPT), kind
+            title = obj.get("title") or {}
+            if title.get("id") == target_id:
+                return obj, title, str(title.get("aiPrompt") or DEFAULT_PROMPT), "title"
             columns = {item.get("id"): item for item in obj.get("columns") or []}
             for row in obj.get("rows") or []:
                 for cell in row.get("cells") or []:
@@ -1073,12 +1115,9 @@ class ExtractionTasks:
                     }
                 )
                 if target_kind != "table_block":
-                    values = [
-                        str(item.get("output") or "").strip()
-                        for item in target_owner.get("sources") or []
-                        if item.get("status") in {"recognized", "modified"} and item.get("output")
-                    ]
-                    target_owner["value"] = "\n".join(values)
+                    target_owner["value"] = combine_ocr_outputs(
+                        target_owner.get("sources") or []
+                    )
                 else:
                     rows = self._sync_rows(target_obj, target_owner, len(output))
                     for row, values in zip(rows, output):
@@ -1153,7 +1192,11 @@ def reset_template_objects(objects: list[dict[str, Any]]) -> list[dict[str, Any]
         if obj.get("type") == "record":
             fields = obj.get("fields") or []
         else:
-            fields = (obj.get("columns") or []) + (obj.get("groups") or [])
+            fields = (
+                ([obj["title"]] if obj.get("title") else [])
+                + (obj.get("columns") or [])
+                + (obj.get("groups") or [])
+            )
             for row in obj.get("rows") or []:
                 for cell in row.get("cells") or []:
                     cell["value"] = ""
@@ -1185,13 +1228,23 @@ def normalize_template_catalog(value: Any) -> dict[str, Any]:
     return catalog
 
 
-def choose_pdf() -> str | None:
+def choose_pdf(initial_directory: Path | None = None) -> str | None:
     if os.name != "nt":
         raise RuntimeError("Системный диалог выбора PDF доступен только в Windows")
+    initial = initial_directory or Path.cwd()
+    try:
+        initial = initial.resolve(strict=True)
+    except OSError:
+        initial = Path.cwd().resolve()
+    if not initial.is_dir():
+        initial = initial.parent
+    encoded_initial = base64.b64encode(str(initial).encode("utf-8")).decode("ascii")
     script = (
         "Add-Type -AssemblyName System.Windows.Forms;"
         "$d=New-Object System.Windows.Forms.OpenFileDialog;"
         "$d.Filter='PDF (*.pdf)|*.pdf';$d.Multiselect=$false;"
+        f"$i=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_initial}'));"
+        "$d.InitialDirectory=$i;$d.RestoreDirectory=$true;$d.CheckPathExists=$true;"
         "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){"
         "$b=[Text.Encoding]::UTF8.GetBytes($d.FileName);"
         "[Console]::Out.WriteLine([Convert]::ToBase64String($b))}"
@@ -1245,9 +1298,17 @@ def create_app(
         }
 
     @app.post("/api/open/dialog")
-    def open_dialog() -> dict[str, Any]:
+    def open_dialog(payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
-            selected = choose_pdf()
+            initial = registry.workspace or Path.cwd()
+            raw_source = str((payload or {}).get("source") or "").strip()
+            if raw_source and not urlparse(raw_source).scheme:
+                candidate = Path(raw_source).expanduser()
+                if candidate.is_file():
+                    initial = candidate.parent
+                elif candidate.is_dir():
+                    initial = candidate
+            selected = choose_pdf(initial)
             return {"cancelled": selected is None, "source": selected}
         except Exception as exc:
             raise bad(exc) from exc

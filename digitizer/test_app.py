@@ -85,6 +85,23 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(value, "Номер технологической\nкарты 12-34")
         self.assertNotIn("img", value.casefold())
 
+    def test_ocr_markdown_heading_is_plain_field_text(self) -> None:
+        payload = {
+            "result": {
+                "markdown": {"text": "# ТК-12.34"},
+                "layoutParsingResults": [
+                    {
+                        "prunedResult": {
+                            "overall_ocr_res": {"rec_texts": ["# ТК-12.34"]},
+                            "parsing_res_list": [],
+                        }
+                    }
+                ],
+            }
+        }
+        value = app.flatten_ocr_result(json.dumps(payload, ensure_ascii=False), "text")
+        self.assertEqual(value, "ТК-12.34")
+
     def test_malformed_grid_cuts_are_ignored(self) -> None:
         self.assertEqual(
             app.normalized_cuts([None, "", float("nan"), 0.25, "0.75"]),
@@ -104,7 +121,27 @@ class DigitizerSchemaTests(unittest.TestCase):
         )
         table = app.create_object("table")
         self.assertEqual(table["type"], "table")
+        self.assertEqual(table["title"]["name"], "Название таблицы")
         self.assertEqual(table["rows"], [])
+
+    def test_consolidated_frame_preset_contains_main_caption_fields(self) -> None:
+        frame = app.create_object("frame")
+        names = {field["name"] for field in frame["fields"]}
+        self.assertIn("Для инвентарного номера", names)
+        self.assertIn("Взамен инвентарного №", names)
+        self.assertIn("Инвентарный № дубликата", names)
+        self.assertIn("Разработал", names)
+        self.assertIn("Утвердил", names)
+
+    def test_multiple_regions_are_combined_as_continuous_text(self) -> None:
+        sources = [
+            {"status": "recognized", "output": "Таблица 1.1"},
+            {"status": "recognized", "output": "Соотношение шкал"},
+        ]
+        self.assertEqual(
+            app.combine_ocr_outputs(sources),
+            "Таблица 1.1 Соотношение шкал",
+        )
 
     def test_every_configured_field_has_its_own_ai_prompt(self) -> None:
         fields = [
@@ -164,6 +201,9 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(
             migrated["objects"][0]["fields"][0]["sources"][0]["orientation"], 90
         )
+        self.assertEqual(
+            migrated["objects"][1]["title"]["name"], "Название таблицы"
+        )
         self.assertEqual(migrated["objects"][1]["rows"][0]["cells"][0]["value"], "Осмотр")
 
     def test_materialize_applies_groups_only_to_selected_rows(self) -> None:
@@ -197,6 +237,7 @@ class DigitizerSchemaTests(unittest.TestCase):
         table["groups"].append(group)
         document["objects"].append(table)
         data = app.materialize(document)["data"]["schedule"]
+        self.assertEqual(data["title"], "")
         self.assertEqual(data["rows"][0]["Периодичность"], "")
         self.assertEqual(data["rows"][1]["Периодичность"], "ежемесячно")
         self.assertEqual(data["rows"][1]["Операция"], "Замена")
