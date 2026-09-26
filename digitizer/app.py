@@ -30,6 +30,10 @@ ORIENTATIONS = {0, 90, 180, 270}
 TABLE_CORRECTION_ROWS = 12
 
 
+class EmptyOcrResult(RuntimeError):
+    """The OCR pipeline completed normally but did not recognize any text."""
+
+
 def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
     config_path = path or Path(__file__).with_name("presets.yaml")
     with config_path.open("r", encoding="utf-8") as stream:
@@ -225,7 +229,7 @@ def flatten_ocr_result(value: str, mode: str = "text") -> str:
     else:
         parts = selected or general or fallback or markdown_parts
     if not parts:
-        raise RuntimeError("PaddleOCR вернул пустой результат")
+        raise EmptyOcrResult("PaddleOCR вернул пустой результат")
     return clean_text("\n".join(parts))
 
 
@@ -533,6 +537,40 @@ def normalize_field(field: dict[str, Any], default_prompt: str | None = None) ->
         normalize_source(source)
 
 
+def order_table_rows(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep rows grouped in the explicit order of their table blocks."""
+    rows = list(obj.get("rows") or [])
+    blocks = list(obj.get("blocks") or [])
+    block_ids = {block.get("id") for block in blocks}
+    ordered: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for block in blocks:
+        block_id = block.get("id")
+        candidates = [row for row in rows if row.get("blockId") == block_id]
+        by_id = {str(row.get("id")): row for row in candidates}
+        block_rows: list[dict[str, Any]] = []
+        for row_id in block.get("rowIds") or []:
+            row = by_id.get(str(row_id))
+            if row is not None and str(row.get("id")) not in used:
+                block_rows.append(row)
+                used.add(str(row.get("id")))
+        for row in candidates:
+            row_id = str(row.get("id"))
+            if row_id not in used:
+                block_rows.append(row)
+                used.add(row_id)
+        block["rowIds"] = [row.get("id") for row in block_rows]
+        ordered.extend(block_rows)
+    ordered.extend(
+        row
+        for row in rows
+        if str(row.get("id")) not in used
+        and (row.get("blockId") is None or row.get("blockId") not in block_ids)
+    )
+    obj["rows"] = ordered
+    return ordered
+
+
 def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schema", 1) == 1:
         document = migrate_v1(document)
@@ -600,6 +638,7 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
                         cell["orientation"] = normalize_orientation(cell["orientation"])
             for group in obj["groups"]:
                 group.setdefault("rowIds", [])
+            order_table_rows(obj)
         else:
             raise ValueError("Неизвестный тип объекта")
     return document
@@ -974,6 +1013,22 @@ class ExtractionTasks:
         ).start()
         return task_id
 
+    def submit_target_ocr(self, source: Path, target_id: str) -> str:
+        task_id = uid()
+        with self._lock:
+            self._tasks[task_id] = {
+                "state": "queued",
+                "type": "target-ocr",
+                "targetId": target_id,
+            }
+        threading.Thread(
+            target=self._run_target_ocr,
+            args=(task_id, source, target_id),
+            daemon=True,
+            name=f"digitizer-target-ocr-{task_id[:8]}",
+        ).start()
+        return task_id
+
     def submit_object_correction(self, source: Path, object_id: str) -> str:
         task_id = uid()
         with self._lock:
@@ -1111,6 +1166,7 @@ class ExtractionTasks:
             rows.append(row)
         obj["rows"] = other + rows
         block["rowIds"] = [row["id"] for row in rows]
+        order_table_rows(obj)
         valid_ids = {row["id"] for row in obj["rows"]}
         for group in obj.get("groups") or []:
             group["rowIds"] = [
@@ -1193,21 +1249,29 @@ class ExtractionTasks:
                             orientation = region.get("orientation")
                         if orientation is None:
                             orientation = column.get("orientation", 0)
-                        values.append(
-                            self._recognize(
-                                source,
-                                page,
-                                cell_rect(rect, x0, x1, y0, y1),
-                                region,
-                                str(column.get("ocrMode") or "text"),
-                                normalize_orientation(orientation),
-                                str(
-                                    column.get("cellPrompt")
-                                    or column.get("aiPrompt")
-                                    or DEFAULT_PROMPT
-                                ),
-                            )
-                        )
+                        mode = str(column.get("ocrMode") or "text")
+                        if mode == "none":
+                            value = str(cell.get("value") or "")
+                        else:
+                            try:
+                                value = self._recognize(
+                                    source,
+                                    page,
+                                    cell_rect(rect, x0, x1, y0, y1),
+                                    region,
+                                    mode,
+                                    normalize_orientation(orientation),
+                                    str(
+                                        column.get("cellPrompt")
+                                        or column.get("aiPrompt")
+                                        or DEFAULT_PROMPT
+                                    ),
+                                )
+                            except EmptyOcrResult:
+                                # A blank table cell is a valid result. Each cell is
+                                # sent separately, so it cannot fail the whole block.
+                                value = ""
+                        values.append(value)
                     output.append(values)
 
             def save_output(document: dict[str, Any]) -> None:
@@ -1285,6 +1349,116 @@ class ExtractionTasks:
                         sources.append(block["region"])
                 for region in sources:
                     region.update({"status": "modified", "error": None})
+                applied = True
+
+            document = self.store.mutate(source, save_output)
+            self._set_task(
+                task_id,
+                state="done",
+                document=document,
+                applied=applied,
+                targetId=target_id,
+            )
+        except Exception as exc:
+            self._set_task(task_id, state="failed", error=str(exc), targetId=target_id)
+
+    def _run_target_ocr(self, task_id: str, source: Path, target_id: str) -> None:
+        """Recognize one cell cut out of a shared, manually gridded table block."""
+        try:
+            self._set_task(task_id, state="running")
+            snapshot = self.store.load(source)
+            obj, cell, prompt, kind = self._locate_text(snapshot, target_id)
+            if kind != "cell":
+                raise ValueError("Для этого поля не найдена отдельная область OCR")
+            row = next(
+                (
+                    item
+                    for item in obj.get("rows") or []
+                    if cell in (item.get("cells") or [])
+                ),
+                None,
+            )
+            block = next(
+                (
+                    item
+                    for item in obj.get("blocks") or []
+                    if item.get("id") == (row or {}).get("blockId")
+                ),
+                None,
+            )
+            if row is None or block is None or not block.get("region"):
+                raise ValueError("Для ячейки не найден размеченный блок строк")
+            columns = list(obj.get("columns") or [])
+            column_index = next(
+                (
+                    index
+                    for index, column in enumerate(columns)
+                    if column.get("id") == cell.get("columnId")
+                ),
+                -1,
+            )
+            if column_index < 0:
+                raise ValueError("Столбец ячейки не найден")
+            column = columns[column_index]
+            mode = str(column.get("ocrMode") or "text")
+            if mode == "none":
+                raise ValueError("Для этого поля OCR отключён")
+            order_table_rows(obj)
+            block_rows = [
+                item
+                for item in obj.get("rows") or []
+                if item.get("blockId") == block.get("id")
+            ]
+            row_index = next(
+                (
+                    index
+                    for index, item in enumerate(block_rows)
+                    if item.get("id") == row.get("id")
+                ),
+                -1,
+            )
+            grid = block.get("grid") or {}
+            x_cuts = normalized_cuts(grid.get("columns"))
+            y_cuts = normalized_cuts(grid.get("rows"))
+            if len(x_cuts) - 1 != len(columns) or len(y_cuts) - 1 != len(block_rows):
+                raise ValueError("Сетка блока не соответствует строкам и столбцам")
+            region = block["region"]
+            orientation = cell.get("orientation")
+            if orientation is None:
+                orientation = region.get("orientation")
+            if orientation is None:
+                orientation = column.get("orientation", obj.get("orientation", 0))
+            rect = cell_rect(
+                validate_rect(region.get("rect")),
+                x_cuts[column_index],
+                x_cuts[column_index + 1],
+                y_cuts[row_index],
+                y_cuts[row_index + 1],
+            )
+            try:
+                output = self._recognize(
+                    source,
+                    int(region.get("page", 0)),
+                    rect,
+                    region,
+                    mode,
+                    normalize_orientation(orientation),
+                    prompt,
+                )
+            except EmptyOcrResult:
+                output = ""
+            original = str(cell.get("value") or "")
+            applied = False
+
+            def save_output(document: dict[str, Any]) -> None:
+                nonlocal applied
+                _obj, current, _prompt, current_kind = self._locate_text(
+                    document, target_id
+                )
+                if current_kind != "cell" or str(current.get("value") or "") != original:
+                    return
+                current["value"] = output
+                current["ocrUpdated"] = time.time()
                 applied = True
 
             document = self.store.mutate(source, save_output)
@@ -1699,6 +1873,9 @@ def create_app(
     def run_ocr(payload: dict[str, Any]) -> dict[str, str]:
         try:
             source = registry.resolve(str(payload.get("source") or ""))
+            target_id = str(payload.get("targetId") or "")
+            if target_id:
+                return {"taskId": tasks.submit_target_ocr(source, target_id)}
             return {"taskId": tasks.submit(source, str(payload.get("regionId") or ""))}
         except Exception as exc:
             raise bad(exc) from exc

@@ -302,6 +302,60 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(found[0][2]["id"], source["id"])
         self.assertEqual(found[0][3], "cell")
 
+    def test_table_rows_follow_explicit_block_order(self) -> None:
+        document = app.new_document(Path("sample.pdf"), 1)
+        table = app.create_object("table")
+        column = app.new_field("value", "Значение")
+        table["columns"] = [column]
+        first = {
+            "id": "first",
+            "name": "Блок 1",
+            "region": app.new_source(
+                1, {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.2}, "table_block"
+            ),
+            "grid": {"columns": [], "rows": []},
+            "rowIds": ["row-first"],
+        }
+        second = {
+            "id": "second",
+            "name": "Блок 2",
+            "region": app.new_source(
+                1, {"x": 0.0, "y": 0.3, "w": 0.5, "h": 0.2}, "table_block"
+            ),
+            "grid": {"columns": [], "rows": []},
+            "rowIds": ["row-second"],
+        }
+
+        def row(row_id: str, block_id: str, value: str) -> dict:
+            return {
+                "id": row_id,
+                "blockId": block_id,
+                "cells": [
+                    {
+                        "id": app.uid(),
+                        "columnId": column["id"],
+                        "value": value,
+                        "orientation": None,
+                        "sources": [],
+                    }
+                ],
+            }
+
+        table["blocks"] = [second, first]
+        table["rows"] = [
+            row("row-first", "first", "первый"),
+            row("row-second", "second", "второй"),
+        ]
+        document["objects"].append(table)
+
+        normalized = app.normalize_document(document)
+        self.assertEqual(
+            [item["id"] for item in normalized["objects"][0]["rows"]],
+            ["row-second", "row-first"],
+        )
+        values = app.materialize(normalized)["data"]["table"]["rows"]
+        self.assertEqual([item["Значение"] for item in values], ["второй", "первый"])
+
     def test_paddle_profiles_load_only_their_required_models(self) -> None:
         fast = set(paddle_server.required_models_for_profile("fast-text"))
         digitizer = set(paddle_server.required_models_for_profile("digitizer"))
@@ -425,6 +479,79 @@ class DigitizerExtractionTests(unittest.TestCase):
         self.assertEqual(
             saved["objects"][0]["rows"][1]["cells"][1]["value"], "result:formula:4"
         )
+
+    def test_blank_table_cell_does_not_fail_remaining_cell_ocr(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        table = app.create_object("table")
+        first = app.new_field("first", "Первый")
+        second = app.new_field("second", "Второй")
+        table["columns"] = [first, second]
+        block = {
+            "id": "block",
+            "name": "Блок 1",
+            "region": app.new_source(
+                1,
+                {"x": 0.0, "y": 0.0, "w": 0.8, "h": 0.4},
+                "table_block",
+            ),
+            "grid": {"columns": [0.5], "rows": []},
+            "rowIds": [],
+        }
+        table["blocks"] = [block]
+        app.ExtractionTasks._sync_rows(table, block, 1)
+        document["objects"].append(table)
+        self.store.save(self.pdf_path, document)
+
+        def recognize(image: bytes, mode: str = "text") -> str:
+            self.paddle.calls.append((mode, image))
+            if len(self.paddle.calls) == 1:
+                raise app.EmptyOcrResult("PaddleOCR вернул пустой результат")
+            return "распознано"
+
+        self.paddle.recognize = recognize
+        self.tasks._tasks["task"] = {"state": "queued"}
+        self.tasks._run("task", self.pdf_path, block["region"]["id"])
+
+        self.assertEqual(self.tasks.status("task")["state"], "done")
+        self.assertEqual(len(self.paddle.calls), 2)
+        cells = self.store.load(self.pdf_path)["objects"][0]["rows"][0]["cells"]
+        self.assertEqual([cell["value"] for cell in cells], ["", "распознано"])
+
+    def test_one_shared_block_cell_can_be_reprocessed_independently(self) -> None:
+        document = app.new_document(self.pdf_path, 1)
+        table = app.create_object("table")
+        first = app.new_field("first", "Первый")
+        second = app.new_field("second", "Второй")
+        table["columns"] = [first, second]
+        block = {
+            "id": "block",
+            "name": "Блок 1",
+            "region": app.new_source(
+                1,
+                {"x": 0.0, "y": 0.0, "w": 0.8, "h": 0.4},
+                "table_block",
+            ),
+            "grid": {"columns": [0.5], "rows": []},
+            "rowIds": [],
+        }
+        table["blocks"] = [block]
+        rows = app.ExtractionTasks._sync_rows(table, block, 1)
+        rows[0]["cells"][0]["value"] = "старое 1"
+        rows[0]["cells"][1]["value"] = "старое 2"
+        target_id = rows[0]["cells"][1]["id"]
+        document["objects"].append(table)
+        self.store.save(self.pdf_path, document)
+
+        self.tasks._tasks["cell-ocr"] = {"state": "queued"}
+        self.tasks._run_target_ocr("cell-ocr", self.pdf_path, target_id)
+
+        result = self.tasks.status("cell-ocr")
+        self.assertEqual(result["state"], "done")
+        self.assertTrue(result["applied"])
+        self.assertEqual(len(self.paddle.calls), 1)
+        saved = self.store.load(self.pdf_path)["objects"][0]["rows"][0]["cells"]
+        self.assertEqual(saved[0]["value"], "старое 1")
+        self.assertEqual(saved[1]["value"], "result:text:1")
 
     def test_cell_source_inherits_column_mode(self) -> None:
         document = app.new_document(self.pdf_path, 1)
