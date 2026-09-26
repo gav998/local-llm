@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import html
 import json
 import locale
+import math
 import os
 import re
 import subprocess
@@ -119,11 +121,30 @@ def clean_text(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
 
 
+def clean_ocr_markup(value: str) -> str:
+    """Keep OCR text while dropping image placeholders emitted by PP-StructureV3."""
+    value = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", value, flags=re.S)
+    value = re.sub(r"<img\b[^>]*>", "", value, flags=re.I | re.S)
+    value = re.sub(r"</?(?:div|p|span)\b[^>]*>", "", value, flags=re.I | re.S)
+    return clean_text(html.unescape(value))
+
+
+def _ocr_recognized_texts(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    texts = value.get("rec_texts") or value.get("recTexts") or []
+    if not isinstance(texts, list):
+        return []
+    return [clean_text(str(item)) for item in texts if clean_text(str(item))]
+
+
 def flatten_ocr_result(value: str, mode: str = "text") -> str:
-    wanted_labels = {
-        "seal": {"seal"},
-        "formula": {"formula", "formula_number"},
-    }.get(mode)
+    wanted_labels = set()
+    if "seal" in mode:
+        wanted_labels.add("seal")
+    if "formula" in mode:
+        wanted_labels.update({"formula", "formula_number"})
+    general: list[str] = []
     selected: list[str] = []
     fallback: list[str] = []
     markdown_parts: list[str] = []
@@ -136,21 +157,34 @@ def flatten_ocr_result(value: str, mode: str = "text") -> str:
         if isinstance(markdown, list):
             markdown = "\n".join(str(item) for item in markdown)
         if isinstance(markdown, str) and markdown.strip():
-            markdown_parts.append(markdown.strip())
+            cleaned_markdown = clean_ocr_markup(markdown)
+            if cleaned_markdown:
+                markdown_parts.append(cleaned_markdown)
         for layout in result.get("layoutParsingResults") or []:
-            blocks = (layout.get("prunedResult") or {}).get("parsing_res_list") or []
+            pruned = layout.get("prunedResult") or {}
+            general.extend(_ocr_recognized_texts(pruned.get("overall_ocr_res")))
+            blocks = pruned.get("parsing_res_list") or []
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
                 content = block.get("block_content")
                 if not content:
                     continue
-                text = str(content).strip()
-                fallback.append(text)
+                text = clean_ocr_markup(str(content))
+                if not text:
+                    continue
                 label = str(block.get("block_label") or "").casefold()
-                if wanted_labels and any(token in label for token in wanted_labels):
+                if not any(token in label for token in ("image", "figure", "chart")):
+                    fallback.append(text)
+                if wanted_labels and any(token == label or token in label for token in wanted_labels):
                     selected.append(text)
-    parts = selected if selected else (markdown_parts if markdown_parts else fallback)
+    if mode == "text":
+        parts = general or fallback or markdown_parts
+    elif mode in {"text_seal", "text_formula"}:
+        parts = general + [item for item in selected if item not in general]
+        parts = parts or fallback or markdown_parts
+    else:
+        parts = selected or general or fallback or markdown_parts
     if not parts:
         raise RuntimeError("PaddleOCR вернул пустой результат")
     return clean_text("\n".join(parts))
@@ -160,8 +194,11 @@ def normalized_cuts(values: Any) -> list[float]:
     cuts = [0.0, 1.0]
     if isinstance(values, list):
         for value in values:
-            number = float(value)
-            if 0.0 < number < 1.0:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number) and 0.0 < number < 1.0:
                 cuts.append(round(number, 6))
     return sorted(set(cuts))
 
@@ -169,9 +206,13 @@ def normalized_cuts(values: Any) -> list[float]:
 def validate_rect(value: Any) -> dict[str, float]:
     if not isinstance(value, dict):
         raise ValueError("У области отсутствует прямоугольник")
-    rect = {key: float(value.get(key, -1)) for key in ("x", "y", "w", "h")}
+    try:
+        rect = {key: float(value.get(key, -1)) for key in ("x", "y", "w", "h")}
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Координаты области повреждены; выделите область повторно") from exc
     if (
-        rect["x"] < 0
+        not all(math.isfinite(number) for number in rect.values())
+        or rect["x"] < 0
         or rect["y"] < 0
         or rect["w"] <= 0
         or rect["h"] <= 0

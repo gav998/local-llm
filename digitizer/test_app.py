@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -57,6 +58,43 @@ class MemoryStore:
 
 
 class DigitizerSchemaTests(unittest.TestCase):
+    def test_text_ocr_uses_raw_recognition_when_layout_calls_it_an_image(self) -> None:
+        payload = {
+            "result": {
+                "markdown": {
+                    "text": '<div style="text-align: center"><img src="imgs/0.jpg"></div>'
+                },
+                "layoutParsingResults": [
+                    {
+                        "prunedResult": {
+                            "overall_ocr_res": {
+                                "rec_texts": ["Номер технологической", "карты 12-34"]
+                            },
+                            "parsing_res_list": [
+                                {
+                                    "block_label": "image",
+                                    "block_content": '<img src="imgs/0.jpg">',
+                                }
+                            ],
+                        }
+                    }
+                ],
+            }
+        }
+        value = app.flatten_ocr_result(json.dumps(payload, ensure_ascii=False), "text")
+        self.assertEqual(value, "Номер технологической\nкарты 12-34")
+        self.assertNotIn("img", value.casefold())
+
+    def test_malformed_grid_cuts_are_ignored(self) -> None:
+        self.assertEqual(
+            app.normalized_cuts([None, "", float("nan"), 0.25, "0.75"]),
+            [0.0, 0.25, 0.75, 1.0],
+        )
+
+    def test_invalid_rect_has_actionable_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "выделите область повторно"):
+            app.validate_rect({"x": None, "y": 0, "w": 0.2, "h": 0.2})
+
     def test_catalog_builds_semantic_record_and_table(self) -> None:
         approval = app.create_object("approval")
         self.assertEqual(approval["type"], "record")
