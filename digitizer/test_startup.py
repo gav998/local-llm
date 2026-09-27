@@ -62,11 +62,9 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("background:var(--violet)", html)
         self.assertIn(".object-ocr{right:3px;top:3px;z-index:12;background:var(--blue)", html)
         self.assertNotIn("menuItem('Периодичность'", html)
-        new_object_menu = html.index(
-            "const presets=[menuItem('Текст',()=>withMenuAssignment"
-        )
-        organization = html.index("for(const preset of availablePresets())", new_object_menu)
-        self.assertLess(new_object_menu, organization)
+        self.assertIn("function availablePresets(){return state.catalog}", html)
+        self.assertIn("const presets=[]", html)
+        self.assertNotIn("const hidden=new Set", html)
 
 
 if __name__ == "__main__":

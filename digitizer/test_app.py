@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -34,23 +35,38 @@ class FakePaddle:
 class FakeLlama:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
-        self.structured_calls: list[tuple[dict, str]] = []
+        self.markdown_calls: list[tuple[str, str]] = []
 
-    def process(self, text: str, prompt: str) -> str:
+    def correct_text(self, text: str, prompt: str) -> str:
         self.calls.append((text, prompt))
         return f"fixed:{text}"
 
-    def process_json(self, payload: dict, prompt: str) -> dict:
-        self.structured_calls.append((copy.deepcopy(payload), prompt))
-        result = copy.deepcopy(payload)
-        if "fields" in result:
-            for field in result["fields"]:
-                field["value"] = f"fixed:{field['value']}"
-        if "rows" in result:
-            for row in result["rows"]:
-                for cell in row["cells"]:
-                    cell["value"] = f"fixed:{cell['value']}"
-        return result
+    def process_markdown(self, markdown: str, prompt: str) -> str:
+        self.markdown_calls.append((markdown, prompt))
+        lines = markdown.splitlines()
+        separator = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("| ---")
+            ),
+            -1,
+        )
+        if separator >= 0:
+            for index in range(separator + 1, len(lines)):
+                cells = app.split_markdown_table_row(lines[index])
+                values = [cells[0]] + [
+                    app.markdown_table_cell(f"fixed:{app.unescape_markdown_table_cell(cell)}")
+                    for cell in cells[1:]
+                ]
+                lines[index] = "| " + " | ".join(values) + " |"
+            return "\n".join(lines)
+        headings = list(re.finditer(r"(?m)^##[ \t]+\d+\.[ \t]+.*$", markdown))
+        values = app.parse_record_markdown(markdown, len(headings))
+        parts = [markdown[: headings[0].start()].strip()]
+        for heading, value in zip(headings, values, strict=True):
+            parts.append(f"{heading.group(0)}\n\nfixed:{value}")
+        return "\n\n".join(parts)
 
 
 class MemoryStore:
@@ -130,7 +146,7 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(approval["type"], "record")
         self.assertEqual(approval["name"], "Кем утверждено")
         self.assertEqual(len(approval["fields"]), 1)
-        self.assertEqual(approval["fields"][0]["ocrMode"], "text_seal")
+        self.assertEqual(approval["fields"][0]["ocrMode"], "text")
         self.assertIn("звание", approval["fields"][0]["aiPrompt"])
         agreement = app.create_object("agreement")
         self.assertEqual(agreement["name"], "Кем согласовано")
@@ -141,44 +157,6 @@ class DigitizerSchemaTests(unittest.TestCase):
         self.assertEqual(table["type"], "table")
         self.assertEqual(table["title"]["name"], "Название таблицы")
         self.assertEqual(table["rows"], [])
-
-    def test_old_split_approval_is_consolidated_without_losing_data(self) -> None:
-        document = app.new_document(Path("sample.pdf"), 1)
-        approval = app.create_object("approval")
-        approval["name"] = "Утверждение / подтверждение"
-        approval["fields"] = [
-            {
-                **app.new_field("position", "Должность"),
-                "value": "Начальник отдела",
-                "sources": [
-                    app.new_source(
-                        1, {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}
-                    )
-                ],
-            },
-            {
-                **app.new_field("full_name", "ФИО"),
-                "value": "Иванов Иван Иванович",
-                "sources": [
-                    app.new_source(
-                        1, {"x": 0.1, "y": 0.3, "w": 0.2, "h": 0.1}
-                    )
-                ],
-            },
-        ]
-        document["objects"].append(approval)
-
-        normalized = app.normalize_document(document)
-        result = normalized["objects"][0]
-
-        self.assertEqual(result["name"], "Кем утверждено")
-        self.assertEqual(len(result["fields"]), 1)
-        self.assertEqual(result["fields"][0]["key"], "approval_block")
-        self.assertEqual(
-            result["fields"][0]["value"],
-            "Начальник отдела, Иванов Иван Иванович",
-        )
-        self.assertEqual(len(result["fields"][0]["sources"]), 2)
 
     def test_consolidated_frame_preset_contains_main_caption_fields(self) -> None:
         frame = app.create_object("frame")
@@ -210,7 +188,7 @@ class DigitizerSchemaTests(unittest.TestCase):
 
         document = app.new_document(Path("sample.pdf"), 1)
         approval = app.create_object("approval")
-        approval["fields"][0]["aiPrompt"] = "устаревший промпт"
+        approval["fields"][0]["aiPrompt"] = "изменённый промпт"
         document["objects"].append(approval)
         normalized = app.normalize_document(document)
         configured = next(item for item in app.PRESETS if item["id"] == "approval")
@@ -240,55 +218,17 @@ class DigitizerSchemaTests(unittest.TestCase):
             configured["fields"][0]["ocrMode"],
         )
 
-    def test_json_response_accepts_fenced_object_and_rejects_prose(self) -> None:
-        self.assertEqual(
-            app.parse_json_response('```json\n{"value": 1}\n```'), {"value": 1}
-        )
-        with self.assertRaisesRegex(ValueError, "формате JSON"):
-            app.parse_json_response("готово")
+    def test_markdown_parsers_preserve_fields_and_table_cells(self) -> None:
+        record = "```markdown\n# Объект\n\n## 1. Поле\n\nготово\n```"
+        self.assertEqual(app.parse_record_markdown(record, 1), ["готово"])
+        table = "# Таблица\n\n| № | Значение |\n| --- | --- |\n| 1 | A\\|B |"
+        self.assertEqual(app.parse_table_markdown(table, 1, 1), [["A|B"]])
+        with self.assertRaisesRegex(ValueError, "Markdown"):
+            app.parse_table_markdown("готово", 1, 1)
 
-    def test_schema_one_is_migrated_without_losing_values(self) -> None:
-        legacy = {
-            "schema": 1,
-            "objects": [
-                {
-                    "id": "old-field",
-                    "type": "field",
-                    "name": "Организация",
-                    "key": "organization",
-                    "regions": [
-                        {
-                            "id": "source",
-                            "kind": "field",
-                            "page": 1,
-                            "rect": {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1},
-                            "properties": {"orientation": 90},
-                            "status": "recognized",
-                            "output": "Завод",
-                        }
-                    ],
-                    "result": {"value": "Завод"},
-                },
-                {
-                    "id": "old-table",
-                    "type": "table",
-                    "name": "ТО",
-                    "key": "maintenance",
-                    "regions": [],
-                    "result": {"columns": ["Операция"], "rows": [["Осмотр"]]},
-                },
-            ],
-        }
-        migrated = app.normalize_document(legacy)
-        self.assertEqual(migrated["schema"], 2)
-        self.assertEqual(migrated["objects"][0]["fields"][0]["value"], "Завод")
-        self.assertEqual(
-            migrated["objects"][0]["fields"][0]["sources"][0]["orientation"], 90
-        )
-        self.assertEqual(migrated["objects"][1]["title"]["name"], "Название таблицы")
-        self.assertEqual(
-            migrated["objects"][1]["rows"][0]["cells"][0]["value"], "Осмотр"
-        )
+    def test_outdated_schema_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "схема документа 2"):
+            app.normalize_document({"schema": 1, "objects": []})
 
     def test_materialize_applies_groups_only_to_selected_rows(self) -> None:
         document = app.new_document(Path("sample.pdf"), 1)
@@ -420,29 +360,38 @@ class DigitizerSchemaTests(unittest.TestCase):
                 {"useFormulaRecognition": True}, {"text"}
             )
 
-    def test_legacy_template_catalog_is_migrated(self) -> None:
-        catalog = app.normalize_template_catalog(
-            {
-                "schema": 1,
-                "templates": [
-                    {
-                        "id": "template",
-                        "name": "Старый",
-                        "objects": [
-                            {
-                                "id": "field",
-                                "type": "field",
-                                "name": "Поле",
-                                "regions": [],
-                                "result": {"value": "текст"},
-                            }
-                        ],
-                    }
-                ],
-            }
+    def test_paddle_client_reports_gateway_detail_instead_of_generic_400(self) -> None:
+        class RejectedResponse:
+            is_error = True
+            status_code = 400
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, str]:
+                return {
+                    "detail": "The active PaddleOCR profile does not provide: seal"
+                }
+
+        with self.assertRaisesRegex(RuntimeError, "does not provide: seal"):
+            app.PaddleClient._raise_service_error(RejectedResponse())
+
+    def test_catalog_contains_only_current_yaml_presets(self) -> None:
+        ids = [preset["id"] for preset in app.preset_catalog()]
+        self.assertEqual(
+            ids,
+            [
+                "text",
+                "organization",
+                "approval",
+                "product",
+                "process_card",
+                "agreement",
+                "frame",
+                "table",
+            ],
         )
-        self.assertEqual(catalog["schema"], 2)
-        self.assertEqual(catalog["templates"][0]["objects"][0]["type"], "record")
+        self.assertEqual(ids[0], app.DEFAULT_PRESET)
+        self.assertEqual(app.create_object("text")["scalar"], True)
 
 
 class DigitizerExtractionTests(unittest.TestCase):
@@ -465,7 +414,7 @@ class DigitizerExtractionTests(unittest.TestCase):
         obj = {
             "id": app.uid(),
             "type": "record",
-            "preset": "manual_test",
+            "preset": "text",
             "name": "Печать",
             "key": "seal",
             "orientation": 0,
@@ -473,7 +422,7 @@ class DigitizerExtractionTests(unittest.TestCase):
         }
         source = app.new_source(1, {"x": 0.0, "y": 0.0, "w": 0.5, "h": 0.5})
         source["orientation"] = 90
-        source["properties"] = {"useLlm": True, "prompt": "correct"}
+        source["properties"] = {"useLlm": True}
         field["sources"].append(source)
         document["objects"].append(obj)
         self.store.save(self.pdf_path, document)
@@ -489,7 +438,6 @@ class DigitizerExtractionTests(unittest.TestCase):
         self.assertTrue(saved_field["value"].startswith("fixed:result:seal"))
         self.assertTrue(self.paddle.calls[0][1].endswith(b":90"))
         self.assertEqual(self.tasks.llama.calls[-1][1], saved_field["aiPrompt"])
-        self.assertNotEqual(self.tasks.llama.calls[-1][1], "correct")
 
     def test_table_block_recognizes_each_manual_cell_without_table_model(self) -> None:
         document = app.new_document(self.pdf_path, 1)
@@ -643,7 +591,7 @@ class DigitizerExtractionTests(unittest.TestCase):
 
     def test_manual_edit_during_ocr_is_not_overwritten(self) -> None:
         document = app.new_document(self.pdf_path, 1)
-        obj = app.create_object("custom_field")
+        obj = app.create_object("text")
         field = obj["fields"][0]
         field["value"] = "Исправлено вручную"
         source = app.new_source(1, {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})
@@ -725,12 +673,12 @@ class DigitizerExtractionTests(unittest.TestCase):
 
     def test_manual_edit_during_ai_correction_is_not_overwritten(self) -> None:
         document = app.new_document(self.pdf_path, 1)
-        obj = app.create_object("custom_field")
+        obj = app.create_object("text")
         field = obj["fields"][0]
         field["value"] = "Исходный OCR"
         document["objects"].append(obj)
         self.store.save(self.pdf_path, document)
-        original_process = self.tasks.llama.process
+        original_process = self.tasks.llama.correct_text
 
         def process_and_edit(text: str, prompt: str) -> str:
             result = original_process(text, prompt)
@@ -741,7 +689,7 @@ class DigitizerExtractionTests(unittest.TestCase):
             self.store.mutate(self.pdf_path, edit)
             return result
 
-        self.tasks.llama.process = process_and_edit
+        self.tasks.llama.correct_text = process_and_edit
         self.tasks._tasks["stale-ai"] = {"state": "queued"}
         self.tasks._run_correction("stale-ai", self.pdf_path, field["id"])
 
@@ -765,10 +713,10 @@ class DigitizerExtractionTests(unittest.TestCase):
         result = self.tasks.status("object-ai")
         self.assertEqual(result["state"], "done")
         self.assertTrue(result["applied"])
-        self.assertEqual(len(self.tasks.llama.structured_calls), 1)
-        payload, _prompt = self.tasks.llama.structured_calls[0]
+        self.assertEqual(len(self.tasks.llama.markdown_calls), 1)
+        markdown, _prompt = self.tasks.llama.markdown_calls[0]
         self.assertEqual(
-            [field["value"] for field in payload["fields"]],
+            app.parse_record_markdown(markdown, 2),
             ["Иванов  И.И.", "Нач. отдела"],
         )
         saved = self.store.load(self.pdf_path)
@@ -783,10 +731,10 @@ class DigitizerExtractionTests(unittest.TestCase):
         obj["fields"][1]["value"] = "Исходная должность"
         document["objects"].append(obj)
         self.store.save(self.pdf_path, document)
-        original_process = self.tasks.llama.process_json
+        original_process = self.tasks.llama.process_markdown
 
-        def process_and_edit(payload: dict, prompt: str) -> dict:
-            result = original_process(payload, prompt)
+        def process_and_edit(markdown: str, prompt: str) -> str:
+            result = original_process(markdown, prompt)
 
             def edit(current):
                 current["objects"][0]["fields"][0]["value"] = "Ручная правка"
@@ -794,7 +742,7 @@ class DigitizerExtractionTests(unittest.TestCase):
             self.store.mutate(self.pdf_path, edit)
             return result
 
-        self.tasks.llama.process_json = process_and_edit
+        self.tasks.llama.process_markdown = process_and_edit
         self.tasks._tasks["stale-object-ai"] = {"state": "queued"}
 
         self.tasks._run_object_correction("stale-object-ai", self.pdf_path, obj["id"])
@@ -846,15 +794,18 @@ class DigitizerExtractionTests(unittest.TestCase):
         result = self.tasks.status("table-ai")
         self.assertEqual(result["state"], "done")
         self.assertTrue(result["applied"])
-        calls = self.tasks.llama.structured_calls
+        calls = self.tasks.llama.markdown_calls
         self.assertEqual(
-            [len(payload["rows"]) for payload, _prompt in calls], [12, 12, 1]
+            [
+                len(app.parse_table_markdown(markdown, count, 2))
+                for (markdown, _prompt), count in zip(calls, [12, 12, 1], strict=True)
+            ],
+            [12, 12, 1],
         )
         self.assertTrue(
             all(
-                [header["value"] for header in payload["headers"]]
-                == ["Операция", "Результат"]
-                for payload, _prompt in calls
+                "| № | Операция | Результат |" in markdown
+                for markdown, _prompt in calls
             )
         )
         saved = self.store.load(self.pdf_path)

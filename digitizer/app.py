@@ -41,11 +41,42 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"Конфигурация {config_path} должна содержать YAML-объект")
     default_prompt = str(value.get("default_prompt") or "").strip()
+    default_preset = str(value.get("default_preset") or "").strip()
     presets = value.get("presets")
-    if not default_prompt or not isinstance(presets, list) or not presets:
+    if (
+        not default_prompt
+        or not default_preset
+        or not isinstance(presets, list)
+        or not presets
+    ):
         raise RuntimeError(
-            f"В {config_path} обязательны default_prompt и непустой список presets"
+            f"В {config_path} обязательны default_preset, default_prompt "
+            "и непустой список presets"
         )
+
+    def normalize_config_field(
+        raw_field: Any, preset_id: str, label: str
+    ) -> dict[str, str]:
+        if not isinstance(raw_field, dict):
+            raise RuntimeError(f"{label} preset {preset_id} должен быть YAML-объектом")
+        field = {
+            "key": str(raw_field.get("key") or "").strip(),
+            "name": str(raw_field.get("name") or "").strip(),
+            "ocrMode": str(
+                raw_field.get("ocr_mode") or raw_field.get("ocrMode") or "text"
+            ),
+            "aiPrompt": str(raw_field.get("prompt") or "").strip(),
+        }
+        if not field["key"] or not field["name"] or not field["aiPrompt"]:
+            raise RuntimeError(
+                f"{label} preset {preset_id} нужны key, name и prompt"
+            )
+        if field["ocrMode"] not in OCR_MODES:
+            raise RuntimeError(
+                f"Неизвестный OCR-режим у {preset_id}.{field['key']}"
+            )
+        return field
+
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw_preset in presets:
@@ -60,29 +91,12 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
         preset["name"] = str(preset.get("name") or preset_id)
         preset["description"] = str(preset.get("description") or "")
         preset["type"] = str(preset.get("type") or "record")
+        if preset["type"] not in {"record", "table"}:
+            raise RuntimeError(f"Неизвестный type у preset {preset_id}")
+        preset["scalar"] = bool(preset.get("scalar", False))
         fields: list[dict[str, str]] = []
         for raw_field in preset.get("fields") or []:
-            if not isinstance(raw_field, dict):
-                raise RuntimeError(
-                    f"Поля preset {preset_id} должны быть YAML-объектами"
-                )
-            field = {
-                "key": str(raw_field.get("key") or "").strip(),
-                "name": str(raw_field.get("name") or "").strip(),
-                "ocrMode": str(
-                    raw_field.get("ocr_mode") or raw_field.get("ocrMode") or "text"
-                ),
-                "aiPrompt": str(raw_field.get("prompt") or "").strip(),
-            }
-            if not field["key"] or not field["name"] or not field["aiPrompt"]:
-                raise RuntimeError(
-                    f"Каждому полю preset {preset_id} нужны key, name и prompt"
-                )
-            if field["ocrMode"] not in OCR_MODES:
-                raise RuntimeError(
-                    f"Неизвестный OCR-режим у {preset_id}.{field['key']}"
-                )
-            fields.append(field)
+            fields.append(normalize_config_field(raw_field, preset_id, "Каждому полю"))
         preset["fields"] = fields
         preset["dynamicFieldPrompt"] = str(
             preset.get("dynamic_field_prompt") or default_prompt
@@ -90,12 +104,38 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
         preset["cellPrompt"] = str(
             preset.get("cell_prompt") or preset["dynamicFieldPrompt"]
         ).strip()
+        if preset["type"] == "table":
+            preset["title"] = normalize_config_field(
+                preset.get("title"), preset_id, "Заголовку"
+            )
+        elif not fields:
+            raise RuntimeError(f"Record preset {preset_id} должен содержать fields")
+        if preset["scalar"] and (preset["type"] != "record" or len(fields) != 1):
+            raise RuntimeError(
+                f"Scalar preset {preset_id} должен быть record с одним полем"
+            )
         normalized.append(preset)
-    return {"defaultPrompt": default_prompt, "presets": normalized}
+    if default_preset not in seen:
+        raise RuntimeError(f"default_preset {default_preset} отсутствует в presets")
+    default_config = next(item for item in normalized if item["id"] == default_preset)
+    if (
+        default_config["type"] != "record"
+        or len(default_config["fields"]) != 1
+        or not default_config["scalar"]
+    ):
+        raise RuntimeError(
+            "default_preset должен быть scalar record с одним полем"
+        )
+    return {
+        "defaultPreset": default_preset,
+        "defaultPrompt": default_prompt,
+        "presets": normalized,
+    }
 
 
 DIGITIZER_CONFIG = load_digitizer_config()
 DEFAULT_PROMPT = DIGITIZER_CONFIG["defaultPrompt"]
+DEFAULT_PRESET = DIGITIZER_CONFIG["defaultPreset"]
 PRESETS: list[dict[str, Any]] = DIGITIZER_CONFIG["presets"]
 
 
@@ -128,21 +168,155 @@ def clean_text(value: str) -> str:
     return "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
 
 
-def parse_json_response(value: str) -> dict[str, Any]:
-    """Parse a JSON object returned by the local model without accepting prose."""
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip(), flags=re.I)
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("ИИ вернул ответ не в формате JSON") from None
-        try:
-            parsed = json.loads(cleaned[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ValueError("ИИ вернул повреждённый JSON") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError("ИИ должен вернуть JSON-объект")
+def clean_markdown_response(value: str) -> str:
+    """Remove only an optional outer Markdown fence from a model response."""
+    cleaned = value.strip()
+    fenced = re.fullmatch(
+        r"```(?:markdown|md)?[ \t]*\n(?P<body>[\s\S]*?)\n?```", cleaned, re.I
+    )
+    if fenced:
+        cleaned = fenced.group("body")
+    return "\n".join(line.rstrip() for line in cleaned.splitlines()).strip()
+
+
+def markdown_heading(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).replace("#", r"\#")
+
+
+def record_to_markdown(name: str, fields: list[dict[str, Any]]) -> str:
+    parts = [f"# {markdown_heading(name) or 'Объект'}"]
+    for index, field in enumerate(fields, 1):
+        parts.extend(
+            [
+                f"## {index}. {markdown_heading(field.get('name')) or 'Поле'}",
+                str(field.get("value") or ""),
+            ]
+        )
+    return "\n\n".join(parts).strip()
+
+
+def parse_record_markdown(value: str, field_count: int) -> list[str]:
+    """Read ordered field sections from the Markdown returned by the model."""
+    cleaned = clean_markdown_response(value)
+    matches = list(re.finditer(r"(?m)^##[ \t]+(\d+)\.[ \t]+.*$", cleaned))
+    if len(matches) != field_count:
+        raise ValueError("ИИ нарушил структуру полей Markdown")
+    values: list[str] = []
+    for expected, match in enumerate(matches, 1):
+        if int(match.group(1)) != expected:
+            raise ValueError("ИИ изменил порядок полей Markdown")
+        start = match.end()
+        end = matches[expected].start() if expected < len(matches) else len(cleaned)
+        values.append(cleaned[start:end].strip())
+    return values
+
+
+def markdown_table_cell(value: Any) -> str:
+    text = str(value or "").replace("\\", r"\\").replace("|", r"\|")
+    return re.sub(r"\r?\n", "<br>", text)
+
+
+def split_markdown_table_row(value: str) -> list[str]:
+    row = value.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|") and not row.endswith(r"\|"):
+        row = row[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    for char in row:
+        if escaped:
+            current.extend(("\\", char))
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    return cells
+
+
+def unescape_markdown_table_cell(value: str) -> str:
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
+    result: list[str] = []
+    index = 0
+    while index < len(value):
+        if (
+            value[index] == "\\"
+            and index + 1 < len(value)
+            and value[index + 1] in {"\\", "|"}
+        ):
+            result.append(value[index + 1])
+            index += 2
+        else:
+            result.append(value[index])
+            index += 1
+    return "".join(result).strip()
+
+
+def table_to_markdown(
+    title: str, columns: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> str:
+    headers = ["№"] + [
+        markdown_table_cell(column.get("value") or column.get("name") or "Столбец")
+        for column in columns
+    ]
+    lines = [
+        f"# {markdown_heading(title) or 'Таблица'}",
+        "",
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _item in headers) + " |",
+    ]
+    for index, row in enumerate(rows, 1):
+        cells = {cell.get("columnId"): cell for cell in row.get("cells") or []}
+        values = [str(index)] + [
+            markdown_table_cell((cells.get(column.get("id")) or {}).get("value"))
+            for column in columns
+        ]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
+def parse_table_markdown(
+    value: str, row_count: int, column_count: int
+) -> list[list[str]]:
+    """Read a standard Markdown table and preserve its explicit row order."""
+    lines = clean_markdown_response(value).splitlines()
+    width = column_count + 1
+    table_start = -1
+    for index in range(len(lines) - 1):
+        header = split_markdown_table_row(lines[index])
+        separator = split_markdown_table_row(lines[index + 1])
+        if len(header) != width or len(separator) != width:
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in separator):
+            table_start = index + 2
+            break
+    if table_start < 0:
+        raise ValueError("ИИ не вернул таблицу в формате Markdown")
+    parsed: list[list[str]] = []
+    for line in lines[table_start:]:
+        if not line.strip():
+            if parsed:
+                break
+            continue
+        cells = split_markdown_table_row(line)
+        if len(cells) != width:
+            raise ValueError("ИИ изменил число столбцов таблицы Markdown")
+        expected = len(parsed) + 1
+        if cells[0].strip() != str(expected):
+            raise ValueError("ИИ изменил порядок строк таблицы Markdown")
+        parsed.append(
+            [unescape_markdown_table_cell(cell) for cell in cells[1:]]
+        )
+    if len(parsed) != row_count:
+        raise ValueError("ИИ изменил число строк таблицы Markdown")
     return parsed
 
 
@@ -329,8 +503,10 @@ def preset_catalog() -> list[dict[str, Any]]:
                 "name": preset["name"],
                 "description": preset["description"],
                 "type": preset.get("type", "record"),
+                "scalar": bool(preset.get("scalar")),
                 "dynamicFieldPrompt": preset.get("dynamicFieldPrompt", DEFAULT_PROMPT),
                 "cellPrompt": preset.get("cellPrompt", DEFAULT_PROMPT),
+                "title": copy.deepcopy(preset.get("title")),
                 "fields": copy.deepcopy(preset.get("fields", [])),
             }
         )
@@ -349,6 +525,7 @@ def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
         "name": (name or preset["name"]).strip(),
         "key": preset_id,
         "orientation": 0,
+        "scalar": bool(preset.get("scalar")),
     }
     if object_type == "record":
         obj["fields"] = [
@@ -356,13 +533,14 @@ def create_object(preset_id: str, name: str | None = None) -> dict[str, Any]:
             for field in preset.get("fields", [])
         ]
     else:
+        title = preset["title"]
         obj.update(
             {
                 "title": new_field(
-                    "title",
-                    "Название таблицы",
-                    "text",
-                    str(preset.get("dynamicFieldPrompt") or DEFAULT_PROMPT),
+                    title["key"],
+                    title["name"],
+                    title["ocrMode"],
+                    title["aiPrompt"],
                 ),
                 "columns": [],
                 "rows": [],
@@ -387,133 +565,12 @@ def new_document(source: Path, page_count: int) -> dict[str, Any]:
     }
 
 
-def unique_key(base: str, used: set[str]) -> str:
-    key = re.sub(r"[^\w-]+", "_", base.strip().casefold(), flags=re.UNICODE).strip("_")
-    key = key or "value"
-    candidate = key
-    number = 2
-    while candidate in used:
-        candidate = f"{key}_{number}"
-        number += 1
-    used.add(candidate)
-    return candidate
-
-
-def migrate_v1(document: dict[str, Any]) -> dict[str, Any]:
-    migrated = copy.deepcopy(document)
-    migrated["schema"] = SCHEMA_VERSION
-    objects: list[dict[str, Any]] = []
-    for legacy in migrated.get("objects") or []:
-        name = str(legacy.get("name") or legacy.get("key") or "Объект")
-        key = str(legacy.get("key") or name)
-        if legacy.get("type") == "field":
-            field = new_field("value", "Значение", "text")
-            field["value"] = str((legacy.get("result") or {}).get("value") or "")
-            field["sources"] = []
-            for region in legacy.get("regions") or []:
-                source = copy.deepcopy(region)
-                source["kind"] = "region"
-                source["orientation"] = normalize_orientation(
-                    (source.get("properties") or {}).get("orientation", 0)
-                )
-                field["sources"].append(source)
-            objects.append(
-                {
-                    "id": legacy.get("id") or uid(),
-                    "type": "record",
-                    "preset": "custom_field",
-                    "name": name,
-                    "key": key,
-                    "orientation": 0,
-                    "fields": [field],
-                }
-            )
-            continue
-        result = legacy.get("result") or {}
-        table: dict[str, Any] = {
-            "id": legacy.get("id") or uid(),
-            "type": "table",
-            "preset": "table",
-            "name": name,
-            "key": key,
-            "orientation": 0,
-            "title": new_field("title", "Название таблицы", "text"),
-            "columns": [],
-            "rows": [],
-            "blocks": [],
-            "groups": [],
-        }
-        used: set[str] = set()
-        headers = [str(item) for item in result.get("columns") or []]
-        rows = [
-            list(item) for item in result.get("rows") or [] if isinstance(item, list)
-        ]
-        width = max([len(headers), *(len(row) for row in rows)], default=0)
-        for index in range(width):
-            title = headers[index] if index < len(headers) else f"Столбец {index + 1}"
-            column = new_field(unique_key(title, used), title, "text")
-            column["value"] = title
-            table["columns"].append(column)
-        for legacy_row in rows:
-            row_id = uid()
-            cells = []
-            for index, column in enumerate(table["columns"]):
-                cells.append(
-                    {
-                        "id": uid(),
-                        "columnId": column["id"],
-                        "value": str(legacy_row[index])
-                        if index < len(legacy_row)
-                        else "",
-                        "orientation": None,
-                    }
-                )
-            table["rows"].append({"id": row_id, "blockId": None, "cells": cells})
-        for region in legacy.get("regions") or []:
-            kind = region.get("kind")
-            if kind == "table_rows":
-                source = copy.deepcopy(region)
-                source["kind"] = "table_block"
-                source["orientation"] = 0
-                table["blocks"].append(
-                    {
-                        "id": uid(),
-                        "name": f"Блок строк {len(table['blocks']) + 1}",
-                        "region": source,
-                        "grid": copy.deepcopy(
-                            region.get("grid") or {"columns": [], "rows": []}
-                        ),
-                        "rowIds": [],
-                    }
-                )
-            elif kind == "group_value":
-                group = new_field(
-                    unique_key(
-                        str((region.get("properties") or {}).get("column") or "Группа"),
-                        used,
-                    ),
-                    str((region.get("properties") or {}).get("column") or "Группа"),
-                    "text",
-                )
-                group["value"] = str(region.get("output") or "")
-                group["rowIds"] = []
-                source = copy.deepcopy(region)
-                source["kind"] = "region"
-                source["orientation"] = 0
-                group["sources"] = [source]
-                table["groups"].append(group)
-        objects.append(table)
-    migrated["objects"] = objects
-    migrated["migratedFromSchema"] = 1
-    return migrated
-
-
 def normalize_source(source: dict[str, Any]) -> None:
     source.setdefault("id", uid())
     source["rect"] = validate_rect(source.get("rect"))
     source["page"] = int(source.get("page", 0))
     source["orientation"] = normalize_orientation(source.get("orientation", 0))
-    source.setdefault("properties", {"useLlm": False, "prompt": ""})
+    source.setdefault("properties", {"useLlm": False})
     source.setdefault("status", "pending")
     source.setdefault("output", None)
     source.setdefault("error", None)
@@ -571,54 +628,7 @@ def order_table_rows(obj: dict[str, Any]) -> list[dict[str, Any]]:
     return ordered
 
 
-def consolidate_person_block(
-    obj: dict[str, Any], preset: dict[str, Any] | None
-) -> None:
-    """Migrate old split approval/agreement fields to one editable OCR block."""
-    if obj.get("preset") not in {"approval", "agreement"} or not preset:
-        return
-    configured = list(preset.get("fields") or [])
-    fields = list(obj.get("fields") or [])
-    if len(configured) != 1 or not fields:
-        return
-    target_config = configured[0]
-    target_key = str(target_config["key"])
-    primary = next(
-        (field for field in fields if str(field.get("key") or "") == target_key),
-        fields[0],
-    )
-    values: list[str] = []
-    sources: list[dict[str, Any]] = []
-    source_ids: set[str] = set()
-    for field in fields:
-        value = str(field.get("value") or "").strip()
-        if value and value not in values:
-            values.append(value)
-        for source in field.get("sources") or []:
-            source_id = str(source.get("id") or "")
-            if source_id and source_id in source_ids:
-                continue
-            if source_id:
-                source_ids.add(source_id)
-            sources.append(source)
-    primary["key"] = target_key
-    primary["name"] = str(target_config["name"])
-    primary["ocrMode"] = str(target_config["ocrMode"])
-    primary["aiPrompt"] = str(target_config["aiPrompt"])
-    primary["value"] = ", ".join(values)
-    primary["sources"] = sources
-    obj["fields"] = [primary]
-    legacy_names = {
-        "approval": {"Утверждение / подтверждение", "Утверждение", "Подтверждение"},
-        "agreement": {"Согласование"},
-    }
-    if str(obj.get("name") or "") in legacy_names[str(obj["preset"])]:
-        obj["name"] = str(preset["name"])
-
-
 def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
-    if document.get("schema", 1) == 1:
-        document = migrate_v1(document)
     if document.get("schema") != SCHEMA_VERSION:
         raise ValueError(f"Поддерживается схема документа {SCHEMA_VERSION}")
     document.setdefault("objects", [])
@@ -630,13 +640,17 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
         preset = next(
             (item for item in PRESETS if item["id"] == obj.get("preset")), None
         )
+        if preset is None:
+            raise ValueError(f"Неизвестный preset объекта: {obj.get('preset')}")
+        if obj.get("type") != preset["type"]:
+            raise ValueError(f"Тип объекта не совпадает с preset {preset['id']}")
+        obj["scalar"] = bool(preset["scalar"])
         configured_fields = {
-            item["key"]: item for item in (preset or {}).get("fields", [])
+            item["key"]: item for item in preset.get("fields", [])
         }
-        dynamic_prompt = str((preset or {}).get("dynamicFieldPrompt") or DEFAULT_PROMPT)
+        dynamic_prompt = str(preset.get("dynamicFieldPrompt") or DEFAULT_PROMPT)
         if obj.get("type") == "record":
             obj.setdefault("fields", [])
-            consolidate_person_block(obj, preset)
             for field in obj["fields"]:
                 configured = configured_fields.get(str(field.get("key") or "")) or {}
                 normalize_field(
@@ -647,17 +661,27 @@ def normalize_document(document: dict[str, Any]) -> dict[str, Any]:
                     field["key"] = str(configured["key"])
                     field["ocrMode"] = str(configured["ocrMode"])
         elif obj.get("type") == "table":
+            title_config = preset["title"]
             title = obj.setdefault(
-                "title", new_field("title", "Название таблицы", "text", dynamic_prompt)
+                "title",
+                new_field(
+                    title_config["key"],
+                    title_config["name"],
+                    title_config["ocrMode"],
+                    title_config["aiPrompt"],
+                ),
             )
-            normalize_field(title, dynamic_prompt)
+            normalize_field(title, str(title_config["aiPrompt"]))
+            title["key"] = str(title_config["key"])
+            title["name"] = str(title_config["name"])
+            title["ocrMode"] = str(title_config["ocrMode"])
             for name in ("columns", "groups"):
                 obj.setdefault(name, [])
                 for field in obj[name]:
                     normalize_field(field, dynamic_prompt)
                     if name == "columns":
                         field["cellPrompt"] = str(
-                            (preset or {}).get("cellPrompt")
+                            preset.get("cellPrompt")
                             or field.get("cellPrompt")
                             or dynamic_prompt
                         ).strip()
@@ -699,7 +723,7 @@ def materialize(document: dict[str, Any]) -> dict[str, Any]:
             values = {
                 str(field.get("key")): str(field.get("value") or "") for field in fields
             }
-            if obj.get("preset") == "custom_field" and len(fields) == 1:
+            if obj.get("scalar") and len(fields) == 1:
                 data[key] = next(iter(values.values()), "")
             else:
                 data[key] = values
@@ -889,6 +913,18 @@ class PaddleClient:
         except Exception as exc:
             return {"status": "unavailable", "error": str(exc), "capabilities": []}
 
+    @staticmethod
+    def _raise_service_error(response: Any) -> None:
+        if not response.is_error:
+            return
+        try:
+            payload = response.json()
+            detail = payload.get("detail") if isinstance(payload, dict) else None
+        except ValueError:
+            detail = None
+        message = str(detail or response.text or f"HTTP {response.status_code}").strip()
+        raise RuntimeError(f"PaddleOCR отклонил запрос: {message}")
+
     def recognize(self, image: bytes, mode: str = "text") -> str:
         import httpx
 
@@ -915,20 +951,20 @@ class PaddleClient:
                 },
                 files={"file": ("region.png", image, "image/png")},
             )
-            response.raise_for_status()
+            self._raise_service_error(response)
             job_id = response.json()["data"]["jobId"]
             deadline = time.monotonic() + 60 * 60
             while time.monotonic() < deadline:
                 status = client.get(
                     f"{self.url}/api/v2/ocr/jobs/{job_id}", headers=headers
                 )
-                status.raise_for_status()
+                self._raise_service_error(status)
                 payload = status.json()["data"]
                 if payload["state"] == "done":
                     result = client.get(
                         f"{self.url}/api/v2/ocr/jobs/{job_id}/result", headers=headers
                     )
-                    result.raise_for_status()
+                    self._raise_service_error(result)
                     return flatten_ocr_result(result.text, mode)
                 if payload["state"] == "failed":
                     raise RuntimeError(payload.get("errorMsg") or "Ошибка PaddleOCR")
@@ -969,24 +1005,30 @@ class LlamaClient:
             response.raise_for_status()
             return str(response.json()["choices"][0]["message"]["content"])
 
-    def process(self, text: str, prompt: str) -> str:
-        return clean_text(
+    def process_markdown(self, markdown: str, prompt: str) -> str:
+        return clean_markdown_response(
             self._chat(
-                "Ты исправляешь OCR. Ответ должен содержать только итоговый текст.",
-                f"{prompt}\n\nOCR:\n{text}",
+                (
+                    "Ты исправляешь ошибки OCR в документе Markdown. "
+                    "Не добавляй факты и не меняй заданную структуру. "
+                    "Ответь только документом Markdown, без JSON и пояснений."
+                ),
+                f"{prompt}\n\n## Входной Markdown\n\n{markdown}",
             )
         )
 
-    def process_json(self, payload: dict[str, Any], prompt: str) -> dict[str, Any]:
-        response = self._chat(
+    def correct_text(self, text: str, prompt: str) -> str:
+        response = self.process_markdown(
+            f"# OCR-текст\n\n{text}",
             (
-                "Ты исправляешь ошибки OCR в структурированных данных. "
-                "Строго сохрани идентификаторы, количество и порядок элементов. "
-                "Не добавляй факты и не меняй структуру. Ответь только JSON-объектом."
+                f"{prompt}\n\nВерни тот же Markdown с заголовком `# OCR-текст` "
+                "и исправленным текстом под ним."
             ),
-            f"{prompt}\n\nВходной JSON:\n{json.dumps(payload, ensure_ascii=False)}",
         )
-        return parse_json_response(response)
+        match = re.fullmatch(r"#[^\n]*\n+(?P<text>[\s\S]*)", response)
+        if not match:
+            raise ValueError("ИИ нарушил формат Markdown для текста")
+        return match.group("text").strip()
 
 
 def render_crop(
@@ -1170,7 +1212,7 @@ class ExtractionTasks:
         text = self.paddle.recognize(render_crop(source, page, rect, orientation), mode)
         properties = region.get("properties") or {}
         if properties.get("useLlm"):
-            text = self.llama.process(text, prompt.strip() or DEFAULT_PROMPT)
+            text = self.llama.correct_text(text, prompt.strip() or DEFAULT_PROMPT)
         return text
 
     @staticmethod
@@ -1241,7 +1283,6 @@ class ExtractionTasks:
                     )
                     mode = str(
                         column.get("ocrMode")
-                        or (region.get("properties") or {}).get("ocrMode")
                         or "text"
                     )
                     inherited_orientation = owner.get("orientation")
@@ -1363,7 +1404,7 @@ class ExtractionTasks:
             original = str(target.get("value") or "")
             if not original.strip():
                 raise ValueError("Нечего корректировать: значение пусто")
-            corrected = self.llama.process(original, prompt)
+            corrected = self.llama.correct_text(original, prompt)
             applied = False
 
             def save_output(document: dict[str, Any]) -> None:
@@ -1527,33 +1568,6 @@ class ExtractionTasks:
             targets.extend(row.get("cells") or [])
         return targets
 
-    @staticmethod
-    def _structured_updates(
-        result: dict[str, Any], allowed_ids: set[str], collection: str
-    ) -> dict[str, str]:
-        updates: dict[str, str] = {}
-        containers = result.get(collection)
-        if not isinstance(containers, list):
-            raise ValueError("ИИ вернул JSON без ожидаемого списка значений")
-        if collection == "fields":
-            values = containers
-        else:
-            values = []
-            for row in containers:
-                if not isinstance(row, dict) or not isinstance(row.get("cells"), list):
-                    raise ValueError("ИИ повредил структуру строк таблицы")
-                values.extend(row["cells"])
-        for item in values:
-            if not isinstance(item, dict):
-                raise ValueError("ИИ повредил структуру значения")
-            target_id = str(item.get("id") or "")
-            if target_id not in allowed_ids or target_id in updates:
-                raise ValueError("ИИ изменил идентификаторы структуры")
-            updates[target_id] = str(item.get("value") or "")
-        if set(updates) != allowed_ids:
-            raise ValueError("ИИ вернул не все значения объекта")
-        return updates
-
     def _correct_record_object(self, obj: dict[str, Any]) -> dict[str, str]:
         fields = [
             field
@@ -1562,29 +1576,26 @@ class ExtractionTasks:
         ]
         if not fields:
             raise ValueError("В объекте нет текста для коррекции")
-        payload = {
-            "object": str(obj.get("name") or "Объект"),
-            "fields": [
-                {
-                    "id": field["id"],
-                    "name": field.get("name") or "Поле",
-                    "value": field.get("value") or "",
-                    "instruction": field.get("aiPrompt") or DEFAULT_PROMPT,
-                }
-                for field in fields
-            ],
-        }
-        result = self.llama.process_json(
-            payload,
+        instructions = "\n".join(
+            f"{index}. **{markdown_heading(field.get('name')) or 'Поле'}:** "
+            f"{field.get('aiPrompt') or DEFAULT_PROMPT}"
+            for index, field in enumerate(fields, 1)
+        )
+        markdown = record_to_markdown(str(obj.get("name") or "Объект"), fields)
+        result = self.llama.process_markdown(
+            markdown,
             (
                 "Исправь значения полей с учётом контекста всего объекта. "
-                "Названия полей и id неизменяемы. Верни объект с массивом fields; "
-                "для каждого входного поля верни id, name и исправленное value."
+                "Сохрани заголовок объекта, все заголовки второго уровня, их "
+                "нумерацию и порядок. Исправляй только текст под заголовками.\n\n"
+                "### Инструкции по полям\n\n"
+                f"{instructions}"
             ),
         )
-        return self._structured_updates(
-            result, {str(field["id"]) for field in fields}, "fields"
-        )
+        values = parse_record_markdown(result, len(fields))
+        return {
+            str(field["id"]): value for field, value in zip(fields, values, strict=True)
+        }
 
     def _correct_table_object(self, obj: dict[str, Any]) -> dict[str, str]:
         columns = list(obj.get("columns") or [])
@@ -1594,61 +1605,37 @@ class ExtractionTasks:
         updates: dict[str, str] = {}
         for offset in range(0, len(rows), TABLE_CORRECTION_ROWS):
             chunk = rows[offset : offset + TABLE_CORRECTION_ROWS]
-            cell_ids = {
-                str(cell["id"]) for row in chunk for cell in row.get("cells") or []
-            }
-            payload = {
-                "table": str(
-                    (obj.get("title") or {}).get("value")
-                    or obj.get("name")
-                    or "Таблица"
-                ),
-                "headers": [
-                    {
-                        "id": column["id"],
-                        "value": column.get("value") or column.get("name") or "",
-                        "instruction": column.get("cellPrompt")
-                        or column.get("aiPrompt")
-                        or DEFAULT_PROMPT,
-                    }
-                    for column in columns
-                ],
-                "rows": [
-                    {
-                        "id": row["id"],
-                        "cells": [
-                            {
-                                "id": cell["id"],
-                                "columnId": cell.get("columnId"),
-                                "value": cell.get("value") or "",
-                            }
-                            for cell in row.get("cells") or []
-                        ],
-                    }
-                    for row in chunk
-                ],
-            }
-            result = self.llama.process_json(
-                payload,
+            title = str(
+                (obj.get("title") or {}).get("value")
+                or obj.get("name")
+                or "Таблица"
+            )
+            instructions = "\n".join(
+                f"- **{markdown_heading(column.get('value') or column.get('name'))}:** "
+                f"{column.get('cellPrompt') or column.get('aiPrompt') or DEFAULT_PROMPT}"
+                for column in columns
+            )
+            markdown = table_to_markdown(title, columns, chunk)
+            result = self.llama.process_markdown(
+                markdown,
                 (
-                    "Исправь OCR только в value ячеек таблицы. Заголовки headers "
-                    "даны как контекст и должны остаться без изменений. Сохрани все "
-                    "строки, id, columnId, порядок и пустые ячейки. Верни объект с "
-                    "массивом rows той же структуры."
+                    "Исправь OCR только в ячейках Markdown-таблицы. Заголовок "
+                    "документа, строку заголовков таблицы и столбец `№` не меняй. "
+                    "Сохрани число и порядок строк и столбцов, а также пустые "
+                    "ячейки. Верни только этот Markdown-документ.\n\n"
+                    "### Инструкции по столбцам\n\n"
+                    f"{instructions}"
                 ),
             )
-            chunk_updates = self._structured_updates(result, cell_ids, "rows")
-            original_values = {
-                str(cell["id"]): str(cell.get("value") or "")
-                for row in chunk
-                for cell in row.get("cells") or []
-            }
-            # Empty cells carry structural meaning. Never let the model invent
-            # content for one even if it ignores the explicit prompt.
-            for cell_id, original in original_values.items():
-                if not original.strip():
-                    chunk_updates[cell_id] = original
-            updates.update(chunk_updates)
+            parsed_rows = parse_table_markdown(result, len(chunk), len(columns))
+            for row, values in zip(chunk, parsed_rows, strict=True):
+                cells = {cell.get("columnId"): cell for cell in row.get("cells") or []}
+                for column, value in zip(columns, values, strict=True):
+                    cell = cells.get(column.get("id"))
+                    if cell is None:
+                        raise ValueError("Структура ячеек таблицы повреждена")
+                    original = str(cell.get("value") or "")
+                    updates[str(cell["id"])] = value if original.strip() else original
         return updates
 
     def _run_object_correction(
@@ -1768,13 +1755,8 @@ def normalize_template_catalog(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"schema": SCHEMA_VERSION, "templates": []}
     catalog = copy.deepcopy(value)
-    if catalog.get("schema", 1) == 1:
-        for template in catalog.get("templates") or []:
-            migrated = migrate_v1(
-                {"schema": 1, "objects": template.get("objects") or []}
-            )
-            template["objects"] = migrated["objects"]
-        catalog["schema"] = SCHEMA_VERSION
+    if catalog.get("schema") != SCHEMA_VERSION:
+        raise ValueError(f"Поддерживается схема шаблонов {SCHEMA_VERSION}")
     catalog.setdefault("templates", [])
     return catalog
 
@@ -1841,6 +1823,7 @@ def create_app(
     def catalog() -> dict[str, Any]:
         return {
             "schema": SCHEMA_VERSION,
+            "defaultPreset": DEFAULT_PRESET,
             "defaultPrompt": DEFAULT_PROMPT,
             "presets": preset_catalog(),
             "ocrModes": sorted(OCR_MODES),
