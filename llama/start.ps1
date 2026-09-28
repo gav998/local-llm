@@ -10,6 +10,19 @@ $SourceUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b10786/lla
 $Models = Join-Path $Root 'models'
 $Logs = Join-Path $Root 'logs'
 $Config = Get-Content -LiteralPath (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
+$ClientHost = [string]$Config.host
+if ($ClientHost -eq '0.0.0.0') { $ClientHost = '127.0.0.1' }
+if ($ClientHost -eq '::') { $ClientHost = '[::1]' }
+$ChatBaseUrl = "http://${ClientHost}:$($Config.llm_port)/v1"
+$ChatCompletionsUrl = "$ChatBaseUrl/chat/completions"
+$ChatModelsUrl = "$ChatBaseUrl/models"
+$EmbeddingBaseUrl = "http://${ClientHost}:$($Config.embed_port)/v1"
+$EmbeddingUrl = "$EmbeddingBaseUrl/embeddings"
+$VsCodeMaxOutputTokens = [int]$Config.vscode_max_output_tokens
+if ($VsCodeMaxOutputTokens -le 0 -or $VsCodeMaxOutputTokens -ge [int]$Config.llm_context) {
+    throw 'vscode_max_output_tokens must be greater than 0 and less than llm_context.'
+}
+$VsCodeMaxInputTokens = [int]$Config.llm_context - $VsCodeMaxOutputTokens
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -79,12 +92,36 @@ function Install-Llama {
 }
 
 function Write-Connection {
+    $ChatStatus = 'stopped'
+    $ChatModel = $null
+    $EmbeddingStatus = 'stopped'
+    $EmbeddingModel = $null
+    if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
+        $ChatStatus = 'running'
+        $ChatModel = $Running['llm'].ModelId
+    }
+    if ($Running.ContainsKey('embed') -and -not $Running['embed'].Process.HasExited) {
+        $EmbeddingStatus = 'running'
+        $EmbeddingModel = $Running['embed'].ModelId
+    }
     $Connection = [ordered]@{
         schema = 1
-        chat_url = "http://$($Config.host):$($Config.llm_port)/v1"
+        chat_status = $ChatStatus
+        chat_url = $ChatBaseUrl
+        chat_completions_url = $ChatCompletionsUrl
+        chat_models_url = $ChatModelsUrl
         chat_api_key = [string]$Config.api_key
-        embedding_url = "http://$($Config.host):$($Config.embed_port)/v1"
+        chat_model = $ChatModel
+        chat_context_tokens = [int]$Config.llm_context
+        chat_max_input_tokens = $VsCodeMaxInputTokens
+        chat_max_output_tokens = $VsCodeMaxOutputTokens
+        chat_tool_calling = [bool]$Config.vscode_tool_calling
+        chat_vision = [bool]$Config.vscode_vision
+        embedding_status = $EmbeddingStatus
+        embedding_url = $EmbeddingBaseUrl
+        embedding_endpoint = $EmbeddingUrl
         embedding_api_key = [string]$Config.api_key
+        embedding_model = $EmbeddingModel
     }
     $Connection | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
 }
@@ -113,9 +150,9 @@ Initialize-PortableEnvironment
 if (-not (Test-Path -LiteralPath $Server -PathType Leaf)) { Install-Llama }
 & $Server --version
 if ($LASTEXITCODE -ne 0) { throw 'llama-server.exe cannot start.' }
-Write-Connection
 
 $Running = @{}
+Write-Connection
 
 function Stop-Role([string]$Role) {
     if ($Running.ContainsKey($Role)) {
@@ -127,6 +164,7 @@ function Stop-Role([string]$Role) {
         }
         $Entry.Process.Dispose()
         $Running.Remove($Role) | Out-Null
+        Write-Connection
     }
 }
 
@@ -153,12 +191,13 @@ function Start-Role([string]$Role) {
     $Model = Select-Model $Role
     if (-not $Model) { return }
     Stop-Role $Role
+    $ModelId = $Model.BaseName
     if ($Role -eq 'llm') {
         $Port = [int]$Config.llm_port
-        $Arguments = @('--model',$Model.FullName,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--n-gpu-layers','999','--split-mode','layer','--main-gpu',$Config.llm_main_gpu,'--tensor-split',$Config.llm_tensor_split,'--ctx-size',$Config.llm_context,'--batch-size',$Config.llm_batch,'--parallel','1','--no-webui')
+        $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--n-gpu-layers','999','--split-mode','layer','--main-gpu',$Config.llm_main_gpu,'--tensor-split',$Config.llm_tensor_split,'--ctx-size',$Config.llm_context,'--batch-size',$Config.llm_batch,'--parallel','1','--no-webui')
     } else {
         $Port = [int]$Config.embed_port
-        $Arguments = @('--model',$Model.FullName,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--embedding','--pooling','last','--n-gpu-layers','999','--split-mode','none','--main-gpu',$Config.embed_gpu,'--ctx-size',$Config.embed_context,'--batch-size',$Config.embed_batch,'--no-webui')
+        $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--embedding','--pooling','last','--n-gpu-layers','999','--split-mode','none','--main-gpu',$Config.embed_gpu,'--ctx-size',$Config.embed_context,'--batch-size',$Config.embed_batch,'--no-webui')
     }
     $OutLog = Join-Path $Logs "$Role.out.log"
     $ErrorLog = Join-Path $Logs "$Role.error.log"
@@ -166,9 +205,11 @@ function Start-Role([string]$Role) {
     $ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
     $Process = Start-Process -FilePath $Server -ArgumentList $ArgumentLine -WorkingDirectory $Runtime -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
     try {
-        Wait-Healthy "http://$($Config.host):$Port/health" $Process
-        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; Port=$Port }
-        Write-Host "[READY] $Role on http://$($Config.host):$Port/v1" -ForegroundColor Green
+        Wait-Healthy "http://${ClientHost}:$Port/health" $Process
+        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port }
+        Write-Connection
+        $ReadyUrl = if ($Role -eq 'llm') { $ChatCompletionsUrl } else { $EmbeddingUrl }
+        Write-Host "[READY] $Role on $ReadyUrl" -ForegroundColor Green
     } catch {
         if (-not $Process.HasExited) { $Process.Kill() }
         $Process.Dispose()
@@ -189,6 +230,21 @@ function Show-Status {
             Write-Host ("{0,-6} stopped  models={1}" -f $Role,$Count)
         }
     }
+    $ModelId = '(start LLM and select a model)'
+    if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
+        $ModelId = $Running['llm'].ModelId
+    }
+    Write-Host ''
+    Write-Host 'VS Code connection (Custom Endpoint)' -ForegroundColor Cyan
+    Write-Host ("  API type    Chat Completions")
+    Write-Host ("  Endpoint    {0}" -f $ChatCompletionsUrl)
+    Write-Host ("  API key     {0}" -f $Config.api_key)
+    Write-Host ("  Model ID    {0}" -f $ModelId)
+    Write-Host ("  Context     {0} input + {1} output = {2} tokens" -f $VsCodeMaxInputTokens,$VsCodeMaxOutputTokens,$Config.llm_context)
+    Write-Host ("  Tools       {0}" -f [bool]$Config.vscode_tool_calling)
+    Write-Host ("  Vision      {0}" -f [bool]$Config.vscode_vision)
+    Write-Host ("  Models API  {0}" -f $ChatModelsUrl)
+    Write-Host ("  Embeddings  {0}" -f $EmbeddingUrl)
     Write-Host ''
     Write-Host '[1] Start LLM      [2] Stop LLM'
     Write-Host '[3] Start embed    [4] Stop embed'

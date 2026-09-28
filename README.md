@@ -21,6 +21,52 @@ OpenAI-совместимые API по умолчанию:
 Порты, ключ и GPU-настройки находятся в `llama\config.json`. При выходе из меню
 все запущенные этим окном серверы останавливаются.
 
+### Подключение к VS Code
+
+После запуска LLM меню показывает готовые параметры подключения: точный endpoint,
+API key, Model ID и размеры входного и выходного контекста. Значения также
+записываются в `llama\connection.json` и обновляются при запуске или остановке
+модели.
+
+В актуальном VS Code локальная модель подключается без отдельного расширения:
+
+1. Откройте палитру команд (`Ctrl+Shift+P`) и выполните
+   `Chat: Manage Language Models`.
+2. Нажмите `Add Models`, выберите `Custom Endpoint` и задайте имя группы,
+   например `Local llama.cpp`.
+3. Укажите значения из блока `VS Code connection` в окне `llama\start.bat`:
+   API key — `local-llm`, API type — `Chat Completions`.
+4. В открывшемся `chatLanguageModels.json` задайте модели значения из меню.
+   Для стандартной конфигурации и файла `Vikhr-Nemo-12B-Q4_K_M.gguf` блок модели
+   выглядит так:
+
+```json
+{
+  "id": "Vikhr-Nemo-12B-Q4_K_M",
+  "name": "Vikhr Nemo 12B (local)",
+  "url": "http://127.0.0.1:6381/v1/chat/completions",
+  "apiType": "chat-completions",
+  "toolCalling": false,
+  "vision": false,
+  "maxInputTokens": 3072,
+  "maxOutputTokens": 1024
+}
+```
+
+Сохраните созданную VS Code строку `apiKey`: ключ лучше оставлять в Secret
+Storage, а не вписывать непосредственно в JSON. Если порт, контекст или модель
+изменены, используйте значения из меню, а не из примера. После сохранения
+выберите `Vikhr Nemo 12B (local)` в списке моделей Chat; если модель не появилась,
+перезапустите VS Code.
+
+Этот способ включает локальный Chat. Обычные inline suggestions и семантический
+поиск VS Code через OpenAI-compatible endpoint не работают. Агентный режим также
+не будет доступен при `toolCalling: false`: для выбранной Vikhr-модели вызов
+инструментов не заявлен как гарантированная возможность. Если другая GGUF-модель
+и её chat template надёжно поддерживают вызов инструментов, измените
+`vscode_tool_calling` в `llama\config.json` на `true` и укажите то же значение в
+`chatLanguageModels.json`.
+
 ## paddleocr
 
 Запустите `paddleocr\start.bat` и выберите функциональный профиль. На первом
