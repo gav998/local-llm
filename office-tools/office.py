@@ -57,11 +57,11 @@ def iter_table_paragraphs(table: Table) -> Iterable[Paragraph]:
 
 
 def iter_document_paragraphs(document: DocumentObject) -> Iterable[Paragraph]:
-    seen: set[int] = set()
+    seen: set[Any] = set()
 
     def unique(items: Iterable[Paragraph]) -> Iterable[Paragraph]:
         for paragraph in items:
-            marker = id(paragraph._p)
+            marker = paragraph._p
             if marker not in seen:
                 seen.add(marker)
                 yield paragraph
