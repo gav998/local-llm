@@ -11,7 +11,13 @@ Typical commands from the repository root:
 .\office-tools\office.bat inspect "workspace\report.xlsx" --sheet "Sheet1" --range "A1:F30"
 .\office-tools\office.bat replace-docx "workspace\contract.docx" "workspace\contract.edited.docx" --old "Old text" --new "New text"
 .\office-tools\office.bat set-xlsx "workspace\report.xlsx" "workspace\report.edited.xlsx" --sheet "Sheet1" --set B2 42 --set C2 "=B2*2"
+.\office-tools\office.bat inspect "D:\Documents\report.xlsx" --sheet "Sheet1" --range "A1:F30"
 ```
+
+The `workspace` directory is optional. In portable VS Code, use **File → Add Folder
+to Workspace...** to expose an existing document directory to the Local Agent.
+The commands also accept absolute paths anywhere the current Windows user can
+access.
 
 For a change that the small CLI does not cover, create a Python script in
 `workspace` and run it with the prepared environment:

@@ -7,6 +7,7 @@
   "llm_batch": 256,
   "llm_main_gpu": 1,
   "llm_tensor_split": "0.20,0.80",
+  "llm_long_context_tensor_split": "0.50,0.50",
   "vscode_max_output_tokens": 2048,
   "vscode_tool_calling": true,
   "vscode_vision": false,

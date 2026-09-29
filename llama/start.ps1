@@ -2,7 +2,6 @@
 param()
 
 $ErrorActionPreference = 'Stop'
-$UserAppData = $env:APPDATA
 $Root = $PSScriptRoot
 $Runtime = Join-Path $Root 'llama-cpp'
 $Server = Join-Path $Runtime 'llama-server.exe'
@@ -20,10 +19,9 @@ $ChatModelsUrl = "$ChatBaseUrl/models"
 $EmbeddingBaseUrl = "http://${ClientHost}:$($Config.embed_port)/v1"
 $EmbeddingUrl = "$EmbeddingBaseUrl/embeddings"
 $VsCodeMaxOutputTokens = [int]$Config.vscode_max_output_tokens
-if ($VsCodeMaxOutputTokens -le 0 -or $VsCodeMaxOutputTokens -ge [int]$Config.llm_context) {
-    throw 'vscode_max_output_tokens must be greater than 0 and less than llm_context.'
+if ($VsCodeMaxOutputTokens -le 0 -or $VsCodeMaxOutputTokens -ge 4096) {
+    throw 'vscode_max_output_tokens must be greater than 0 and less than 4096.'
 }
-$VsCodeMaxInputTokens = [int]$Config.llm_context - $VsCodeMaxOutputTokens
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -92,7 +90,7 @@ function Install-Llama {
     }
 }
 
-function New-VsCodeProvider([string]$ModelId,[bool]$ToolCalling) {
+function New-VsCodeProvider([string]$ModelId,[bool]$ToolCalling,[int]$Context) {
     return [pscustomobject][ordered]@{
         name = 'Local llama.cpp'
         vendor = 'customendpoint'
@@ -105,7 +103,7 @@ function New-VsCodeProvider([string]$ModelId,[bool]$ToolCalling) {
                 url = $ChatCompletionsUrl
                 toolCalling = $ToolCalling
                 vision = [bool]$Config.vscode_vision
-                maxInputTokens = $VsCodeMaxInputTokens
+                maxInputTokens = $Context - $VsCodeMaxOutputTokens
                 maxOutputTokens = $VsCodeMaxOutputTokens
             }
         )
@@ -118,10 +116,12 @@ function Write-Connection {
     $EmbeddingStatus = 'stopped'
     $EmbeddingModel = $null
     $ChatToolCalling = $false
+    $ChatContext = [int]$Config.llm_context
     if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
         $ChatStatus = 'running'
         $ChatModel = $Running['llm'].ModelId
         $ChatToolCalling = [bool]$Running['llm'].ToolCalling
+        $ChatContext = [int]$Running['llm'].Context
     }
     if ($Running.ContainsKey('embed') -and -not $Running['embed'].Process.HasExited) {
         $EmbeddingStatus = 'running'
@@ -135,8 +135,8 @@ function Write-Connection {
         chat_models_url = $ChatModelsUrl
         chat_api_key = [string]$Config.api_key
         chat_model = $ChatModel
-        chat_context_tokens = [int]$Config.llm_context
-        chat_max_input_tokens = $VsCodeMaxInputTokens
+        chat_context_tokens = $ChatContext
+        chat_max_input_tokens = $ChatContext - $VsCodeMaxOutputTokens
         chat_max_output_tokens = $VsCodeMaxOutputTokens
         chat_tool_calling = $ChatToolCalling
         chat_vision = [bool]$Config.vscode_vision
@@ -148,8 +148,8 @@ function Write-Connection {
     }
     $Connection | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
     if ($ChatModel) {
-        @(New-VsCodeProvider -ModelId $ChatModel -ToolCalling $ChatToolCalling) |
-            ConvertTo-Json -Depth 8 |
+        $VsCodeProviders = @(New-VsCodeProvider -ModelId $ChatModel -ToolCalling $ChatToolCalling -Context $ChatContext)
+        ConvertTo-Json -InputObject $VsCodeProviders -Depth 8 |
             Set-Content -LiteralPath (Join-Path $Root 'vscode-model.json') -Encoding UTF8
     }
 }
@@ -181,15 +181,18 @@ function Get-PropertyValue([object]$Object,[string]$Name) {
     return $null
 }
 
-function Confirm-ToolSupport([Diagnostics.Process]$Process) {
-    if (-not [bool]$Config.vscode_tool_calling) { return $false }
+function Get-ServerProperties([Diagnostics.Process]$Process) {
     if ($Process.HasExited) { throw 'llama-server exited before its tool template could be checked.' }
     $Headers = @{ Authorization = "Bearer $($Config.api_key)" }
     try {
-        $Props = Invoke-RestMethod -UseBasicParsing -Uri "http://${ClientHost}:$($Config.llm_port)/props" -Headers $Headers -TimeoutSec 10
+        return Invoke-RestMethod -UseBasicParsing -Uri "http://${ClientHost}:$($Config.llm_port)/props" -Headers $Headers -TimeoutSec 10
     } catch {
         throw "Cannot inspect llama.cpp /props for tool support: $($_.Exception.Message)"
     }
+}
+
+function Confirm-ToolSupport([object]$Props) {
+    if (-not [bool]$Config.vscode_tool_calling) { return $false }
     $Caps = Get-PropertyValue $Props 'chat_template_caps'
     if ($Caps -and [bool](Get-PropertyValue $Caps 'supports_tools')) { return $true }
     $ToolTemplate = [string](Get-PropertyValue $Props 'chat_template_tool_use')
@@ -203,91 +206,52 @@ The server was started with --jinja, but /props reports no tool support.
 '@
 }
 
-function Get-VsCodeConfigurationTargets {
-    $Targets = @()
-    if (-not $UserAppData) { return $Targets }
-    foreach ($Product in @('Code','Code - Insiders')) {
-        $UserDirectory = Join-Path (Join-Path $UserAppData $Product) 'User'
-        if (-not (Test-Path -LiteralPath $UserDirectory -PathType Container)) { continue }
-        $Targets += [pscustomobject]@{
-            Label = "$Product - Default profile"
-            Path = Join-Path $UserDirectory 'chatLanguageModels.json'
-        }
-        $Profiles = Join-Path $UserDirectory 'profiles'
-        if (Test-Path -LiteralPath $Profiles -PathType Container) {
-            Get-ChildItem -LiteralPath $Profiles -Directory | ForEach-Object {
-                $ProfileConfig = Join-Path $_.FullName 'chatLanguageModels.json'
-                if (Test-Path -LiteralPath $ProfileConfig -PathType Leaf) {
-                    $Targets += [pscustomobject]@{
-                        Label = "$Product - profile $($_.Name)"
-                        Path = $ProfileConfig
-                    }
-                }
-            }
-        }
+function Get-ActualContext([object]$Props,[int]$RequestedContext) {
+    $Generation = Get-PropertyValue $Props 'default_generation_settings'
+    $ActualContext = [int](Get-PropertyValue $Generation 'n_ctx')
+    if ($ActualContext -le 0) { return $RequestedContext }
+    if ($ActualContext -le $VsCodeMaxOutputTokens) {
+        throw "llama.cpp reported an unusable context size: $ActualContext"
     }
-    return @($Targets)
+    if ($ActualContext -ne $RequestedContext) {
+        Write-Host "llama.cpp adjusted context from $RequestedContext to $ActualContext tokens." -ForegroundColor Yellow
+    }
+    return $ActualContext
 }
 
-function Select-VsCodeConfigurationTarget {
-    $Targets = @(Get-VsCodeConfigurationTargets)
-    if (-not $Targets.Count) {
-        throw 'VS Code user profile was not found. Start VS Code once, then retry.'
-    }
-    if ($Targets.Count -eq 1) { return $Targets[0] }
+function Select-LlmContext {
     Write-Host ''
-    Write-Host 'Select the VS Code profile to configure:' -ForegroundColor Cyan
-    for ($Index = 0; $Index -lt $Targets.Count; $Index++) {
-        Write-Host ('  [{0}] {1}' -f ($Index + 1),$Targets[$Index].Label)
-    }
-    $Choice = Read-Host 'Profile number (Enter cancels)'
-    if (-not $Choice) { return $null }
-    $Number = 0
-    if (-not [int]::TryParse($Choice,[ref]$Number) -or $Number -lt 1 -or $Number -gt $Targets.Count) {
-        Write-Host 'Invalid profile number.' -ForegroundColor Yellow
-        return $null
-    }
-    return $Targets[$Number - 1]
-}
-
-function Install-VsCodeConfiguration {
-    if (-not $Running.ContainsKey('llm') -or $Running['llm'].Process.HasExited) {
-        Write-Host 'Start the LLM first, then configure VS Code.' -ForegroundColor Yellow
-        return
-    }
-    $Target = Select-VsCodeConfigurationTarget
-    if (-not $Target) { return }
-    $Providers = @()
-    if (Test-Path -LiteralPath $Target.Path -PathType Leaf) {
-        $Raw = Get-Content -LiteralPath $Target.Path -Raw
-        if ($Raw.Trim()) {
-            try {
-                $Providers = @($Raw | ConvertFrom-Json)
-            } catch {
-                throw "Cannot read $($Target.Path) as JSON. Fix it in VS Code and retry."
+    Write-Host 'Select LLM context:' -ForegroundColor Cyan
+    Write-Host '  [1]  16K   fastest and safest'
+    Write-Host '  [2]  32K   native Qwen2.5 context'
+    Write-Host '  [3]  64K   long context, quantized KV cache'
+    Write-Host '  [4] 128K   maximum Qwen2.5 context; 2 x 8 GB GPUs exclusively'
+    Write-Host '  [C] custom token count (4096..131072)'
+    $Choice = (Read-Host 'Context (Enter = 128K)').Trim()
+    switch ($Choice.ToLowerInvariant()) {
+        ''  { return 131072 }
+        '1' { return 16384 }
+        '2' { return 32768 }
+        '3' { return 65536 }
+        '4' { return 131072 }
+        'c' {
+            $Raw = (Read-Host 'Exact context tokens (4096..131072)').Trim()
+            $Context = 0
+            if (-not [int]::TryParse($Raw,[ref]$Context) -or $Context -lt 4096 -or $Context -gt 131072) {
+                Write-Host 'Context must be an integer from 4096 through 131072.' -ForegroundColor Yellow
+                return $null
             }
+            if ($Context -le $VsCodeMaxOutputTokens) {
+                Write-Host 'Context must be greater than max output tokens.' -ForegroundColor Yellow
+                return $null
+            }
+            return $Context
+        }
+        default {
+            Write-Host 'Invalid context choice.' -ForegroundColor Yellow
+            return $null
         }
     }
-    $Providers = @($Providers | Where-Object {
-        -not ($_.vendor -eq 'customendpoint' -and $_.name -eq 'Local llama.cpp')
-    })
-    $Entry = $Running['llm']
-    $Providers += New-VsCodeProvider -ModelId $Entry.ModelId -ToolCalling ([bool]$Entry.ToolCalling)
-    $Directory = Split-Path $Target.Path -Parent
-    New-Item -ItemType Directory -Path $Directory -Force | Out-Null
-    $Backup = $null
-    if (Test-Path -LiteralPath $Target.Path -PathType Leaf) {
-        $Backup = "$($Target.Path).backup-$([DateTime]::Now.ToString('yyyyMMdd-HHmmssfff'))"
-        Copy-Item -LiteralPath $Target.Path -Destination $Backup
-    }
-    $Json = $Providers | ConvertTo-Json -Depth 12
-    [IO.File]::WriteAllText($Target.Path,$Json,(New-Object Text.UTF8Encoding($false)))
-    Write-Host ''
-    Write-Host '[READY] VS Code model configuration updated.' -ForegroundColor Green
-    Write-Host "  File   $($Target.Path)"
-    if ($Backup) { Write-Host "  Backup $Backup" }
-    Write-Host 'Reload VS Code, select Session Target: Local, Agent mode, then this model.'
-    Read-Host 'Press Enter to continue' | Out-Null
 }
 
 Initialize-PortableEnvironment
@@ -334,11 +298,33 @@ function Select-Model([string]$Role) {
 function Start-Role([string]$Role) {
     $Model = Select-Model $Role
     if (-not $Model) { return }
+    $RequestedContext = $null
+    $CacheType = $null
+    $TensorSplit = $null
+    if ($Role -eq 'llm') {
+        $RequestedContext = Select-LlmContext
+        if ($null -eq $RequestedContext) { return }
+    }
     Stop-Role $Role
     $ModelId = $Model.BaseName
     if ($Role -eq 'llm') {
         $Port = [int]$Config.llm_port
-        $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--n-gpu-layers','999','--split-mode','layer','--main-gpu',$Config.llm_main_gpu,'--tensor-split',$Config.llm_tensor_split,'--ctx-size',$Config.llm_context,'--batch-size',$Config.llm_batch,'--parallel','1','--no-webui')
+        $TensorSplit = [string]$Config.llm_tensor_split
+        $CacheType = 'f16'
+        if ($RequestedContext -gt 32768) {
+            $TensorSplit = [string]$Config.llm_long_context_tensor_split
+            $CacheType = 'q8_0'
+        }
+        $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--n-gpu-layers','999','--split-mode','layer','--main-gpu',$Config.llm_main_gpu,'--tensor-split',$TensorSplit,'--ctx-size',$RequestedContext,'--batch-size',$Config.llm_batch,'--parallel','1','--fit','off','--cache-type-k',$CacheType,'--cache-type-v',$CacheType,'--flash-attn','on','--no-webui')
+        if ($RequestedContext -gt 32768) {
+            if ($ModelId -match '(?i)qwen2[._-]?5.*7b.*instruct') {
+                $RopeScale = ($RequestedContext / 32768.0).ToString('0.########',[Globalization.CultureInfo]::InvariantCulture)
+                $Arguments += @('--rope-scaling','yarn','--rope-scale',$RopeScale,'--yarn-orig-ctx','32768')
+            } else {
+                Write-Host 'Context above 32K uses quantized KV cache, but automatic YaRN is only enabled for Qwen2.5 7B Instruct.' -ForegroundColor Yellow
+                Write-Host 'The selected model must provide its own long-context metadata.' -ForegroundColor Yellow
+            }
+        }
         if ([bool]$Config.vscode_tool_calling) { $Arguments += '--jinja' }
     } else {
         $Port = [int]$Config.embed_port
@@ -351,11 +337,21 @@ function Start-Role([string]$Role) {
     $Process = Start-Process -FilePath $Server -ArgumentList $ArgumentLine -WorkingDirectory $Runtime -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
     try {
         Wait-Healthy "http://${ClientHost}:$Port/health" $Process
-        $ToolCalling = if ($Role -eq 'llm') { Confirm-ToolSupport $Process } else { $false }
-        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port; ToolCalling=$ToolCalling }
+        $ToolCalling = $false
+        $ActualContext = $null
+        if ($Role -eq 'llm') {
+            $Props = Get-ServerProperties $Process
+            $ToolCalling = Confirm-ToolSupport $Props
+            $ActualContext = Get-ActualContext $Props $RequestedContext
+        }
+        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port; ToolCalling=$ToolCalling; Context=$ActualContext; CacheType=$CacheType; TensorSplit=$TensorSplit }
         Write-Connection
         $ReadyUrl = if ($Role -eq 'llm') { $ChatCompletionsUrl } else { $EmbeddingUrl }
         Write-Host "[READY] $Role on $ReadyUrl" -ForegroundColor Green
+        if ($Role -eq 'llm') {
+            Write-Host "  Context $ActualContext tokens; KV cache $CacheType; tensor split $TensorSplit"
+            Write-Host "  Copy llama\vscode-model.json into portable VS Code chatLanguageModels.json."
+        }
     } catch {
         if (-not $Process.HasExited) { $Process.Kill() }
         $Process.Dispose()
@@ -381,8 +377,10 @@ function Show-Status {
         $ModelId = $Running['llm'].ModelId
     }
     $ToolCalling = [bool]$Config.vscode_tool_calling
+    $DisplayContext = [int]$Config.llm_context
     if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
         $ToolCalling = [bool]$Running['llm'].ToolCalling
+        $DisplayContext = [int]$Running['llm'].Context
     }
     Write-Host ''
     Write-Host 'VS Code connection (Custom Endpoint)' -ForegroundColor Cyan
@@ -390,7 +388,7 @@ function Show-Status {
     Write-Host ("  Endpoint    {0}" -f $ChatCompletionsUrl)
     Write-Host ("  API key     {0}" -f $Config.api_key)
     Write-Host ("  Model ID    {0}" -f $ModelId)
-    Write-Host ("  Context     {0} input + {1} output = {2} tokens" -f $VsCodeMaxInputTokens,$VsCodeMaxOutputTokens,$Config.llm_context)
+    Write-Host ("  Context     {0} input + {1} output = {2} tokens" -f ($DisplayContext - $VsCodeMaxOutputTokens),$VsCodeMaxOutputTokens,$DisplayContext)
     Write-Host ("  Tools       {0}" -f $ToolCalling)
     Write-Host ("  Vision      {0}" -f [bool]$Config.vscode_vision)
     Write-Host ("  Models API  {0}" -f $ChatModelsUrl)
@@ -398,7 +396,6 @@ function Show-Status {
     Write-Host ''
     Write-Host '[1] Start LLM      [2] Stop LLM'
     Write-Host '[3] Start embed    [4] Stop embed'
-    Write-Host '[5] Configure VS Code automatically'
     Write-Host '[R] Refresh        [Q] Stop all and exit'
 }
 
@@ -411,7 +408,6 @@ try {
             '2' { Stop-Role 'llm' }
             '3' { Start-Role 'embed' }
             '4' { Stop-Role 'embed' }
-            '5' { Install-VsCodeConfiguration }
             'q' { break }
             default {}
         }
