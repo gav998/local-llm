@@ -1,8 +1,21 @@
 # local_llm
 
-Четыре независимые portable-папки для Windows 11 x64. Ничего не устанавливается
+Пять независимых portable-папок для Windows 11 x64. Ничего не устанавливается
 в систему, не нужны права администратора, системный Python, Docker или PATH.
 После первого запуска можно перенести весь каталог на другой диск или компьютер.
+
+## gost-gsm-mcp
+
+Детерминированный MCP-помощник и два VS Code custom agents для поэтапной
+сериализации больших OCR-таблиц ГСМ из HTML/Markdown в три нормализованные CSV.
+Он считает строки и ячейки, ведёт batch-progress, сохраняет provenance и review
+flags, поддерживает точечные overrides и не позволяет молча экспортировать
+неоднозначные связи.
+
+Откройте корень `local_llm` в VS Code, выберите `GSM GOST Orchestrator` и передайте
+путь к OCR-документу. Workspace-конфигурация `.vscode/mcp.json` запускает сервер
+через `gost-gsm-mcp\start.bat`; первый запуск сам готовит portable Python внутри
+модуля. Подробная инструкция: [`gost-gsm-mcp/README.md`](gost-gsm-mcp/README.md).
 
 ## llama
 

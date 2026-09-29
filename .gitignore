@@ -18,4 +18,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+gost-gsm-mcp/jobs/
 /AGENTS.md

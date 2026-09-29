@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "gostGsm": {
+      "type": "stdio",
+      "command": "${workspaceFolder}\\gost-gsm-mcp\\start.bat",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "GOST_GSM_PROJECT_ROOT": "${workspaceFolder}\\workspace\\gost-gsm-job"
+      }
+    }
+  }
+}
