@@ -1,5 +1,7 @@
-﻿[CmdletBinding()]
+﻿[CmdletBinding(PositionalBinding=$false)]
 param(
+    [Parameter(Position=0, ValueFromRemainingArguments=$true)]
+    [string[]]$InputPath = @(),
     [int]$Port = 0,
     [string]$ApiKey = '',
     [string]$Device = '',
@@ -245,7 +247,24 @@ function Quote-Argument([object]$Value) {
     return '"' + $Text.Replace('"','\"') + '"'
 }
 
+function Resolve-DocumentInputs([string[]]$Paths) {
+    $Supported = @('.pdf','.png','.jpg','.jpeg','.jpe','.jfif','.tif','.tiff','.bmp')
+    $Resolved = @()
+    foreach ($Path in $Paths) {
+        $Item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        $Extension = ([string]$Item.Extension).ToLowerInvariant()
+        if (-not $Item.PSIsContainer -and $Supported -contains $Extension) {
+            $Resolved += $Item.FullName
+            continue
+        }
+        if ($Item.PSIsContainer) { throw "A folder cannot be sent to OCR: $Path" }
+        throw "Unsupported OCR input '$Path'. Use PDF, PNG, JPEG, TIFF or BMP."
+    }
+    return $Resolved
+}
+
 Initialize-PortableEnvironment
+if ($InputPath.Count -gt 0) { $InputPath = @(Resolve-DocumentInputs $InputPath) }
 if (-not (Test-Installed)) {
     Install-PaddleOcr
     Initialize-PortableEnvironment
@@ -303,6 +322,14 @@ function Start-Profile([string]$ProfileId) {
     }
 }
 
+function Invoke-DocumentOcr([string[]]$Paths) {
+    $Client = Join-Path $Root 'ocr_document.py'
+    $Arguments = @($Client,'--url',"http://$($Config.host):$Port",'--token',$ApiKey,'--') + $Paths
+    Write-Host 'Documents will be processed by the full PP-StructureV3 profile.' -ForegroundColor Cyan
+    & $Python @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "Document OCR failed with code $LASTEXITCODE." }
+}
+
 function Show-Menu {
     Clear-Host
     Write-Host 'Portable PaddleOCR profiles' -ForegroundColor Cyan
@@ -326,7 +353,13 @@ function Show-Menu {
 
 Write-Connection -ProfileId '' -Capabilities @() -Status 'stopped'
 try {
-    if ($Profile) {
+    if ($InputPath.Count -gt 0) {
+        if ($Profile -and $Profile -ne 'full-structure') {
+            Write-Host "Ignoring profile '$Profile': dropped documents always use full-structure." -ForegroundColor Yellow
+        }
+        Start-Profile 'full-structure'
+        Invoke-DocumentOcr $InputPath
+    } elseif ($Profile) {
         Start-Profile $Profile
         Read-Host 'Press Enter to stop PaddleOCR' | Out-Null
     } else {
