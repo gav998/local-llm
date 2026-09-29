@@ -2,6 +2,7 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+$UserAppData = $env:APPDATA
 $Root = $PSScriptRoot
 $Runtime = Join-Path $Root 'llama-cpp'
 $Server = Join-Path $Runtime 'llama-server.exe'
@@ -91,21 +92,43 @@ function Install-Llama {
     }
 }
 
+function New-VsCodeProvider([string]$ModelId,[bool]$ToolCalling) {
+    return [pscustomobject][ordered]@{
+        name = 'Local llama.cpp'
+        vendor = 'customendpoint'
+        apiKey = [string]$Config.api_key
+        apiType = 'chat-completions'
+        models = @(
+            [pscustomobject][ordered]@{
+                id = $ModelId
+                name = "$ModelId (local)"
+                url = $ChatCompletionsUrl
+                toolCalling = $ToolCalling
+                vision = [bool]$Config.vscode_vision
+                maxInputTokens = $VsCodeMaxInputTokens
+                maxOutputTokens = $VsCodeMaxOutputTokens
+            }
+        )
+    }
+}
+
 function Write-Connection {
     $ChatStatus = 'stopped'
     $ChatModel = $null
     $EmbeddingStatus = 'stopped'
     $EmbeddingModel = $null
+    $ChatToolCalling = $false
     if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
         $ChatStatus = 'running'
         $ChatModel = $Running['llm'].ModelId
+        $ChatToolCalling = [bool]$Running['llm'].ToolCalling
     }
     if ($Running.ContainsKey('embed') -and -not $Running['embed'].Process.HasExited) {
         $EmbeddingStatus = 'running'
         $EmbeddingModel = $Running['embed'].ModelId
     }
     $Connection = [ordered]@{
-        schema = 1
+        schema = 2
         chat_status = $ChatStatus
         chat_url = $ChatBaseUrl
         chat_completions_url = $ChatCompletionsUrl
@@ -115,7 +138,7 @@ function Write-Connection {
         chat_context_tokens = [int]$Config.llm_context
         chat_max_input_tokens = $VsCodeMaxInputTokens
         chat_max_output_tokens = $VsCodeMaxOutputTokens
-        chat_tool_calling = [bool]$Config.vscode_tool_calling
+        chat_tool_calling = $ChatToolCalling
         chat_vision = [bool]$Config.vscode_vision
         embedding_status = $EmbeddingStatus
         embedding_url = $EmbeddingBaseUrl
@@ -124,6 +147,11 @@ function Write-Connection {
         embedding_model = $EmbeddingModel
     }
     $Connection | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
+    if ($ChatModel) {
+        @(New-VsCodeProvider -ModelId $ChatModel -ToolCalling $ChatToolCalling) |
+            ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $Root 'vscode-model.json') -Encoding UTF8
+    }
 }
 
 function Quote-Argument([object]$Value) {
@@ -144,6 +172,122 @@ function Wait-Healthy([string]$Url,[Diagnostics.Process]$Process) {
         Start-Sleep -Seconds 1
     }
     throw "llama-server did not become ready at $Url. See logs/."
+}
+
+function Get-PropertyValue([object]$Object,[string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $Property = $Object.PSObject.Properties[$Name]
+    if ($Property) { return $Property.Value }
+    return $null
+}
+
+function Confirm-ToolSupport([Diagnostics.Process]$Process) {
+    if (-not [bool]$Config.vscode_tool_calling) { return $false }
+    if ($Process.HasExited) { throw 'llama-server exited before its tool template could be checked.' }
+    $Headers = @{ Authorization = "Bearer $($Config.api_key)" }
+    try {
+        $Props = Invoke-RestMethod -UseBasicParsing -Uri "http://${ClientHost}:$($Config.llm_port)/props" -Headers $Headers -TimeoutSec 10
+    } catch {
+        throw "Cannot inspect llama.cpp /props for tool support: $($_.Exception.Message)"
+    }
+    $Caps = Get-PropertyValue $Props 'chat_template_caps'
+    if ($Caps -and [bool](Get-PropertyValue $Caps 'supports_tools')) { return $true }
+    $ToolTemplate = [string](Get-PropertyValue $Props 'chat_template_tool_use')
+    if ($ToolTemplate) { return $true }
+    $ChatTemplate = [string](Get-PropertyValue $Props 'chat_template')
+    if ($ChatTemplate -match '(?i)\btools?\b') { return $true }
+    throw @'
+The selected GGUF does not expose a tool-aware chat template.
+Use a tool-capable instruct model (recommended: Qwen2.5-7B-Instruct Q4_K_M).
+The server was started with --jinja, but /props reports no tool support.
+'@
+}
+
+function Get-VsCodeConfigurationTargets {
+    $Targets = @()
+    if (-not $UserAppData) { return $Targets }
+    foreach ($Product in @('Code','Code - Insiders')) {
+        $UserDirectory = Join-Path (Join-Path $UserAppData $Product) 'User'
+        if (-not (Test-Path -LiteralPath $UserDirectory -PathType Container)) { continue }
+        $Targets += [pscustomobject]@{
+            Label = "$Product - Default profile"
+            Path = Join-Path $UserDirectory 'chatLanguageModels.json'
+        }
+        $Profiles = Join-Path $UserDirectory 'profiles'
+        if (Test-Path -LiteralPath $Profiles -PathType Container) {
+            Get-ChildItem -LiteralPath $Profiles -Directory | ForEach-Object {
+                $ProfileConfig = Join-Path $_.FullName 'chatLanguageModels.json'
+                if (Test-Path -LiteralPath $ProfileConfig -PathType Leaf) {
+                    $Targets += [pscustomobject]@{
+                        Label = "$Product - profile $($_.Name)"
+                        Path = $ProfileConfig
+                    }
+                }
+            }
+        }
+    }
+    return @($Targets)
+}
+
+function Select-VsCodeConfigurationTarget {
+    $Targets = @(Get-VsCodeConfigurationTargets)
+    if (-not $Targets.Count) {
+        throw 'VS Code user profile was not found. Start VS Code once, then retry.'
+    }
+    if ($Targets.Count -eq 1) { return $Targets[0] }
+    Write-Host ''
+    Write-Host 'Select the VS Code profile to configure:' -ForegroundColor Cyan
+    for ($Index = 0; $Index -lt $Targets.Count; $Index++) {
+        Write-Host ('  [{0}] {1}' -f ($Index + 1),$Targets[$Index].Label)
+    }
+    $Choice = Read-Host 'Profile number (Enter cancels)'
+    if (-not $Choice) { return $null }
+    $Number = 0
+    if (-not [int]::TryParse($Choice,[ref]$Number) -or $Number -lt 1 -or $Number -gt $Targets.Count) {
+        Write-Host 'Invalid profile number.' -ForegroundColor Yellow
+        return $null
+    }
+    return $Targets[$Number - 1]
+}
+
+function Install-VsCodeConfiguration {
+    if (-not $Running.ContainsKey('llm') -or $Running['llm'].Process.HasExited) {
+        Write-Host 'Start the LLM first, then configure VS Code.' -ForegroundColor Yellow
+        return
+    }
+    $Target = Select-VsCodeConfigurationTarget
+    if (-not $Target) { return }
+    $Providers = @()
+    if (Test-Path -LiteralPath $Target.Path -PathType Leaf) {
+        $Raw = Get-Content -LiteralPath $Target.Path -Raw
+        if ($Raw.Trim()) {
+            try {
+                $Providers = @($Raw | ConvertFrom-Json)
+            } catch {
+                throw "Cannot read $($Target.Path) as JSON. Fix it in VS Code and retry."
+            }
+        }
+    }
+    $Providers = @($Providers | Where-Object {
+        -not ($_.vendor -eq 'customendpoint' -and $_.name -eq 'Local llama.cpp')
+    })
+    $Entry = $Running['llm']
+    $Providers += New-VsCodeProvider -ModelId $Entry.ModelId -ToolCalling ([bool]$Entry.ToolCalling)
+    $Directory = Split-Path $Target.Path -Parent
+    New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    $Backup = $null
+    if (Test-Path -LiteralPath $Target.Path -PathType Leaf) {
+        $Backup = "$($Target.Path).backup-$([DateTime]::Now.ToString('yyyyMMdd-HHmmssfff'))"
+        Copy-Item -LiteralPath $Target.Path -Destination $Backup
+    }
+    $Json = $Providers | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($Target.Path,$Json,(New-Object Text.UTF8Encoding($false)))
+    Write-Host ''
+    Write-Host '[READY] VS Code model configuration updated.' -ForegroundColor Green
+    Write-Host "  File   $($Target.Path)"
+    if ($Backup) { Write-Host "  Backup $Backup" }
+    Write-Host 'Reload VS Code, select Session Target: Local, Agent mode, then this model.'
+    Read-Host 'Press Enter to continue' | Out-Null
 }
 
 Initialize-PortableEnvironment
@@ -195,6 +339,7 @@ function Start-Role([string]$Role) {
     if ($Role -eq 'llm') {
         $Port = [int]$Config.llm_port
         $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--n-gpu-layers','999','--split-mode','layer','--main-gpu',$Config.llm_main_gpu,'--tensor-split',$Config.llm_tensor_split,'--ctx-size',$Config.llm_context,'--batch-size',$Config.llm_batch,'--parallel','1','--no-webui')
+        if ([bool]$Config.vscode_tool_calling) { $Arguments += '--jinja' }
     } else {
         $Port = [int]$Config.embed_port
         $Arguments = @('--model',$Model.FullName,'--alias',$ModelId,'--host',$Config.host,'--port',$Port,'--api-key',$Config.api_key,'--embedding','--pooling','last','--n-gpu-layers','999','--split-mode','none','--main-gpu',$Config.embed_gpu,'--ctx-size',$Config.embed_context,'--batch-size',$Config.embed_batch,'--no-webui')
@@ -206,7 +351,8 @@ function Start-Role([string]$Role) {
     $Process = Start-Process -FilePath $Server -ArgumentList $ArgumentLine -WorkingDirectory $Runtime -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
     try {
         Wait-Healthy "http://${ClientHost}:$Port/health" $Process
-        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port }
+        $ToolCalling = if ($Role -eq 'llm') { Confirm-ToolSupport $Process } else { $false }
+        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port; ToolCalling=$ToolCalling }
         Write-Connection
         $ReadyUrl = if ($Role -eq 'llm') { $ChatCompletionsUrl } else { $EmbeddingUrl }
         Write-Host "[READY] $Role on $ReadyUrl" -ForegroundColor Green
@@ -234,6 +380,10 @@ function Show-Status {
     if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
         $ModelId = $Running['llm'].ModelId
     }
+    $ToolCalling = [bool]$Config.vscode_tool_calling
+    if ($Running.ContainsKey('llm') -and -not $Running['llm'].Process.HasExited) {
+        $ToolCalling = [bool]$Running['llm'].ToolCalling
+    }
     Write-Host ''
     Write-Host 'VS Code connection (Custom Endpoint)' -ForegroundColor Cyan
     Write-Host ("  API type    Chat Completions")
@@ -241,13 +391,14 @@ function Show-Status {
     Write-Host ("  API key     {0}" -f $Config.api_key)
     Write-Host ("  Model ID    {0}" -f $ModelId)
     Write-Host ("  Context     {0} input + {1} output = {2} tokens" -f $VsCodeMaxInputTokens,$VsCodeMaxOutputTokens,$Config.llm_context)
-    Write-Host ("  Tools       {0}" -f [bool]$Config.vscode_tool_calling)
+    Write-Host ("  Tools       {0}" -f $ToolCalling)
     Write-Host ("  Vision      {0}" -f [bool]$Config.vscode_vision)
     Write-Host ("  Models API  {0}" -f $ChatModelsUrl)
     Write-Host ("  Embeddings  {0}" -f $EmbeddingUrl)
     Write-Host ''
     Write-Host '[1] Start LLM      [2] Stop LLM'
     Write-Host '[3] Start embed    [4] Stop embed'
+    Write-Host '[5] Configure VS Code automatically'
     Write-Host '[R] Refresh        [Q] Stop all and exit'
 }
 
@@ -260,6 +411,7 @@ try {
             '2' { Stop-Role 'llm' }
             '3' { Start-Role 'embed' }
             '4' { Stop-Role 'embed' }
+            '5' { Install-VsCodeConfiguration }
             'q' { break }
             default {}
         }

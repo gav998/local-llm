@@ -1,6 +1,6 @@
 # local_llm
 
-Три независимые portable-папки для Windows 11 x64. Ничего не устанавливается
+Четыре независимые portable-папки для Windows 11 x64. Ничего не устанавливается
 в систему, не нужны права администратора, системный Python, Docker или PATH.
 После первого запуска можно перенести весь каталог на другой диск или компьютер.
 
@@ -21,51 +21,63 @@ OpenAI-совместимые API по умолчанию:
 Порты, ключ и GPU-настройки находятся в `llama\config.json`. При выходе из меню
 все запущенные этим окном серверы останавливаются.
 
-### Подключение к VS Code
+### Локальный агент в VS Code
 
-После запуска LLM меню показывает готовые параметры подключения: точный endpoint,
-API key, Model ID и размеры входного и выходного контекста. Значения также
-записываются в `llama\connection.json` и обновляются при запуске или остановке
-модели.
+Для агента рекомендуется
+[`Qwen2.5-7B-Instruct-Q4_K_M.gguf`](https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/blob/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf).
+Положите файл в `llama\models\llm`; имя менять не требуется. Стандартная
+конфигурация уже включает `--jinja`, tool calling и контекст 16K, поэтому
+редактировать `config.json` не нужно.
 
-В актуальном VS Code локальная модель подключается без отдельного расширения:
+1. Запустите `llama\start.bat`, выберите `[1] Start LLM` и нужную Qwen-модель.
+2. Скрипт дождётся сервера и проверит `/props`. Если GGUF не содержит шаблон,
+   способный принимать tools, запуск завершится понятной ошибкой, а VS Code не
+   получит ложный флаг `toolCalling`.
+3. В меню выберите `[5] Configure VS Code automatically`. Скрипт найдёт обычный
+   VS Code/Insiders и при необходимости предложит выбрать профиль. Существующие
+   провайдеры сохраняются; перед изменением создаётся файл
+   `chatLanguageModels.json.backup-<дата>`.
+4. Перезагрузите окно VS Code, откройте корневую папку `local_llm`, выберите
+   Session Target `Local`, режим `Agent` и модель из группы `Local llama.cpp`.
+   Для первого знакомства оставьте подтверждение инструментов в режиме `Manual`.
 
-1. Откройте палитру команд (`Ctrl+Shift+P`) и выполните
-   `Chat: Manage Language Models`.
-2. Нажмите `Add Models`, выберите `Custom Endpoint` и задайте имя группы,
-   например `Local llama.cpp`.
-3. Укажите значения из блока `VS Code connection` в окне `llama\start.bat`:
-   API key — `local-llm`, API type — `Chat Completions`.
-4. В открывшемся `chatLanguageModels.json` задайте модели значения из меню.
-   Для стандартной конфигурации и файла `Vikhr-Nemo-12B-Q4_K_M.gguf` блок модели
-   выглядит так:
+Параметры соединения записываются в `llama\connection.json`, а готовая резервная
+конфигурация модели — в `llama\vscode-model.json`. Оба файла создаются локально и
+не попадают в Git. Автонастройка записывает известный локальный ключ `local-llm`
+в пользовательский файл VS Code; endpoint слушает только `127.0.0.1`.
 
-```json
-{
-  "id": "Vikhr-Nemo-12B-Q4_K_M",
-  "name": "Vikhr Nemo 12B (local)",
-  "url": "http://127.0.0.1:6381/v1/chat/completions",
-  "apiType": "chat-completions",
-  "toolCalling": false,
-  "vision": false,
-  "maxInputTokens": 3072,
-  "maxOutputTokens": 1024
-}
+Доступ агента к диску определяется открытой workspace и разрешениями VS Code, а
+не параметром `vscode_tool_calling`. Этот параметр означает только, что модель
+может формировать структурированные запросы инструментов. Если нужен файл вне
+проекта, добавьте содержащую его папку в workspace.
+
+Обычные inline suggestions и семантический поиск VS Code через этот
+OpenAI-compatible endpoint не работают. Для них требуются отдельные механизмы.
+
+### Word и Excel
+
+Положите рабочие `.docx`, `.xlsx` или `.xlsm` в папку `workspace`. Она открыта
+агенту вместе с проектом, но её содержимое игнорируется Git. Инструкции в
+`.github\copilot-instructions.md` подсказывают Local Agent использовать готовые
+portable-команды:
+
+```bat
+.\office-tools\office.bat inspect "workspace\contract.docx"
+.\office-tools\office.bat inspect "workspace\report.xlsx" --sheet "Sheet1" --range "A1:F30"
+.\office-tools\office.bat replace-docx "workspace\contract.docx" "workspace\contract.edited.docx" --old "Старый текст" --new "Новый текст"
+.\office-tools\office.bat set-xlsx "workspace\report.xlsx" "workspace\report.edited.xlsx" --sheet "Sheet1" --set B2 42
 ```
 
-Сохраните созданную VS Code строку `apiKey`: ключ лучше оставлять в Secret
-Storage, а не вписывать непосредственно в JSON. Если порт, контекст или модель
-изменены, используйте значения из меню, а не из примера. После сохранения
-выберите `Vikhr Nemo 12B (local)` в списке моделей Chat; если модель не появилась,
-перезапустите VS Code.
+При первом вызове автоматически скачивается собственный Python и устанавливаются
+`python-docx`/`openpyxl` внутрь `office-tools`; системный Python и права
+администратора не нужны. Для нестандартного форматирования агент может создать
+небольшой Python-скрипт и запустить его через
+`.\office-tools\python.bat workspace\script.py`. Команды по умолчанию не
+перезаписывают оригинал и после записи повторно открывают результат.
 
-Этот способ включает локальный Chat. Обычные inline suggestions и семантический
-поиск VS Code через OpenAI-compatible endpoint не работают. Агентный режим также
-не будет доступен при `toolCalling: false`: для выбранной Vikhr-модели вызов
-инструментов не заявлен как гарантированная возможность. Если другая GGUF-модель
-и её chat template надёжно поддерживают вызов инструментов, измените
-`vscode_tool_calling` в `llama\config.json` на `true` и укажите то же значение в
-`chatLanguageModels.json`.
+Формулы Excel сохраняются, но `openpyxl` их не вычисляет. Для пересчёта формул,
+сложных диаграмм и ActiveX нужен установленный Excel/LibreOffice. Старые `.doc` и
+`.xls` сначала нужно конвертировать.
 
 ## paddleocr
 
