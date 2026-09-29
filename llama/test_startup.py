@@ -49,6 +49,17 @@ class LlamaAgentStartupTests(unittest.TestCase):
         self.assertIn("--yarn-orig-ctx','32768'", script)
         self.assertIn("--fit','off'", script)
 
+    def test_split_gguf_is_listed_once_and_loaded_from_first_shard(self) -> None:
+        script = (ROOT / "start.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("function Get-ModelCatalog", script)
+        self.assertIn("(?<Part>\\d{5})-of-(?<Total>\\d{5})", script)
+        self.assertIn("$ModelId = $ModelEntry.ModelId", script)
+        self.assertIn("$Model = $ModelEntry.File", script)
+        self.assertIn("Ignoring incomplete split model", script)
+        self.assertIn("$FirstShardName", script)
+        self.assertNotIn("--merge", script)
+
 
 if __name__ == "__main__":
     unittest.main()

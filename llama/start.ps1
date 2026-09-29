@@ -276,14 +276,68 @@ function Stop-Role([string]$Role) {
     }
 }
 
+function Get-ModelCatalog([string]$Role,[bool]$WarnIncomplete = $false) {
+    $Directory = Join-Path $Models $Role
+    $Files = @(Get-ChildItem -LiteralPath $Directory -Filter '*.gguf' -File | Sort-Object Name)
+    $Entries = [Collections.Generic.List[object]]::new()
+    $SeenSplitSets = @{}
+
+    foreach ($File in $Files) {
+        if ($File.Name -notmatch '^(?<Stem>.+)-(?<Part>\d{5})-of-(?<Total>\d{5})\.gguf$') {
+            $Entries.Add([pscustomobject]@{
+                File = $File
+                ModelId = $File.BaseName
+                DisplayName = $File.Name
+                ShardCount = 1
+            })
+            continue
+        }
+
+        $Stem = [string]$Matches['Stem']
+        $TotalText = [string]$Matches['Total']
+        $Total = [int]$TotalText
+        $SetKey = "$($Stem.ToLowerInvariant())|$TotalText"
+        if ($SeenSplitSets.ContainsKey($SetKey)) { continue }
+        $SeenSplitSets[$SetKey] = $true
+
+        $Missing = [Collections.Generic.List[string]]::new()
+        if ($Total -lt 1) {
+            $Missing.Add('invalid shard count')
+        } else {
+            for ($Part = 1; $Part -le $Total; $Part++) {
+                $ShardName = '{0}-{1:D5}-of-{2}.gguf' -f $Stem,$Part,$TotalText
+                if (-not (Test-Path -LiteralPath (Join-Path $Directory $ShardName) -PathType Leaf)) {
+                    $Missing.Add($ShardName)
+                }
+            }
+        }
+        if ($Missing.Count) {
+            if ($WarnIncomplete) {
+                Write-Host "Ignoring incomplete split model '$Stem': missing $($Missing -join ', ')" -ForegroundColor Yellow
+            }
+            continue
+        }
+
+        $FirstShardName = '{0}-{1:D5}-of-{2}.gguf' -f $Stem,1,$TotalText
+        $Entries.Add([pscustomobject]@{
+            File = (Get-Item -LiteralPath (Join-Path $Directory $FirstShardName))
+            ModelId = $Stem
+            DisplayName = "$Stem ($Total GGUF parts)"
+            ShardCount = $Total
+        })
+    }
+
+    return @($Entries | Sort-Object DisplayName)
+}
+
 function Select-Model([string]$Role) {
-    $Items = @(Get-ChildItem -LiteralPath (Join-Path $Models $Role) -Filter '*.gguf' -File | Sort-Object Name)
+    $Items = @(Get-ModelCatalog $Role $true)
     if (-not $Items.Count) {
-        Write-Host "No GGUF files in models\$Role" -ForegroundColor Yellow
+        Write-Host "No complete GGUF models in models\$Role" -ForegroundColor Yellow
         return $null
     }
     for ($Index = 0; $Index -lt $Items.Count; $Index++) {
-        Write-Host ('  [{0}] {1}' -f ($Index + 1),$Items[$Index].Name)
+        Write-Host ('  [{0}] {1}' -f ($Index + 1),$Items[$Index].DisplayName)
     }
     $Choice = Read-Host 'Model number (Enter cancels)'
     if (-not $Choice) { return $null }
@@ -296,8 +350,9 @@ function Select-Model([string]$Role) {
 }
 
 function Start-Role([string]$Role) {
-    $Model = Select-Model $Role
-    if (-not $Model) { return }
+    $ModelEntry = Select-Model $Role
+    if (-not $ModelEntry) { return }
+    $Model = $ModelEntry.File
     $RequestedContext = $null
     $CacheType = $null
     $TensorSplit = $null
@@ -306,7 +361,7 @@ function Start-Role([string]$Role) {
         if ($null -eq $RequestedContext) { return }
     }
     Stop-Role $Role
-    $ModelId = $Model.BaseName
+    $ModelId = $ModelEntry.ModelId
     if ($Role -eq 'llm') {
         $Port = [int]$Config.llm_port
         $TensorSplit = [string]$Config.llm_tensor_split
@@ -344,7 +399,7 @@ function Start-Role([string]$Role) {
             $ToolCalling = Confirm-ToolSupport $Props
             $ActualContext = Get-ActualContext $Props $RequestedContext
         }
-        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$Model.Name; ModelId=$ModelId; Port=$Port; ToolCalling=$ToolCalling; Context=$ActualContext; CacheType=$CacheType; TensorSplit=$TensorSplit }
+        $Running[$Role] = [pscustomobject]@{ Process=$Process; Model=$ModelEntry.DisplayName; ModelId=$ModelId; Port=$Port; ToolCalling=$ToolCalling; Context=$ActualContext; CacheType=$CacheType; TensorSplit=$TensorSplit }
         Write-Connection
         $ReadyUrl = if ($Role -eq 'llm') { $ChatCompletionsUrl } else { $EmbeddingUrl }
         Write-Host "[READY] $Role on $ReadyUrl" -ForegroundColor Green
@@ -368,7 +423,7 @@ function Show-Status {
             Write-Host ("{0,-6} RUNNING  pid={1} port={2} model={3}" -f $Role,$Entry.Process.Id,$Entry.Port,$Entry.Model) -ForegroundColor Green
         } else {
             if ($Running.ContainsKey($Role)) { Stop-Role $Role }
-            $Count = @(Get-ChildItem -LiteralPath (Join-Path $Models $Role) -Filter '*.gguf' -File).Count
+            $Count = @(Get-ModelCatalog $Role).Count
             Write-Host ("{0,-6} stopped  models={1}" -f $Role,$Count)
         }
     }
