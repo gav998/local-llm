@@ -12,8 +12,6 @@ llama/_src/
 llama/llama-cpp/
 llama/models/
 paddleocr/models/
-workspace/*
-!workspace/README.md
 __pycache__/
 *.py[cod]
 .pytest_cache/
