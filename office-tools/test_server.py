@@ -92,29 +92,27 @@ class OfficeMcpServerTests(unittest.TestCase):
         )
         self.assertIn("http://127.0.0.1:8766/mcp", stderr.getvalue())
 
-    def test_portable_vscode_profile_has_both_http_servers(self) -> None:
+    def test_vscode_uses_builtin_portable_mode_layout(self) -> None:
+        vscode_root = REPOSITORY_ROOT / "vscode"
+        portable_data = vscode_root / "data"
         vscode_config = json.loads(
-            (REPOSITORY_ROOT / "vscode" / "user-data" / "User" / "mcp.json").read_text(
+            (portable_data / "user-data" / "User" / "mcp.json").read_text(
                 encoding="utf-8"
             )
-        )
-        copilot_config = json.loads(
-            (
-                REPOSITORY_ROOT
-                / "vscode"
-                / "profile"
-                / ".copilot"
-                / "mcp-config.json"
-            ).read_text(encoding="utf-8")
         )
         self.assertEqual(
             vscode_config["servers"]["office"],
             {"type": "http", "url": "http://127.0.0.1:8766/mcp"},
         )
         self.assertEqual(
-            copilot_config["mcpServers"]["gostGsm"]["url"],
+            vscode_config["servers"]["gostGsm"]["url"],
             "http://127.0.0.1:8765/mcp",
         )
+        prompts = portable_data / "user-data" / "User" / "prompts"
+        self.assertTrue((prompts / "document-worker.agent.md").is_file())
+        self.assertTrue((prompts / "gsm-gost-orchestrator.agent.md").is_file())
+        self.assertTrue((portable_data / "tmp").is_dir())
+        self.assertFalse((vscode_root / "start.bat").exists())
 
 
 if __name__ == "__main__":

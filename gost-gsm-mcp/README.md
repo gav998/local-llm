@@ -13,9 +13,10 @@
 1. Папку `gost-gsm-mcp` можно перенести отдельно. Запустите в ней `start.bat` и
    оставьте окно открытым. При первом старте portable Python и зависимости
    установятся внутрь этой же папки.
-2. Скопируйте папку `vscode` из комплекта рядом с `Code.exe` и запускайте
-   `vscode\start.bat` либо вручную добавьте HTTP MCP
-   `http://127.0.0.1:8765/mcp` в user-level конфигурацию VS Code.
+2. Распакуйте официальный Windows ZIP VS Code в соседнюю папку `vscode` и
+   запускайте `vscode\Code.exe`. Наличие `vscode\data` автоматически включает
+   штатный Portable Mode с готовой user-level конфигурацией. Либо вручную
+   добавьте HTTP MCP `http://127.0.0.1:8765/mcp` в свой профиль VS Code.
 3. Выполните `MCP: List Servers` и убедитесь, что `gostGsm` доступен.
 4. Выберите custom agent `GSM GOST Orchestrator` и передайте путь к OCR-файлу:
 
