@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from mcp import Client
 
@@ -77,6 +80,27 @@ class McpServerTests(unittest.TestCase):
         self.assertEqual(
             script.count("ForEach-Object { [Console]::Error.WriteLine($_) }"), 2
         )
+
+    def test_server_reports_readiness_to_stderr(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(server.mcp, "run") as run,
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(server.main([]), 0)
+
+        run.assert_called_once_with()
+        message = stderr.getvalue()
+        self.assertIn("[GOST GSM MCP] Ready for requests (stdio).", message)
+        self.assertIn("Job directory:", message)
+
+    def test_launcher_reports_startup_status_to_stderr(self) -> None:
+        script = (REPOSITORY_ROOT / "gost-gsm-mcp" / "run.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Launcher started. Checking the portable runtime", script)
+        self.assertIn("Starting the stdio server. Job directory:", script)
+        self.assertIn('[Console]::Error.WriteLine("[GOST GSM MCP] $Message")', script)
 
 
 if __name__ == "__main__":

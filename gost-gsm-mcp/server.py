@@ -238,6 +238,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    print(
+        f"[GOST GSM MCP] Ready for requests (stdio). "
+        f"Job directory: {project(None).root}",
+        file=sys.stderr,
+        flush=True,
+    )
     mcp.run()
     return 0
 

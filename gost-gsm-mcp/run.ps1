@@ -13,7 +13,7 @@ $Marker = Join-Path $Runtime '.installed'
 $RuntimeVersion = 'gost-gsm-mcp runtime v1; python 3.13; mcp 2.2'
 
 function Write-Status([string]$Message) {
-    [Console]::Error.WriteLine($Message)
+    [Console]::Error.WriteLine("[GOST GSM MCP] $Message")
 }
 
 function Initialize-PortableEnvironment {
@@ -144,19 +144,31 @@ function Install-Runtime {
     Remove-Item -LiteralPath (Join-Path $Root '_cache') -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+Write-Status 'Launcher started. Checking the portable runtime...'
 Initialize-PortableEnvironment
 $InstalledVersion = if (Test-Path -LiteralPath $Marker -PathType Leaf) { (Get-Content -LiteralPath $Marker -Raw).Trim() } else { '' }
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -ne $RuntimeVersion) {
     Install-Runtime
     Initialize-PortableEnvironment
+} else {
+    Write-Status 'Portable runtime is ready.'
 }
 
 if ($CommandArgs.Count -and $CommandArgs[0] -eq '--python') {
+    Write-Status 'Running a command with the portable Python runtime.'
     $PythonArgs = @($CommandArgs | Select-Object -Skip 1)
     & $Python @PythonArgs
 } elseif ($CommandArgs.Count -and $CommandArgs[0] -eq '--test') {
+    Write-Status 'Running GOST GSM MCP tests...'
     & $Python -m unittest discover -s (Join-Path $Root 'tests') -v
 } else {
+    Write-Status "Starting the stdio server. Job directory: $($env:GOST_GSM_PROJECT_ROOT)"
     & $Python (Join-Path $Root 'server.py')
 }
-exit $LASTEXITCODE
+$ExitCode = $LASTEXITCODE
+if ($ExitCode -eq 0) {
+    Write-Status 'Process stopped normally.'
+} else {
+    Write-Status "Process stopped with exit code $ExitCode."
+}
+exit $ExitCode
