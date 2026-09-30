@@ -10,7 +10,11 @@ $Runtime = Join-Path $Root '_runtime'
 $Python = Join-Path $Runtime 'python\python.exe'
 $Downloads = Join-Path $Root '_download'
 $Marker = Join-Path $Runtime '.installed'
-$RuntimeVersion = 'office-tools runtime v1'
+$RuntimeVersion = 'office-tools runtime v2; mcp 2.2; http'
+
+function Write-Status([string]$Message) {
+    [Console]::Error.WriteLine("[Office MCP] $Message")
+}
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -93,7 +97,7 @@ function Expand-PortableArchive([string]$Archive,[string]$Destination,[bool]$Str
 }
 
 function Install-OfficeRuntime {
-    Write-Host 'Preparing portable Python for Word and Excel...' -ForegroundColor Cyan
+    Write-Status 'Preparing portable Python for Word, Excel, and MCP...'
     New-Item -ItemType Directory -Path $Runtime -Force | Out-Null
     $SevenZip = Get-7Zip
     if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
@@ -128,6 +132,8 @@ function Install-OfficeRuntime {
     }
     & $Python -c "import docx,openpyxl; print('Office runtime OK')"
     if ($LASTEXITCODE -ne 0) { throw 'Installed Office runtime cannot be imported.' }
+    & $Python (Join-Path $Root 'server.py') --self-check
+    if ($LASTEXITCODE -ne 0) { throw 'Installed Office MCP runtime failed its self-check.' }
     Set-Content -LiteralPath $Marker -Value $RuntimeVersion -Encoding ASCII
     Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $Root '_cache') -Recurse -Force -ErrorAction SilentlyContinue
@@ -143,7 +149,20 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -
 if ($CommandArgs.Count -and $CommandArgs[0] -eq '--python') {
     $PythonArgs = @($CommandArgs | Select-Object -Skip 1)
     & $Python @PythonArgs
+} elseif ($CommandArgs.Count -and $CommandArgs[0] -eq '--test') {
+    Write-Status 'Running Office tests...'
+    & $Python -m unittest discover -s $Root -p 'test_*.py' -v
+} elseif ($CommandArgs.Count -and $CommandArgs[0] -eq '--server') {
+    Write-Status 'Starting the HTTP server...'
+    $ServerArgs = @($CommandArgs | Select-Object -Skip 1)
+    & $Python (Join-Path $Root 'server.py') @ServerArgs
 } else {
     & $Python (Join-Path $Root 'office.py') @CommandArgs
 }
-exit $LASTEXITCODE
+$ExitCode = $LASTEXITCODE
+if ($ExitCode -eq 0) {
+    Write-Status 'Process stopped normally.'
+} else {
+    Write-Status "Process stopped with exit code $ExitCode."
+}
+exit $ExitCode

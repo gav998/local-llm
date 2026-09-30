@@ -10,19 +10,28 @@
 
 ## Быстрый запуск в VS Code
 
-1. Откройте корень `local_llm` как доверенную workspace.
-2. Перезапустите окно VS Code после получения файлов `.vscode/mcp.json` и `.github/agents/*.agent.md`.
-3. Выполните `MCP: List Servers` и убедитесь, что `gostGsm` запущен. При первом старте `start.bat` скачает portable Python и зависимости внутрь `gost-gsm-mcp`; системная установка и права администратора не нужны.
-4. Выберите Session Target `Local`, затем custom agent `GSM GOST Orchestrator`.
-5. Передайте путь к OCR-файлу:
+1. Папку `gost-gsm-mcp` можно перенести отдельно. Запустите в ней `start.bat` и
+   оставьте окно открытым. При первом старте portable Python и зависимости
+   установятся внутрь этой же папки.
+2. Скопируйте папку `vscode` из комплекта рядом с `Code.exe` и запускайте
+   `vscode\start.bat` либо вручную добавьте HTTP MCP
+   `http://127.0.0.1:8765/mcp` в user-level конфигурацию VS Code.
+3. Выполните `MCP: List Servers` и убедитесь, что `gostGsm` доступен.
+4. Выберите custom agent `GSM GOST Orchestrator` и передайте путь к OCR-файлу:
 
 ```text
 Просканируй D:\OCR\gost_gsm.html, покажи найденные таблицы и, если выбор однозначен, инициализируй обработку. Затем обработай первые 10 строк.
 ```
 
-Диагностику запуска можно открыть через `MCP: List Servers` → `gostGsm` → `Show Output`. Нормальный запуск заканчивается строкой `Ready for requests (stdio)`; после этого сервер молча ждёт обращений агента. Это окно содержит технические логи, а ход обработки и результаты показываются в чате агента.
+При нормальном запуске терминал показывает
+`Starting Streamable HTTP at http://127.0.0.1:8765/mcp`. Быстрая проверка:
+откройте `http://127.0.0.1:8765/health` или выполните
+`curl.exe http://127.0.0.1:8765/health`. Порт и путь настраиваются в
+`server.json`.
 
-Job по умолчанию хранится в `workspace\gost-gsm-job`. Исходник может лежать в другом добавленном каталоге workspace или быть передан абсолютным путём.
+Job по умолчанию хранится в `gost-gsm-mcp\jobs\default`. Исходник может лежать
+в любом доступном текущему Windows-пользователю каталоге. Для независимых задач
+передавайте MCP-инструментам отдельный абсолютный `project_root`.
 
 ## Обычный рабочий процесс
 
@@ -72,7 +81,7 @@ PDF напрямую не разбирается: сначала получит�
 ## Состояние job
 
 ```text
-workspace/gost-gsm-job/
+gost-gsm-mcp/jobs/default/
   .gost-gsm-project.json
   config.json                       # необязательно
   work/
@@ -116,7 +125,9 @@ JSONL staging нельзя править вручную. Для ручных р
 
 ## Настройка заголовков и НД
 
-Скопируйте `config.example.json` как `workspace\gost-gsm-job\config.json` и добавьте варианты заголовков или префиксы нормативных документов. Объекты объединяются с defaults, массив конкретного поля заменяет default-массив.
+Скопируйте `config.example.json` как `jobs\default\config.json` либо в каталог
+другого job и добавьте варианты заголовков или префиксы нормативных документов.
+Объекты объединяются с defaults, массив конкретного поля заменяет default-массив.
 
 После изменения config выполните повторную инициализацию с `force=true`. Она удаляет только сгенерированные manifest/batch/staging и три итоговых CSV текущего job; исходный OCR и `config.json` остаются.
 
@@ -144,10 +155,16 @@ PYTHONPATH=gost-gsm-mcp .venv/bin/python -m unittest discover -s gost-gsm-mcp/te
 
 ## Безопасность и переносимость
 
-- MCP работает через stdio и не открывает сетевой порт.
+- MCP использует Streamable HTTP и принимает соединения только через loopback
+  (`127.0.0.1`, `localhost` или `::1`). Конфигурация с внешним host отклоняется.
 - При первом старте сеть нужна только для portable Python, uv и wheels. После подготовки runtime сервер работает локально.
 - Профиль, temp, pip/uv cache и Python находятся внутри `gost-gsm-mcp`.
 - Сервер пишет только в выбранный `project_root` и не принимает корень диска или корень профиля пользователя как job.
-- Workspace MCP-сервер исполняет локальный код. Перед доверием workspace просмотрите `.vscode/mcp.json` и `gost-gsm-mcp/start.bat`.
+- HTTP-сервер не запускается VS Code автоматически: его окно и жизненный цикл
+  независимы от редактора.
 
-Актуальный формат `.vscode/mcp.json` и workspace custom agents соответствует официальной документации VS Code: [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration) и [Custom agents](https://code.visualstudio.com/docs/agent-customization/custom-agents). Сервер использует официальный Python SDK MCP 2.x: [modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk).
+Формат HTTP MCP и user-level custom agents соответствует официальной
+документации VS Code: [MCP configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)
+и [Custom agents](https://code.visualstudio.com/docs/agent-customization/custom-agents).
+Сервер использует официальный Python SDK MCP 2.x:
+[modelcontextprotocol/python-sdk](https://github.com/modelcontextprotocol/python-sdk).

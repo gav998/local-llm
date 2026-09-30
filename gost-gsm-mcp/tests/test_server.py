@@ -3,16 +3,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
-import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from mcp import Client
-
 import server
-
+from mcp import Client
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,14 +51,11 @@ class McpServerTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_workspace_mcp_configuration_targets_portable_launcher(self) -> None:
-        config = json.loads(
-            (REPOSITORY_ROOT / ".vscode" / "mcp.json").read_text(encoding="utf-8")
-        )
-        definition = config["servers"]["gostGsm"]
-        self.assertEqual(definition["type"], "stdio")
-        self.assertIn("gost-gsm-mcp", definition["command"])
-        self.assertIn("GOST_GSM_PROJECT_ROOT", definition["env"])
+    def test_module_owns_its_http_configuration(self) -> None:
+        config = server.server_config()
+        self.assertEqual(config["host"], "127.0.0.1")
+        self.assertEqual(config["port"], 8765)
+        self.assertEqual(config["path"], "/mcp")
 
     def test_launcher_keeps_runtime_data_local(self) -> None:
         script = (REPOSITORY_ROOT / "gost-gsm-mcp" / "run.ps1").read_text(
@@ -81,7 +75,7 @@ class McpServerTests(unittest.TestCase):
             script.count("ForEach-Object { [Console]::Error.WriteLine($_) }"), 2
         )
 
-    def test_server_reports_readiness_to_stderr(self) -> None:
+    def test_server_reports_http_endpoint_to_stderr(self) -> None:
         stderr = io.StringIO()
         with (
             mock.patch.object(server.mcp, "run") as run,
@@ -89,9 +83,15 @@ class McpServerTests(unittest.TestCase):
         ):
             self.assertEqual(server.main([]), 0)
 
-        run.assert_called_once_with()
+        run.assert_called_once_with(
+            "streamable-http",
+            host="127.0.0.1",
+            port=8765,
+            streamable_http_path="/mcp",
+        )
         message = stderr.getvalue()
-        self.assertIn("[GOST GSM MCP] Ready for requests (stdio).", message)
+        self.assertIn("http://127.0.0.1:8765/mcp", message)
+        self.assertIn("http://127.0.0.1:8765/health", message)
         self.assertIn("Job directory:", message)
 
     def test_launcher_reports_startup_status_to_stderr(self) -> None:
@@ -99,7 +99,7 @@ class McpServerTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Launcher started. Checking the portable runtime", script)
-        self.assertIn("Starting the stdio server. Job directory:", script)
+        self.assertIn("Starting the HTTP server. Job directory:", script)
         self.assertIn('[Console]::Error.WriteLine("[GOST GSM MCP] $Message")', script)
 
 

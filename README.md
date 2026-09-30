@@ -1,21 +1,38 @@
 # local_llm
 
-Пять независимых portable-папок для Windows 11 x64. Ничего не устанавливается
-в систему, не нужны права администратора, системный Python, Docker или PATH.
-После первого запуска можно перенести весь каталог на другой диск или компьютер.
+Набор независимо запускаемых portable-папок для Windows 11 x64. Каждая серверная
+папка содержит собственный launcher, runtime, зависимости, конфигурацию и данные;
+корень репозитория не нужен ей во время работы. Ничего не устанавливается в
+систему, не нужны права администратора, системный Python, Docker или PATH.
+
+- `gost-gsm-mcp` — отдельный HTTP MCP на `127.0.0.1:8765`;
+- `office-tools` — отдельный HTTP MCP для Word/Excel на `127.0.0.1:8766` и
+  необязательный CLI;
+- `llama`, `paddleocr`, `digitizer` — отдельные приложения со своими launchers;
+- `vscode` — копируемый portable-профиль с глобальными MCP и custom agents.
+
+Чтобы работать агентом, запустите только нужные серверы отдельными окнами. Их не
+запускает workspace и они не завершаются при закрытии VS Code.
 
 ## gost-gsm-mcp
 
-Детерминированный MCP-помощник и два VS Code custom agents для поэтапной
+Детерминированный HTTP MCP-помощник и два VS Code custom agents для поэтапной
 сериализации больших OCR-таблиц ГСМ из HTML/Markdown в три нормализованные CSV.
 Он считает строки и ячейки, ведёт batch-progress, сохраняет provenance и review
 flags, поддерживает точечные overrides и не позволяет молча экспортировать
 неоднозначные связи.
 
-Откройте корень `local_llm` в VS Code, выберите `GSM GOST Orchestrator` и передайте
-путь к OCR-документу. Workspace-конфигурация `.vscode/mcp.json` запускает сервер
-через `gost-gsm-mcp\start.bat`; первый запуск сам готовит portable Python внутри
+Запустите `gost-gsm-mcp\start.bat`, затем выберите `GSM GOST Orchestrator` и
+передайте путь к OCR-документу. Первый запуск сам готовит portable Python внутри
 модуля. Подробная инструкция: [`gost-gsm-mcp/README.md`](gost-gsm-mcp/README.md).
+
+## vscode
+
+Скопируйте всю папку `vscode` рядом с `Code.exe` и запускайте
+`vscode\start.bat`. Профиль содержит глобальные HTTP MCP-подключения и агентов,
+поэтому можно открыть любую папку с документами — копировать `.github`, `.vscode`
+или инструкции в каждую workspace не требуется. Подробности:
+[`vscode/README.md`](vscode/README.md).
 
 ## llama
 
@@ -73,13 +90,13 @@ OpenAI-совместимые API по умолчанию:
    способный принимать tools, запуск завершится понятной ошибкой, а VS Code не
    получит ложный флаг `toolCalling`.
 3. После успешного запуска скопируйте содержимое `llama\vscode-model.json` в
-   `chatLanguageModels.json`. У portable VS Code это обычно
+   `chatLanguageModels.json`. Для комплекта из этого репозитория это
+   `vscode\user-data\User\chatLanguageModels.json`; у обычного portable VS Code —
    `<папка VS Code>\data\user-data\User\chatLanguageModels.json`. Сгенерированный
-   файл уже содержит фактический выбранный контекст и не требует ручной правки
-   чисел.
-4. Перезагрузите окно VS Code, откройте корневую папку `local_llm`, выберите
-   Session Target `Local`, режим `Agent` и модель из группы `Local llama.cpp`.
-   Для первого знакомства оставьте подтверждение инструментов в режиме `Manual`.
+   файл уже содержит фактический выбранный контекст и не требует ручной правки.
+4. Перезагрузите окно VS Code, откройте нужную рабочую папку, выберите Session
+   Target `Local`, режим `Agent` и модель из группы `Local llama.cpp`. Для первого
+   знакомства оставьте подтверждение инструментов в режиме `Manual`.
 
 Параметры соединения записываются в `llama\connection.json`, а готовая резервная
 конфигурация модели — в `llama\vscode-model.json`. Оба файла создаются локально и
@@ -100,25 +117,16 @@ OpenAI-compatible endpoint не работают. Для них требуютс
 
 ### Word и Excel
 
-Рабочие `.docx`, `.xlsx` или `.xlsm` можно положить в папку `workspace` либо
-добавить их каталог в multi-root workspace VS Code. Встроенная инструкция
-подсказывает Local Agent использовать готовые portable-команды, которые принимают
-как относительные, так и абсолютные пути:
+Запустите `office-tools\start.bat`. Агент `Local Document Worker` получает
+структурированные инструменты `inspect_word`, `inspect_excel`,
+`replace_word_text`, `set_excel_cells`, `create_word` и `create_excel` напрямую
+по MCP. Он не должен просить пользователя вручную выполнять `office.bat`.
 
-```bat
-.\office-tools\office.bat inspect "workspace\contract.docx"
-.\office-tools\office.bat inspect "workspace\report.xlsx" --sheet "Sheet1" --range "A1:F30"
-.\office-tools\office.bat replace-docx "workspace\contract.docx" "workspace\contract.edited.docx" --old "Старый текст" --new "Новый текст"
-.\office-tools\office.bat set-xlsx "workspace\report.xlsx" "workspace\report.edited.xlsx" --sheet "Sheet1" --set B2 42
-.\office-tools\office.bat inspect "D:\Документы\report.xlsx" --sheet "Sheet1" --range "A1:F30"
-```
-
-При первом вызове автоматически скачивается собственный Python и устанавливаются
-`python-docx`/`openpyxl` внутрь `office-tools`; системный Python и права
-администратора не нужны. Для нестандартного форматирования агент может создать
-небольшой Python-скрипт и запустить его через
-`.\office-tools\python.bat workspace\script.py`. Команды по умолчанию не
-перезаписывают оригинал и после записи повторно открывают результат.
+При первом старте автоматически скачивается собственный Python и устанавливаются
+MCP SDK, `python-docx` и `openpyxl` внутрь `office-tools`; системный Python и права
+администратора не нужны. CLI `office.bat` оставлен для ручной диагностики и не
+является основным агентским интерфейсом. Запись по умолчанию не перезаписывает
+оригинал и повторно открывает результат для проверки.
 
 Формулы Excel сохраняются, но `openpyxl` их не вычисляет. Для пересчёта формул,
 сложных диаграмм и ActiveX нужен установленный Excel/LibreOffice. Старые `.doc` и

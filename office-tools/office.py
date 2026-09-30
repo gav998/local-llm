@@ -266,17 +266,29 @@ def set_xlsx(
     assignments: list[list[str]],
     overwrite: bool,
 ) -> dict[str, Any]:
+    values = {cell: parse_cell_value(raw_value) for cell, raw_value in assignments}
+    return set_xlsx_values(input_path, output_path, sheet, values, overwrite)
+
+
+def set_xlsx_values(
+    input_path: Path,
+    output_path: Path,
+    sheet: str,
+    assignments: dict[str, Any],
+    overwrite: bool,
+) -> dict[str, Any]:
     require_input(input_path, {".xlsx", ".xlsm"})
     require_suffix(output_path, {input_path.suffix.lower()})
     ensure_output(input_path, output_path, overwrite)
+    if not assignments:
+        raise ValueError("At least one cell assignment is required")
     workbook = load_workbook(input_path, keep_vba=input_path.suffix.lower() == ".xlsm")
     try:
         if sheet not in workbook.sheetnames:
             raise ValueError(f"Unknown worksheet: {sheet}")
         worksheet = workbook[sheet]
         changed = []
-        for cell, raw_value in assignments:
-            value = parse_cell_value(raw_value)
+        for cell, value in assignments.items():
             worksheet[cell] = value
             changed.append({"cell": cell, "value": value})
         workbook.save(output_path)
@@ -318,6 +330,18 @@ def new_docx(
 def new_xlsx(
     output_path: Path, sheet: str, rows: list[str], overwrite: bool
 ) -> dict[str, Any]:
+    parsed_rows = []
+    for raw_row in rows:
+        row = json.loads(raw_row)
+        if not isinstance(row, list):
+            raise TypeError("Every --row value must be a JSON array")
+        parsed_rows.append(row)
+    return new_xlsx_values(output_path, sheet, parsed_rows, overwrite)
+
+
+def new_xlsx_values(
+    output_path: Path, sheet: str, rows: list[list[Any]], overwrite: bool
+) -> dict[str, Any]:
     require_suffix(output_path, {".xlsx"})
     if output_path.exists() and not overwrite:
         raise ValueError("Output already exists; use another path or --overwrite")
@@ -325,10 +349,9 @@ def new_xlsx(
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = sheet
-    for raw_row in rows:
-        row = json.loads(raw_row)
+    for row in rows:
         if not isinstance(row, list):
-            raise TypeError("Every --row value must be a JSON array")
+            raise TypeError("Every row must be an array")
         worksheet.append(row)
     workbook.save(output_path)
     workbook.close()

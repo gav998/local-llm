@@ -10,7 +10,7 @@ $Runtime = Join-Path $Root '_runtime'
 $Python = Join-Path $Runtime 'python\python.exe'
 $Downloads = Join-Path $Root '_download'
 $Marker = Join-Path $Runtime '.installed'
-$RuntimeVersion = 'gost-gsm-mcp runtime v1; python 3.13; mcp 2.2'
+$RuntimeVersion = 'gost-gsm-mcp runtime v2; python 3.13; mcp 2.2; http'
 
 function Write-Status([string]$Message) {
     [Console]::Error.WriteLine("[GOST GSM MCP] $Message")
@@ -162,8 +162,8 @@ if ($CommandArgs.Count -and $CommandArgs[0] -eq '--python') {
     Write-Status 'Running GOST GSM MCP tests...'
     & $Python -m unittest discover -s (Join-Path $Root 'tests') -v
 } else {
-    Write-Status "Starting the stdio server. Job directory: $($env:GOST_GSM_PROJECT_ROOT)"
-    & $Python (Join-Path $Root 'server.py')
+    Write-Status "Starting the HTTP server. Job directory: $($env:GOST_GSM_PROJECT_ROOT)"
+    & $Python (Join-Path $Root 'server.py') @CommandArgs
 }
 $ExitCode = $LASTEXITCODE
 if ($ExitCode -eq 0) {

@@ -7,13 +7,58 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mcp.server.mcpserver import MCPServer
-
 from gsm_gost import GostGsmPipeline
-
+from mcp.server.mcpserver import MCPServer
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 SERVER_NAME = "gost-gsm-helper"
+SERVER_CONFIG = Path(__file__).resolve().with_name("server.json")
+DEFAULT_SERVER_CONFIG: dict[str, Any] = {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "path": "/mcp",
+}
 mcp = MCPServer(SERVER_NAME)
+
+
+def server_config() -> dict[str, Any]:
+    configured: dict[str, Any] = {}
+    if SERVER_CONFIG.is_file():
+        loaded = json.loads(SERVER_CONFIG.read_text(encoding="utf-8-sig"))
+        if not isinstance(loaded, dict):
+            raise ValueError("server.json must contain a JSON object")
+        configured = loaded
+    result = {**DEFAULT_SERVER_CONFIG, **configured}
+    host = str(result["host"])
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ValueError("GOST GSM MCP must listen on a loopback host")
+    port = int(result["port"])
+    if not 1 <= port <= 65535:
+        raise ValueError("server port must be between 1 and 65535")
+    path = str(result["path"])
+    if not path.startswith("/") or path == "/":
+        raise ValueError("server path must start with '/' and must not be root")
+    return {"host": host, "port": port, "path": path.rstrip("/")}
+
+
+def server_url(config: dict[str, Any]) -> str:
+    host = f"[{config['host']}]" if ":" in config["host"] else config["host"]
+    return f"http://{host}:{config['port']}{config['path']}"
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_request: Request) -> JSONResponse:
+    config = server_config()
+    return JSONResponse(
+        {
+            "status": "ok",
+            "server": SERVER_NAME,
+            "transport": "streamable-http",
+            "mcp_url": server_url(config),
+            "default_project_root": str(project(None).root),
+        }
+    )
 
 
 def project(project_root: str | None) -> GostGsmPipeline:
@@ -225,13 +270,36 @@ def export_final_csv(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--self-check", action="store_true")
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--path")
     args = parser.parse_args(argv)
+    config = server_config()
+    if args.host is not None:
+        config["host"] = args.host
+    if args.port is not None:
+        config["port"] = args.port
+    if args.path is not None:
+        config["path"] = args.path
+    # Reuse validation for command-line overrides without writing configuration.
+    host = str(config["host"])
+    port = int(config["port"])
+    path = str(config["path"])
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        parser.error("--host must be a loopback host")
+    if not 1 <= port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+    if not path.startswith("/") or path == "/":
+        parser.error("--path must start with '/' and must not be root")
+    config = {"host": host, "port": port, "path": path.rstrip("/")}
     if args.self_check:
         print(
             json.dumps(
                 {
                     "status": "ok",
                     "server": SERVER_NAME,
+                    "transport": "streamable-http",
+                    "mcp_url": server_url(config),
                     "default_project_root": str(project(None).root),
                 },
                 ensure_ascii=False,
@@ -239,12 +307,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     print(
-        f"[GOST GSM MCP] Ready for requests (stdio). "
+        f"[GOST GSM MCP] Starting Streamable HTTP at {server_url(config)}. "
+        f"Health: http://{config['host']}:{config['port']}/health. "
         f"Job directory: {project(None).root}",
         file=sys.stderr,
         flush=True,
     )
-    mcp.run()
+    try:
+        mcp.run(
+            "streamable-http",
+            host=config["host"],
+            port=config["port"],
+            streamable_http_path=config["path"],
+        )
+    except KeyboardInterrupt:
+        print("[GOST GSM MCP] Stopped.", file=sys.stderr, flush=True)
     return 0
 
 
