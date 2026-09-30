@@ -69,6 +69,15 @@ class McpServerTests(unittest.TestCase):
         self.assertNotIn("setx", script.casefold())
         self.assertNotIn("docker", script.casefold())
 
+    def test_launcher_uses_windows_powershell_compatible_redirection(self) -> None:
+        script = (REPOSITORY_ROOT / "gost-gsm-mcp" / "run.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("1>&2", script)
+        self.assertEqual(
+            script.count("ForEach-Object { [Console]::Error.WriteLine($_) }"), 2
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -114,7 +114,8 @@ function Install-Runtime {
         $Archive = Download-File 'uv-x86_64-pc-windows-msvc.zip' 'https://github.com/astral-sh/uv/releases/download/0.12.9/uv-x86_64-pc-windows-msvc.zip'
         Expand-PortableArchive $Archive (Join-Path $Runtime 'uv') $false $SevenZip
     }
-    & $Uv pip install --python $Python --link-mode copy --requirements (Join-Path $Root 'requirements.txt') 1>&2
+    & $Uv pip install --python $Python --link-mode copy --requirements (Join-Path $Root 'requirements.txt') |
+        ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($LASTEXITCODE -ne 0) { throw 'GOST GSM MCP package installation failed.' }
 
     $VcRoot = Join-Path $Runtime 'vc'
@@ -135,7 +136,8 @@ function Install-Runtime {
             Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    & $Python (Join-Path $Root 'server.py') --self-check 1>&2
+    & $Python (Join-Path $Root 'server.py') --self-check |
+        ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($LASTEXITCODE -ne 0) { throw 'Installed GOST GSM MCP runtime failed its self-check.' }
     Set-Content -LiteralPath $Marker -Value $RuntimeVersion -Encoding ASCII
     Remove-Item -LiteralPath $Downloads -Recurse -Force -ErrorAction SilentlyContinue
