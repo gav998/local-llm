@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ MARKER_RE = re.compile(
     r"<!--[ \t]*digitizer:(object|region|table)[ \t]+(\{[^\r\n]*\})[ \t]*-->",
     re.IGNORECASE,
 )
+COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+VARIABLE_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
 
 
 class EmptyOcrResult(RuntimeError):
@@ -60,22 +63,37 @@ def load_digitizer_config(path: Path | None = None) -> dict[str, Any]:
         fields = raw_type.get("fields")
         if not name or not isinstance(fields, dict) or not fields:
             raise RuntimeError(f"Типу {key} нужны name и непустой словарь fields")
-        normalized_fields: dict[str, dict[str, str]] = {}
+        normalized_fields: dict[str, dict[str, Any]] = {}
         for field_key, raw_field in fields.items():
             field_key = str(field_key).strip()
             if not field_key or not isinstance(raw_field, dict):
                 raise RuntimeError(f"Некорректное поле типа {key}")
             field_name = str(raw_field.get("name") or "").strip()
-            prompt = str(raw_field.get("prompt") or "").strip()
+            raw_prompt = raw_field.get("prompt")
             kind = str(raw_field.get("kind") or "text").strip()
-            if not field_name or not prompt or kind not in {"text", "grid"}:
+            if not isinstance(raw_prompt, dict) or set(raw_prompt) != {
+                "instruction",
+                "input",
+            }:
                 raise RuntimeError(
-                    f"Полю {key}.{field_key} нужны name, prompt и kind text/grid"
+                    f"Полю {key}.{field_key} нужен prompt с instruction и input"
+                )
+            instruction = str(raw_prompt.get("instruction") or "").strip()
+            prompt_input = str(raw_prompt.get("input") or "").strip()
+            if (
+                not field_name
+                or not instruction
+                or not prompt_input
+                or kind not in {"text", "grid"}
+            ):
+                raise RuntimeError(
+                    f"Полю {key}.{field_key} нужны name, непустые prompt "
+                    "и kind text/grid"
                 )
             normalized_fields[field_key] = {
                 "name": field_name,
                 "kind": kind,
-                "prompt": prompt,
+                "prompt": {"instruction": instruction, "input": prompt_input},
             }
         types[key] = {"name": name, "fields": normalized_fields}
     return {"types": types}
@@ -324,6 +342,52 @@ def serialize_markdown(
     return "\n\n".join(chunks).rstrip() + ("\n" if chunks else "")
 
 
+def without_marker_comments(value: str) -> str:
+    """Remove digitizer/HTML comments from text used as an LLM variable."""
+    return COMMENT_RE.sub("", str(value)).strip()
+
+
+def render_prompt(
+    config: dict[str, Any],
+    markdown: str,
+    object_index: int,
+    object_type: str,
+    field: str,
+    current_text: str,
+) -> tuple[str, str]:
+    """Build system/user messages from the current Markdown document."""
+    objects = parse_markdown(markdown, config)
+    if object_index < 0 or object_index >= len(objects):
+        raise ValueError("Текущий объект не найден в Markdown")
+    obj = objects[object_index]
+    if obj["type"] != object_type:
+        raise ValueError("Тип текущего объекта не совпадает с Markdown")
+
+    variables: dict[str, str] = {"cell": without_marker_comments(current_text)}
+    object_markdown = serialize_markdown([obj], config)
+    variables[object_type] = without_marker_comments(object_markdown)
+    for field_key in config["types"][object_type]["fields"]:
+        values = [
+            without_marker_comments(region.get("text", ""))
+            for region in obj["regions"]
+            if region["field"] == field_key
+        ]
+        variables[field_key] = "\n\n".join(value for value in values if value)
+
+    prompt = config["types"][object_type]["fields"][field]["prompt"]
+
+    def substitute(template: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name not in variables:
+                raise ValueError(f"Неизвестная переменная prompt: {{{name}}}")
+            return variables[name]
+
+        return without_marker_comments(VARIABLE_RE.sub(replace, template))
+
+    return substitute(prompt["instruction"]), substitute(prompt["input"])
+
+
 def sidecar_path(source: Path) -> Path:
     return source.with_name(source.name + ".digitizer.md")
 
@@ -555,11 +619,23 @@ class PaddleClient:
 
 
 class OpenAICompatibleClient:
-    def __init__(self, url: str, api_key: str = "") -> None:
+    def __init__(
+        self, url: str, api_key: str = "", log_path: Path | None = None
+    ) -> None:
         self.url = url.rstrip("/")
         self.api_key = api_key
+        self.log_path = log_path or Path(__file__).with_name("logs") / "llm.log.jsonl"
+        self._log_lock = threading.Lock()
 
-    def correct(self, text: str, prompt: str) -> str:
+    def _log(self, entry: dict[str, Any]) -> None:
+        entry = {"timestamp": datetime.now(timezone.utc).isoformat(), **entry}
+        line = json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with self._log_lock:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_path.open("a", encoding="utf-8") as stream:
+                stream.write(line)
+
+    def correct(self, instruction: str, message: str) -> str:
         """Return model content verbatim: the caller deliberately performs no checks."""
         import httpx
 
@@ -572,19 +648,42 @@ class OpenAICompatibleClient:
             models = client.get(f"{self.url}/models")
             models.raise_for_status()
             model = models.json().get("data", [{}])[0].get("id", "local-model")
-            response = client.post(
-                f"{self.url}/chat/completions",
-                json={
-                    "model": model,
-                    "temperature": 0,
-                    "messages": [
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": text},
-                    ],
-                },
+            request_id = uuid.uuid4().hex
+            request = {
+                "model": model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": instruction},
+                    {"role": "user", "content": message},
+                ],
+            }
+            try:
+                response = client.post(f"{self.url}/chat/completions", json=request)
+            except Exception as exc:
+                self._log(
+                    {
+                        "id": request_id,
+                        "request": request,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                raise
+            try:
+                response_body: Any = response.json()
+            except ValueError:
+                response_body = response.text
+            self._log(
+                {
+                    "id": request_id,
+                    "request": request,
+                    "response": {
+                        "status": response.status_code,
+                        "body": response_body,
+                    },
+                }
             )
             response.raise_for_status()
-            return str(response.json()["choices"][0]["message"]["content"])
+            return str(response_body["choices"][0]["message"]["content"])
 
 
 def render_crop(
@@ -726,11 +825,25 @@ def create_app(
         try:
             object_type = str(payload.get("type") or "")
             field = str(payload.get("field") or "")
-            prompt = store.config["types"][object_type]["fields"][field]["prompt"]
             text = str(payload.get("text") or "")
             if not text.strip():
                 raise ValueError("Нечего корректировать")
-            return {"text": llm.correct(text, prompt)}
+            markdown = payload.get("markdown")
+            if not isinstance(markdown, str):
+                raise ValueError("Для ИИ-коррекции нужен текущий Markdown")
+            try:
+                object_index = int(payload.get("objectIndex"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Не указан текущий объект") from exc
+            instruction, message = render_prompt(
+                store.config,
+                markdown,
+                object_index,
+                object_type,
+                field,
+                text,
+            )
+            return {"text": llm.correct(instruction, message)}
         except KeyError as exc:
             raise bad(ValueError("Неизвестный тип объекта или поля")) from exc
         except Exception as exc:
@@ -755,7 +868,11 @@ def main() -> int:
         SourceRegistry(args.data_root),
         DocumentStore(),
         PaddleClient(args.paddle_url, args.paddle_token),
-        OpenAICompatibleClient(args.llama_url, args.llama_key),
+        OpenAICompatibleClient(
+            args.llama_url,
+            args.llama_key,
+            Path(__file__).with_name("logs") / "llm.log.jsonl",
+        ),
         Path(__file__).with_name("app.html"),
     )
     import uvicorn

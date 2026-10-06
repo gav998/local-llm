@@ -25,8 +25,8 @@ class FakeLlm:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def correct(self, text: str, prompt: str) -> str:
-        self.calls.append((text, prompt))
+    def correct(self, instruction: str, message: str) -> str:
+        self.calls.append((instruction, message))
         return "```raw model answer```"
 
 
@@ -38,11 +38,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["types"]["table"]["fields"]["body"]["kind"], "grid")
         for object_type in config["types"].values():
             for field in object_type["fields"].values():
-                self.assertTrue(field["prompt"])
+                self.assertEqual(set(field["prompt"]), {"instruction", "input"})
+                self.assertTrue(field["prompt"]["instruction"])
+                self.assertTrue(field["prompt"]["input"])
 
     def test_public_config_does_not_duplicate_prompts(self) -> None:
         value = app.public_config()
         self.assertNotIn("prompt", value["types"]["text"]["fields"]["text"])
+
+    def test_prompt_variables_are_available_in_their_object(self) -> None:
+        for type_key, object_type in app.DIGITIZER_CONFIG["types"].items():
+            available = {"cell", type_key, *object_type["fields"]}
+            for field in object_type["fields"].values():
+                templates = field["prompt"].values()
+                variables = {
+                    match.group(1)
+                    for template in templates
+                    for match in app.VARIABLE_RE.finditer(template)
+                }
+                self.assertLessEqual(variables, available)
 
 
 class MarkdownModelTests(unittest.TestCase):
@@ -155,6 +169,103 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(app.flatten_ocr_result(json.dumps(payload)), "Заголовок")
 
 
+class PromptAndLlmLogTests(unittest.TestCase):
+    def test_prompt_uses_current_object_fields_and_removes_comments(self) -> None:
+        objects = [
+            {
+                "type": "table",
+                "regions": [
+                    {
+                        "kind": "region",
+                        "field": "title",
+                        "page": 1,
+                        "rect": [0, 0, 1, 0.1],
+                        "rotation": 0,
+                        "status": "recognized",
+                        "text": "Таблица 1 <!-- внутренний комментарий -->",
+                    },
+                    {
+                        "kind": "table",
+                        "field": "body",
+                        "page": 1,
+                        "rect": [0, 0.1, 1, 0.9],
+                        "rotation": 0,
+                        "status": "recognized",
+                        "grid": {
+                            "x": [0, 1],
+                            "y": [0, 1],
+                            "statuses": [["recognized"]],
+                        },
+                        "text": "| 1 |\n| --- |\n| Насос |",
+                    },
+                ],
+            }
+        ]
+        markdown = app.serialize_markdown(objects, page_count=1)
+        instruction, message = app.render_prompt(
+            app.DIGITIZER_CONFIG,
+            markdown,
+            0,
+            "table",
+            "body",
+            "Нас0с <!-- удалить -->",
+        )
+        self.assertIn("конкретной ячейки", instruction)
+        self.assertIn("Таблица 1", message)
+        self.assertIn("| Насос |", message)
+        self.assertIn("Нас0с", message)
+        self.assertNotIn("<!--", message)
+        self.assertNotIn("digitizer:", message)
+
+    def test_llm_jsonl_log_appends_request_and_response(self) -> None:
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def __init__(self, body: dict[str, object]) -> None:
+                self.body = body
+
+            def json(self) -> dict[str, object]:
+                return self.body
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class FakeHttpClient:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def __enter__(self) -> "FakeHttpClient":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def get(self, url: str) -> FakeResponse:
+                return FakeResponse({"data": [{"id": "test-model"}]})
+
+            def post(self, url: str, json: dict[str, object]) -> FakeResponse:
+                return FakeResponse(
+                    {"choices": [{"message": {"content": "Исправлено"}}]}
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "llm.log.jsonl"
+            client = app.OpenAICompatibleClient("http://llm/v1", log_path=log_path)
+            with mock.patch("httpx.Client", FakeHttpClient):
+                self.assertEqual(
+                    client.correct("Инструкция", "Сообщение"), "Исправлено"
+                )
+                self.assertEqual(
+                    client.correct("Инструкция 2", "Сообщение 2"), "Исправлено"
+                )
+            entries = [json.loads(line) for line in log_path.read_text().splitlines()]
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["request"]["messages"][0]["content"], "Инструкция")
+        self.assertEqual(entries[0]["response"]["status"], 200)
+        self.assertEqual(entries[1]["request"]["messages"][1]["content"], "Сообщение 2")
+
+
 class StoreAndApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -222,11 +333,35 @@ class StoreAndApiTests(unittest.TestCase):
         self.assertEqual(len(paddle.images), 1)
         corrected = client.post(
             "/api/correct",
-            json={"type": "text", "field": "text", "text": "raw OCR"},
+            json={
+                "type": "text",
+                "field": "text",
+                "text": "raw OCR",
+                "objectIndex": 0,
+                "markdown": app.serialize_markdown(
+                    [
+                        {
+                            "type": "text",
+                            "regions": [
+                                {
+                                    "kind": "region",
+                                    "field": "text",
+                                    "page": 1,
+                                    "rect": [0, 0, 0.5, 0.5],
+                                    "rotation": 0,
+                                    "status": "recognized",
+                                    "text": "raw OCR",
+                                }
+                            ],
+                        }
+                    ],
+                    page_count=1,
+                ),
+            },
         )
         self.assertEqual(corrected.json()["text"], "```raw model answer```")
-        self.assertEqual(llm.calls[0][0], "raw OCR")
-        self.assertIn("очевидные ошибки OCR", llm.calls[0][1])
+        self.assertIn("очевидные ошибки OCR", llm.calls[0][0])
+        self.assertEqual(llm.calls[0][1], "raw OCR")
 
 
 if __name__ == "__main__":
