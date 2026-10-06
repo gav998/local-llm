@@ -81,6 +81,27 @@ class DigitizerStartupTests(unittest.TestCase):
             html,
         )
 
+    def test_pdf_selection_remains_interactive_during_background_work(self) -> None:
+        html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
+        start_draw = html.split("function startDraw(event)", 1)[1].split(
+            "function startRegionDrag", 1
+        )[0]
+        self.assertNotIn("state.busy", start_draw)
+        self.assertIn("if(!state.drag&&!state.draft)renderPdf()", html)
+        self.assertIn("ocrQueue:Promise.resolve()", html)
+        self.assertIn("state.ocrQueue.then(()=>performOcr", html)
+
+    def test_region_hover_actions_and_viewport_fitted_menus_are_present(self) -> None:
+        html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
+        self.assertIn("region-tools", html)
+        self.assertIn("'↻ OCR'", html)
+        self.assertIn("'✦ ИИ'", html)
+        self.assertIn("'↻90°'", html)
+        self.assertIn("'Удалить область и её текст'", html)
+        self.assertIn("function positionRegionTools", html)
+        self.assertIn("function positionSubmenu", html)
+        self.assertIn("clampMenuPoint(x,box.width,innerWidth)", html)
+
 
 if __name__ == "__main__":
     unittest.main()

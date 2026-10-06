@@ -58,6 +58,11 @@ class ConfigTests(unittest.TestCase):
                 }
                 self.assertLessEqual(variables, available)
 
+    def test_every_field_prompt_uses_cell_as_the_current_value(self) -> None:
+        for object_type in app.DIGITIZER_CONFIG["types"].values():
+            for field in object_type["fields"].values():
+                self.assertIn("{cell}", field["prompt"]["input"])
+
 
 class MarkdownModelTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -170,6 +175,48 @@ class OcrTests(unittest.TestCase):
 
 
 class PromptAndLlmLogTests(unittest.TestCase):
+    def test_text_prompt_separates_object_context_from_current_region(self) -> None:
+        objects = [
+            {
+                "type": "text",
+                "regions": [
+                    {
+                        "kind": "region",
+                        "field": "text",
+                        "page": 1,
+                        "rect": [0, 0, 1, 0.1],
+                        "rotation": 0,
+                        "status": "recognized",
+                        "text": "Первый блок",
+                    },
+                    {
+                        "kind": "region",
+                        "field": "text",
+                        "page": 1,
+                        "rect": [0, 0.1, 1, 0.2],
+                        "rotation": 0,
+                        "status": "recognized",
+                        "text": "Второй блок с ошипкой",
+                    },
+                ],
+            }
+        ]
+        markdown = app.serialize_markdown(objects, page_count=1)
+        instruction, message = app.render_prompt(
+            app.DIGITIZER_CONFIG,
+            markdown,
+            0,
+            "text",
+            "text",
+            "Второй блок с ошипкой",
+        )
+        self.assertIn("Верни только исправленный текст выбранного поля", instruction)
+        self.assertIn("Контекст текущего объекта:\nПервый блок\n\nВторой блок", message)
+        self.assertIn(
+            "Текст выбранного поля для исправления:\nВторой блок с ошипкой",
+            message,
+        )
+
     def test_prompt_uses_current_object_fields_and_removes_comments(self) -> None:
         objects = [
             {
