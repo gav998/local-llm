@@ -69,6 +69,18 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertNotIn("presets", html)
         self.assertNotIn("materialize", html)
 
+    def test_cell_correction_resolves_before_selecting_destination_row(self) -> None:
+        html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
+        correction = html.index(
+            "const corrected=normalizeCellText(await requestCorrection"
+        )
+        assignment = html.index("region._cells[row][column]=corrected")
+        self.assertLess(correction, assignment)
+        self.assertNotIn(
+            "region._cells[row][column]=normalizeCellText(await requestCorrection",
+            html,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
