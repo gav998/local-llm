@@ -251,14 +251,18 @@ function Resolve-DocumentInputs([string[]]$Paths) {
     $Supported = @('.pdf','.png','.jpg','.jpeg','.jpe','.jfif','.tif','.tiff','.bmp')
     $Resolved = @()
     foreach ($Path in $Paths) {
-        $Item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        $Candidate = ([string]$Path).Trim()
+        if ($Candidate.Length -ge 2 -and $Candidate[0] -eq '"' -and $Candidate[$Candidate.Length - 1] -eq '"') {
+            $Candidate = $Candidate.Substring(1,$Candidate.Length - 2)
+        }
+        $Item = Get-Item -LiteralPath $Candidate -ErrorAction Stop
         $Extension = ([string]$Item.Extension).ToLowerInvariant()
         if (-not $Item.PSIsContainer -and $Supported -contains $Extension) {
             $Resolved += $Item.FullName
             continue
         }
-        if ($Item.PSIsContainer) { throw "A folder cannot be sent to OCR: $Path" }
-        throw "Unsupported OCR input '$Path'. Use PDF, PNG, JPEG, TIFF or BMP."
+        if ($Item.PSIsContainer) { throw "A folder cannot be sent to OCR: $Candidate" }
+        throw "Unsupported OCR input '$Candidate'. Use PDF, PNG, JPEG, TIFF or BMP."
     }
     return $Resolved
 }
@@ -325,13 +329,13 @@ function Start-Profile([string]$ProfileId) {
 function Invoke-DocumentOcr([string[]]$Paths) {
     $Client = Join-Path $Root 'ocr_document.py'
     $Arguments = @($Client,'--url',"http://$($Config.host):$Port",'--token',$ApiKey,'--') + $Paths
-    Write-Host 'Documents will be processed by the full PP-StructureV3 profile.' -ForegroundColor Cyan
     & $Python @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Document OCR failed with code $LASTEXITCODE." }
 }
 
-function Show-Menu {
-    Clear-Host
+function Show-Menu([bool]$ClearScreen = $true) {
+    if ($ClearScreen) { Clear-Host }
+    else { Write-Host '' }
     Write-Host 'Portable PaddleOCR profiles' -ForegroundColor Cyan
     if ($script:Running -and -not $script:Running.Process.HasExited) {
         Write-Host "RUNNING  pid=$($script:Running.Process.Id)  profile=$($script:Running.Profile.Name)  GPU=$Device" -ForegroundColor Green
@@ -346,6 +350,7 @@ function Show-Menu {
         $Marker = if ($Installed) { 'ready' } else { 'download on first start' }
         Write-Host ('[{0}] {1,-31} {2} ({3})' -f ($Index + 1),$Item.Name,$Item.Description,$Marker)
     }
+    Write-Host '[PATH] Введите абсолютный/относительный путь до файла для его OCR текущим профилем'
     Write-Host '[S] Stop current profile'
     Write-Host '[R] Refresh'
     Write-Host '[Q] Stop and exit'
@@ -353,25 +358,58 @@ function Show-Menu {
 
 Write-Connection -ProfileId '' -Capabilities @() -Status 'stopped'
 try {
-    if ($InputPath.Count -gt 0) {
-        if ($Profile -and $Profile -ne 'full-structure') {
-            Write-Host "Ignoring profile '$Profile': dropped documents always use full-structure." -ForegroundColor Yellow
-        }
-        Start-Profile 'full-structure'
-        Invoke-DocumentOcr $InputPath
-    } elseif ($Profile) {
+    if ($Profile -and $InputPath.Count -eq 0) {
         Start-Profile $Profile
         Read-Host 'Press Enter to stop PaddleOCR' | Out-Null
     } else {
+        $PendingInput = @($InputPath)
+        $ClearMenu = $true
+        $ProfileSelectionNotice = if ($Profile) { "Profile '$Profile' was not started: select a profile for the dropped documents." } else { '' }
         while ($true) {
-            Show-Menu
+            Show-Menu $ClearMenu
+            $ClearMenu = $true
+            if ($ProfileSelectionNotice) {
+                Write-Host ''
+                Write-Host $ProfileSelectionNotice -ForegroundColor Yellow
+                $ProfileSelectionNotice = ''
+            }
+            if ($PendingInput.Count -gt 0) {
+                Write-Host ''
+                Write-Host 'Документы ожидают выбора профиля:' -ForegroundColor Yellow
+                foreach ($Document in $PendingInput) { Write-Host "  $Document" }
+            }
             $Choice = (Read-Host 'Select').Trim()
             if ($Choice -match '^[Qq]$') { break }
             if ($Choice -match '^[Ss]$') { Stop-PaddleOcr; continue }
+            if ($Choice -match '^[Rr]$' -or -not $Choice) { continue }
             $Number = 0
             if ([int]::TryParse($Choice,[ref]$Number) -and $Number -ge 1 -and $Number -le $Profiles.Count) {
                 Start-Profile $Profiles[$Number - 1].Id
+                if ($PendingInput.Count -gt 0) {
+                    $Documents = @($PendingInput)
+                    $PendingInput = @()
+                    try {
+                        Invoke-DocumentOcr $Documents
+                    } catch {
+                        Write-Host "Ошибка OCR: $($_.Exception.Message)" -ForegroundColor Red
+                    }
+                    $ClearMenu = $false
+                }
+                continue
             }
+            if (-not $script:Running -or $script:Running.Process.HasExited) {
+                if ($script:Running) { Stop-PaddleOcr }
+                Write-Host 'Сначала выберите и запустите профиль OCR.' -ForegroundColor Yellow
+                $ClearMenu = $false
+                continue
+            }
+            try {
+                $Documents = @(Resolve-DocumentInputs @($Choice))
+                Invoke-DocumentOcr $Documents
+            } catch {
+                Write-Host "Ошибка OCR: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            $ClearMenu = $false
         }
     }
 } finally {

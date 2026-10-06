@@ -208,7 +208,7 @@ def recognize_document(
         )
 
     output = output_path_for(source)
-    print(f"[OCR] {source}", flush=True)
+    print(f"Начато OCR документа: {source}", flush=True)
     job_id = submit_job(client, base_url, token, source)
     print(f"  задача {job_id[:12]} поставлена в очередь", flush=True)
     wait_for_job(client, base_url, token, job_id)
@@ -230,17 +230,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     base_url = args.url.rstrip("/")
     timeout = httpx.Timeout(120, connect=15)
+    failed = False
     try:
         with httpx.Client(timeout=timeout) as client:
             for document in args.documents:
-                recognize_document(client, base_url, args.token, Path(document))
+                try:
+                    recognize_document(client, base_url, args.token, Path(document))
+                except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+                    print(f"Ошибка OCR документа {document}: {exc}", file=sys.stderr)
+                    failed = True
     except KeyboardInterrupt:
         print("OCR прерван пользователем.", file=sys.stderr)
         return 130
     except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
         print(f"Ошибка: {exc}", file=sys.stderr)
         return 1
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
