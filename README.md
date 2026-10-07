@@ -8,7 +8,8 @@
 - `gost-gsm-mcp` — отдельный HTTP MCP на `127.0.0.1:8765`;
 - `office-tools` — отдельный HTTP MCP для Word/Excel на `127.0.0.1:8766` и
   необязательный CLI;
-- `llama`, `paddleocr`, `digitizer` — отдельные приложения со своими launchers;
+- `llama`, `paddleocr`, `digitizer`, `webui` — отдельные приложения со своими
+  launchers;
 - `vscode` — каталог для официального portable VS Code ZIP с готовым профилем,
   глобальными MCP и custom agents.
 
@@ -215,3 +216,11 @@ Digitizer можно запускать без PaddleOCR и llama.cpp: ручн�
 
 Закрытие соответствующего `start.bat` или нажатие Enter в нём останавливает
 запущенный из этого окна процесс.
+
+## webui
+
+Запустите `webui\start.bat`. При первом запуске launcher скачает portable
+Python 3.11 и установит Open WebUI внутрь папки приложения, затем интерфейс будет
+доступен по адресу <http://localhost:8080>. Все данные, кэши, временные файлы и
+профиль пользователя остаются внутри `webui`; системный Python и права
+администратора не нужны. Подробности: [`webui/README.md`](webui/README.md).
