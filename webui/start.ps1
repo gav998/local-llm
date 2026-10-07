@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
 $Runtime = Join-Path $Root '_runtime'
 $Python = Join-Path $Runtime 'python\python.exe'
-$OpenWebUi = Join-Path $Runtime 'python\Scripts\open-webui.exe'
+$OpenWebUiModule = Join-Path $Runtime 'python\Lib\site-packages\open_webui\__init__.py'
 $Downloads = Join-Path $Root '_download'
 $Logs = Join-Path $Root 'logs'
 $Data = Join-Path $Root 'data'
@@ -40,7 +40,7 @@ function Initialize-PortableEnvironment {
     $env:NLTK_DATA = Join-Path $Data 'nltk_data'
     $env:DATA_DIR = $Data
     $env:UVICORN_WORKERS = '1'
-    $env:PATH = (Join-Path $Runtime 'vc') + ';' + (Split-Path $Python -Parent) + ';' + (Split-Path $OpenWebUi -Parent) + ';' + $env:SystemRoot + '\System32'
+    $env:PATH = (Join-Path $Runtime 'vc') + ';' + (Split-Path $Python -Parent) + ';' + (Join-Path $Runtime 'python\Scripts') + ';' + $env:SystemRoot + '\System32'
 }
 
 function Download-File([string]$Name,[string]$Url) {
@@ -138,7 +138,7 @@ function Install-OpenWebUi {
             Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    if (-not (Test-Path -LiteralPath $OpenWebUi -PathType Leaf)) { throw 'Open WebUI command was not installed.' }
+    if (-not (Test-Path -LiteralPath $OpenWebUiModule -PathType Leaf)) { throw 'Open WebUI Python package was not installed.' }
     & $Python -c "import importlib.metadata; print('Open WebUI ' + importlib.metadata.version('open-webui') + ' runtime OK')"
     if ($LASTEXITCODE -ne 0) { throw 'Installed Open WebUI runtime cannot be loaded.' }
     Set-Content -LiteralPath $RuntimeMarker -Value $RuntimeVersion -Encoding ASCII
@@ -161,7 +161,7 @@ function Wait-Healthy([string]$Url,[Diagnostics.Process]$Process) {
 
 Initialize-PortableEnvironment
 $InstalledVersion = if (Test-Path -LiteralPath $RuntimeMarker -PathType Leaf) { (Get-Content -LiteralPath $RuntimeMarker -Raw).Trim() } else { '' }
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or -not (Test-Path -LiteralPath $OpenWebUi -PathType Leaf) -or $InstalledVersion -ne $RuntimeVersion) {
+if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or -not (Test-Path -LiteralPath $OpenWebUiModule -PathType Leaf) -or $InstalledVersion -ne $RuntimeVersion) {
     Install-OpenWebUi
     Initialize-PortableEnvironment
 }
@@ -172,7 +172,12 @@ $ErrorLog = Join-Path $Logs 'webui.error.log'
 Remove-Item -LiteralPath $OutLog,$ErrorLog -Force -ErrorAction SilentlyContinue
 $Process = $null
 try {
-    $Process = Start-Process -FilePath $OpenWebUi -ArgumentList @('serve','--host','127.0.0.1','--port',$Port) -WorkingDirectory $Data -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
+    # uv-generated console launchers contain the absolute Python path from install
+    # time. Invoke Open WebUI with the portable interpreter so a moved folder
+    # continues to work without reinstalling the runtime. Keep this expression
+    # free of spaces because Windows PowerShell joins ArgumentList items.
+    $LaunchCode = "__import__('open_webui').serve(host='127.0.0.1',port=$Port)"
+    $Process = Start-Process -FilePath $Python -ArgumentList @('-c',$LaunchCode) -WorkingDirectory $Data -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
     Wait-Healthy $Url $Process
     Write-Host "[READY] Open WebUI: $Url" -ForegroundColor Green
     Read-Host 'Press Enter to stop Open WebUI' | Out-Null
