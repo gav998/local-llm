@@ -27,6 +27,8 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
+from gsm_normalizer import COLUMN_TYPES, GsmNormalizer, RelationshipStore
+
 PDF_SUFFIX = ".pdf"
 MAX_PDF_BYTES = 1 << 30
 STATUSES = {"pending", "queued", "running", "recognized", "modified", "error"}
@@ -249,6 +251,18 @@ def normalize_region(
             "y": y_cuts,
             "statuses": _status_matrix(raw_grid.get("statuses"), rows, columns),
         }
+        if "columnTypes" in raw_grid:
+            column_types = raw_grid.get("columnTypes")
+            if not isinstance(column_types, list) or len(column_types) != columns:
+                raise ValueError(
+                    "grid.columnTypes должен соответствовать числу столбцов"
+                )
+            normalized_column_types = [str(item or "") for item in column_types]
+            if any(
+                item and item not in COLUMN_TYPES for item in normalized_column_types
+            ):
+                raise ValueError("grid.columnTypes содержит неизвестный тип столбца")
+            region["grid"]["columnTypes"] = normalized_column_types
     return region
 
 
@@ -749,6 +763,8 @@ def create_app(
     paddle: PaddleClient,
     llm: OpenAICompatibleClient,
     html_path: Path,
+    normalizer: GsmNormalizer | None = None,
+    relationships: RelationshipStore | None = None,
 ):
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.responses import HTMLResponse, Response
@@ -768,7 +784,12 @@ def create_app(
 
     @app.get("/api/config")
     def config() -> dict[str, Any]:
-        return public_config(store.config)
+        result = public_config(store.config)
+        result["normalization"] = {
+            "enabled": normalizer is not None,
+            "columnTypes": COLUMN_TYPES,
+        }
+        return result
 
     @app.post("/api/open/dialog")
     def open_dialog() -> dict[str, Any]:
@@ -849,6 +870,32 @@ def create_app(
         except Exception as exc:
             raise bad(exc) from exc
 
+    @app.post("/api/normalize")
+    def normalize_gsm(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if normalizer is None:
+                raise RuntimeError("Справочник марок ГСМ не настроен")
+            return normalizer.analyze(str(payload.get("text") or ""))
+        except Exception as exc:
+            raise bad(exc) from exc
+
+    @app.post("/api/relationships")
+    def append_relationships(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if relationships is None:
+                raise RuntimeError("CSV связей марок ГСМ не настроен")
+            rows = payload.get("rows")
+            column_types = payload.get("columnTypes")
+            if not isinstance(rows, list) or not all(
+                isinstance(row, list) for row in rows
+            ):
+                raise ValueError("Для связей нужен массив строк таблицы")
+            if not isinstance(column_types, list):
+                raise ValueError("Для связей нужны типы столбцов")
+            return relationships.append(rows, column_types)
+        except Exception as exc:
+            raise bad(exc) from exc
+
     return app
 
 
@@ -861,9 +908,12 @@ def main() -> int:
     parser.add_argument("--paddle-token", required=True)
     parser.add_argument("--llama-url", default="http://127.0.0.1:6381/v1")
     parser.add_argument("--llama-key", default="")
+    parser.add_argument("--brands-csv", type=Path, required=True)
+    parser.add_argument("--relations-csv", type=Path, required=True)
     args = parser.parse_args()
     if args.host != "127.0.0.1":
         raise SystemExit("Digitizer may bind only to 127.0.0.1")
+    normalizer = GsmNormalizer(args.brands_csv)
     app = create_app(
         SourceRegistry(args.data_root),
         DocumentStore(),
@@ -874,6 +924,8 @@ def main() -> int:
             Path(__file__).with_name("logs") / "llm.log.jsonl",
         ),
         Path(__file__).with_name("app.html"),
+        normalizer,
+        RelationshipStore(args.relations_csv, normalizer),
     )
     import uvicorn
 

@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [int]$Port = 0,
+    [Parameter(Mandatory=$true)]
+    [string]$BrandsCsv,
+    [Parameter(Mandatory=$true)]
+    [string]$RelationsCsv,
     [string]$PaddleUrl = '',
     [string]$PaddleKey = '',
     [string]$LlamaUrl = '',
@@ -200,7 +204,7 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -
 }
 Resolve-Connections
 
-$Arguments = @((Join-Path $Root 'app.py'),'--host',$Config.host,'--port',$Port,'--data-root',$Data,'--paddle-url',$PaddleUrl,'--paddle-token',$PaddleKey,'--llama-url',$LlamaUrl,'--llama-key',$LlamaKey)
+$Arguments = @((Join-Path $Root 'app.py'),'--host',$Config.host,'--port',$Port,'--data-root',$Data,'--paddle-url',$PaddleUrl,'--paddle-token',$PaddleKey,'--llama-url',$LlamaUrl,'--llama-key',$LlamaKey,'--brands-csv',$BrandsCsv,'--relations-csv',$RelationsCsv)
 $ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
 $OutLog = Join-Path $Logs 'app.out.log'
 $ErrorLog = Join-Path $Logs 'app.error.log'

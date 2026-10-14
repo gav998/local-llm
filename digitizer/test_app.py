@@ -149,6 +149,26 @@ class MarkdownModelTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "от 0 до 1"):
             app.serialize_markdown(self.objects, page_count=2)
 
+    def test_table_column_types_survive_markdown_round_trip(self) -> None:
+        self.objects[1]["regions"][0]["grid"]["columnTypes"] = [
+            "primary",
+            "duplicate_reserve",
+        ]
+        markdown = app.serialize_markdown(self.objects, page_count=2)
+        parsed = app.parse_markdown(markdown, page_count=2)
+        self.assertEqual(
+            parsed[1]["regions"][0]["grid"]["columnTypes"],
+            ["primary", "duplicate_reserve"],
+        )
+
+    def test_unknown_column_type_is_rejected(self) -> None:
+        self.objects[1]["regions"][0]["grid"]["columnTypes"] = [
+            "primary",
+            "unknown",
+        ]
+        with self.assertRaisesRegex(ValueError, "неизвестный тип"):
+            app.serialize_markdown(self.objects, page_count=2)
+
 
 class OcrTests(unittest.TestCase):
     def test_raw_recognition_wins_over_layout_image(self) -> None:

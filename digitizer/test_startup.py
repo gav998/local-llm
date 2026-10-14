@@ -49,6 +49,9 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:9399", script)
         self.assertIn("http://127.0.0.1:6381/v1", script)
         self.assertIn("PYTHONNOUSERSITE", script)
+        self.assertIn("[Parameter(Mandatory=$true)]", script)
+        self.assertIn("'--brands-csv',$BrandsCsv", script)
+        self.assertIn("'--relations-csv',$RelationsCsv", script)
         self.assertNotIn("Start-Process $Url", script)
 
     def test_html_uses_dynamic_config_and_markdown_database(self) -> None:
@@ -62,6 +65,10 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("class=\"context-menu\"", html)
         self.assertIn("gridRail(region,'x')", html)
         self.assertIn("gridRail(region,'y')", html)
+        self.assertIn("'/api/normalize'", html)
+        self.assertIn("'/api/relationships'", html)
+        self.assertIn("function columnTypeSelect", html)
+        self.assertIn("function normalizationEditor", html)
         self.assertNotIn('id="save"', html)
         self.assertNotIn("assignDialog", html)
         self.assertNotIn("gridColumns", html)
