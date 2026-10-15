@@ -1,4 +1,4 @@
-"""Loopback-only Stable Diffusion inpainting API with IP-Adapter face guidance."""
+"""Loopback-only inpainting API with IP-Adapter FaceID identity guidance."""
 
 from __future__ import annotations
 
@@ -47,6 +47,12 @@ class Settings:
     adapter_id: str
     adapter_subfolder: str
     adapter_weight: str
+    image_encoder_id: str
+    face_analyzer_name: str
+    face_detection_size: int
+    faceid_shortcut_scale: float
+    crop_padding_ratio: float
+    mask_blur_radius: float
     cpu_offload: bool
     default_steps: int
     default_guidance_scale: float
@@ -70,6 +76,14 @@ def load_settings(path: Path = DEFAULT_CONFIG, **overrides: Any) -> Settings:
         raise ValueError("gpu_index не может быть отрицательным")
     if settings.resolution < 256 or settings.resolution > 768 or settings.resolution % 8:
         raise ValueError("resolution должен быть кратен 8 и находиться между 256 и 768")
+    if settings.face_detection_size < 320 or settings.face_detection_size > 1280:
+        raise ValueError("face_detection_size должен быть от 320 до 1280")
+    if not 0 <= settings.faceid_shortcut_scale <= 2:
+        raise ValueError("faceid_shortcut_scale должен быть от 0 до 2")
+    if not 0 <= settings.crop_padding_ratio <= 4:
+        raise ValueError("crop_padding_ratio должен быть от 0 до 4")
+    if not 0 <= settings.mask_blur_radius <= 32:
+        raise ValueError("mask_blur_radius должен быть от 0 до 32")
     return settings
 
 
@@ -108,19 +122,43 @@ def _restore_from_model(image: Image.Image, box: tuple[int, int, int, int], size
     return image.crop((left, top, left + width, top + height)).resize(size, Image.Resampling.LANCZOS)
 
 
+def _centered_interval(center: float, length: int, limit: int) -> tuple[int, int]:
+    length = min(max(1, length), limit)
+    start = round(center - length / 2)
+    start = min(max(0, start), limit - length)
+    return start, start + length
+
+
+def _crop_box_from_mask(mask: Image.Image, padding_ratio: float) -> tuple[int, int, int, int]:
+    """Return a mask-centered crop so a small face is enlarged before inference."""
+    bbox = mask.getbbox()
+    if bbox is None:
+        raise ValueError("маска полностью чёрная")
+    left, top, right, bottom = bbox
+    mask_width = right - left
+    mask_height = bottom - top
+    desired_side = round(max(mask_width, mask_height) * (1 + 2 * padding_ratio))
+    crop_width = min(mask.width, max(mask_width, desired_side))
+    crop_height = min(mask.height, max(mask_height, desired_side))
+    crop_left, crop_right = _centered_interval((left + right) / 2, crop_width, mask.width)
+    crop_top, crop_bottom = _centered_interval((top + bottom) / 2, crop_height, mask.height)
+    return crop_left, crop_top, crop_right, crop_bottom
+
+
 def _ip_adapter_attention_processor_count(pipeline: Any) -> int:
     processors = getattr(getattr(pipeline, "unet", None), "attn_processors", {})
     return sum("IPAdapter" in type(processor).__name__ for processor in processors.values())
 
 
 def _configure_pipeline(pipeline: Any, settings: Settings) -> None:
-    """Load IP-Adapter without subsequently replacing its attention processors."""
+    """Load FaceID Plus v2 without subsequently replacing its attention processors."""
     pipeline.enable_vae_slicing()
     print(f"[MODEL] Загрузка адаптера {settings.adapter_weight}...", flush=True)
     pipeline.load_ip_adapter(
         settings.adapter_id,
-        subfolder=settings.adapter_subfolder,
+        subfolder=settings.adapter_subfolder or None,
         weight_name=settings.adapter_weight,
+        image_encoder_folder=None,
         cache_dir=str(ROOT / "models" / "huggingface"),
     )
 
@@ -132,6 +170,12 @@ def _configure_pipeline(pipeline: Any, settings: Settings) -> None:
     if processor_count == 0:
         raise RuntimeError("IP-Adapter загружен без attention-процессоров")
     print(f"[MODEL] Активно IP-Adapter attention-процессоров: {processor_count}", flush=True)
+
+    projection_layers = pipeline.unet.encoder_hid_proj.image_projection_layers
+    if len(projection_layers) != 1 or not hasattr(projection_layers[0], "shortcut"):
+        raise RuntimeError("загружен несовместимый адаптер: ожидался FaceID Plus v2")
+    projection_layers[0].shortcut = True
+    projection_layers[0].shortcut_scale = settings.faceid_shortcut_scale
 
     if settings.cpu_offload:
         pipeline.enable_model_cpu_offload(gpu_id=settings.gpu_index)
@@ -146,6 +190,7 @@ class ImageEditorService:
         self.settings = settings
         self.pipeline: Any | None = None
         self.torch: Any | None = None
+        self.face_analyzer: Any | None = None
         self.device_name = "not loaded"
         self.vram_bytes = 0
         self.error: str | None = None
@@ -155,7 +200,9 @@ class ImageEditorService:
         print("[MODEL] Проверка CUDA и подготовка моделей...", flush=True)
         try:
             import torch
-            from diffusers import StableDiffusionInpaintPipeline
+            from diffusers import DDIMScheduler, StableDiffusionInpaintPipeline
+            from insightface.app import FaceAnalysis
+            from transformers import CLIPVisionModelWithProjection
 
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA недоступна; CPU fallback намеренно отключён")
@@ -173,6 +220,28 @@ class ImageEditorService:
                 f"{self.vram_bytes / (1024 ** 3):.1f} ГБ VRAM",
                 flush=True,
             )
+            print(
+                f"[FACEID] Загрузка InsightFace {self.settings.face_analyzer_name} "
+                "(анализ референса выполняется на CPU)...",
+                flush=True,
+            )
+            face_analyzer = FaceAnalysis(
+                name=self.settings.face_analyzer_name,
+                root=str(ROOT / "models" / "insightface"),
+                allowed_modules=["detection", "recognition"],
+                providers=["CPUExecutionProvider"],
+            )
+            face_analyzer.prepare(
+                ctx_id=-1,
+                det_size=(self.settings.face_detection_size, self.settings.face_detection_size),
+            )
+            print(f"[MODEL] Загрузка CLIP image encoder {self.settings.image_encoder_id}...", flush=True)
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                self.settings.image_encoder_id,
+                torch_dtype=torch.float16,
+                cache_dir=str(ROOT / "models" / "huggingface"),
+                use_safetensors=True,
+            )
             print(f"[MODEL] Загрузка {self.settings.model_id} (первый запуск скачивает файлы)...", flush=True)
             pipeline = StableDiffusionInpaintPipeline.from_pretrained(
                 self.settings.model_id,
@@ -181,10 +250,13 @@ class ImageEditorService:
                 torch_dtype=torch.float16,
                 cache_dir=str(ROOT / "models" / "huggingface"),
                 use_safetensors=True,
+                image_encoder=image_encoder,
             )
+            pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
             _configure_pipeline(pipeline, self.settings)
             self.pipeline = pipeline
             self.torch = torch
+            self.face_analyzer = face_analyzer
             print("[MODEL] Модель готова.", flush=True)
         except Exception as exc:
             self.error = str(exc)
@@ -193,7 +265,57 @@ class ImageEditorService:
 
     @property
     def ready(self) -> bool:
-        return self.pipeline is not None and self.error is None
+        return self.pipeline is not None and self.face_analyzer is not None and self.error is None
+
+    def _prepare_faceid_condition(
+        self,
+        reference: Image.Image,
+        guidance_scale: float,
+        request_id: str,
+    ) -> list[Any]:
+        if self.pipeline is None or self.torch is None or self.face_analyzer is None:
+            raise RuntimeError("FaceID ещё не загружен")
+        import cv2
+        import numpy as np
+        from insightface.utils import face_align
+
+        reference_rgb = np.asarray(reference.convert("RGB")).copy()
+        reference_bgr = cv2.cvtColor(reference_rgb, cv2.COLOR_RGB2BGR)
+        faces = self.face_analyzer.get(reference_bgr)
+        if not faces:
+            raise ValueError(
+                "на reference_image не найдено лицо; используйте чёткий снимок одного человека анфас"
+            )
+        face = max(
+            faces,
+            key=lambda candidate: max(0, candidate.bbox[2] - candidate.bbox[0])
+            * max(0, candidate.bbox[3] - candidate.bbox[1]),
+        )
+        aligned_bgr = face_align.norm_crop(reference_bgr, landmark=face.kps, image_size=224)
+        aligned = Image.fromarray(cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB))
+        bbox = tuple(round(float(value), 1) for value in face.bbox)
+        print(f"[FACEID {request_id}] лицо найдено, bbox={bbox}", flush=True)
+
+        device = self.torch.device(f"cuda:{self.settings.gpu_index}")
+        use_guidance = guidance_scale > 1
+        face_embedding = self.torch.from_numpy(
+            np.asarray(face.normed_embedding, dtype=np.float32)
+        ).reshape(1, 1, 1, -1)
+        if use_guidance:
+            face_embedding = self.torch.cat([self.torch.zeros_like(face_embedding), face_embedding])
+        face_embedding = face_embedding.to(device=device, dtype=self.torch.float16)
+
+        with self.torch.inference_mode():
+            clip_embedding = self.pipeline.prepare_ip_adapter_image_embeds(
+                [[aligned]],
+                None,
+                device,
+                1,
+                use_guidance,
+            )[0]
+        projection = self.pipeline.unet.encoder_hid_proj.image_projection_layers[0]
+        projection.clip_embeds = clip_embedding.to(device=device, dtype=self.torch.float16)
+        return [face_embedding]
 
     def edit(
         self,
@@ -214,31 +336,29 @@ class ImageEditorService:
         original = image.convert("RGBA")
         original_size = original.size
         mask = mask.convert("L").resize(original_size, Image.Resampling.BILINEAR)
-        if mask.getbbox() is None:
-            raise ValueError("маска полностью чёрная")
-
+        crop_box = _crop_box_from_mask(mask, self.settings.crop_padding_ratio)
+        base_image = Image.alpha_composite(Image.new("RGBA", original_size, "white"), original).convert("RGB")
+        cropped_image = base_image.crop(crop_box)
+        cropped_mask = mask.crop(crop_box)
         model_image, content_box = _fit_for_model(
-            Image.alpha_composite(Image.new("RGBA", original_size, "white"), original).convert("RGB"),
+            cropped_image,
             self.settings.resolution,
             "RGB",
         )
-        model_mask, _ = _fit_for_model(mask, self.settings.resolution, "L")
-        model_reference = ImageOps.fit(
-            reference.convert("RGB"),
-            (self.settings.resolution, self.settings.resolution),
-            method=Image.Resampling.LANCZOS,
-        )
-        softened_mask = model_mask.filter(ImageFilter.GaussianBlur(radius=3))
+        model_mask, _ = _fit_for_model(cropped_mask, self.settings.resolution, "L")
+        softened_mask = model_mask.filter(ImageFilter.GaussianBlur(radius=self.settings.mask_blur_radius))
+
         def progress_callback(_pipeline: Any, step_index: int, _timestep: Any, callback_kwargs: dict[str, Any]):
             print(f"[GENERATE {request_id}] шаг {step_index + 1}/{steps}", flush=True)
             return callback_kwargs
 
         with self.lock:
             self.pipeline.set_ip_adapter_scale(ip_adapter_scale)
+            faceid_embeds = self._prepare_faceid_condition(reference, guidance_scale, request_id)
             started = time.monotonic()
             print(
                 f"[GENERATE {request_id}] старт: {steps} шагов, seed={seed}, "
-                f"GPU={self.settings.gpu_index}",
+                f"GPU={self.settings.gpu_index}, crop={crop_box}",
                 flush=True,
             )
             generator = self.torch.Generator(device="cpu").manual_seed(seed)
@@ -247,7 +367,7 @@ class ImageEditorService:
                 negative_prompt=negative_prompt,
                 image=model_image,
                 mask_image=model_mask,
-                ip_adapter_image=model_reference,
+                ip_adapter_image_embeds=faceid_embeds,
                 num_inference_steps=steps,
                 guidance_scale=guidance_scale,
                 strength=strength,
@@ -259,7 +379,10 @@ class ImageEditorService:
             print(f"[GENERATE {request_id}] готово за {duration:.1f} с", flush=True)
 
         blended = Image.composite(result, model_image, softened_mask)
-        restored = _restore_from_model(blended, content_box, original_size)
+        crop_size = (crop_box[2] - crop_box[0], crop_box[3] - crop_box[1])
+        restored_crop = _restore_from_model(blended, content_box, crop_size)
+        restored = base_image.copy()
+        restored.paste(restored_crop, crop_box[:2])
         restored.putalpha(original.getchannel("A"))
         return restored
 
@@ -273,7 +396,7 @@ def create_app(settings: Settings, service: ImageEditorService | None = None, lo
             service.load()
         yield
 
-    app = FastAPI(title="Local Image Editor", version="1.0", lifespan=lifespan)
+    app = FastAPI(title="Local Image Editor", version="2.0", lifespan=lifespan)
 
     def authorize(authorization: str | None = Header(default=None)) -> None:
         expected = f"Bearer {settings.api_key}"
@@ -286,6 +409,8 @@ def create_app(settings: Settings, service: ImageEditorService | None = None, lo
             "status": "ready" if service.ready else "loading" if not service.error else "error",
             "model": settings.model_id,
             "adapter": settings.adapter_weight,
+            "face_analyzer": settings.face_analyzer_name,
+            "crop_padding_ratio": settings.crop_padding_ratio,
             "device": f"cuda:{settings.gpu_index}",
             "device_name": service.device_name,
             "vram_gb": round(service.vram_bytes / (1024 ** 3), 2),

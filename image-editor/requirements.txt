@@ -7,3 +7,9 @@ accelerate==1.2.1
 safetensors==0.4.5
 huggingface-hub==0.26.5
 Pillow==11.1.0
+numpy==1.26.4
+onnx==1.17.0
+onnxruntime==1.20.1
+opencv-python-headless==4.11.0.86
+peft==0.14.0
+insightface @ https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl ; platform_system == "Windows" and python_version == "3.11"

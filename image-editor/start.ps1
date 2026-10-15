@@ -17,7 +17,7 @@ $Downloads = Join-Path $Root '_download'
 $Logs = Join-Path $Root 'logs'
 $Models = Join-Path $Root 'models'
 $RuntimeMarker = Join-Path $Runtime '.installed'
-$RuntimeVersion = 'image-editor portable runtime v1 torch-2.5.1-cu118'
+$RuntimeVersion = 'image-editor portable runtime v2 faceid-plusv2 torch-2.5.1-cu118'
 
 function Initialize-PortableEnvironment {
     $PortableProfile = Join-Path $Root '_profile'
@@ -144,7 +144,7 @@ function Install-ImageEditor {
         }
     }
 
-    $SmokeCode = "import torch,diffusers,transformers,accelerate,fastapi; assert torch.cuda.is_available(), 'CUDA is not available'; print(torch.__version__, torch.cuda.get_device_name(0))"
+    $SmokeCode = "import torch,diffusers,transformers,accelerate,fastapi,insightface,onnxruntime,cv2; assert torch.cuda.is_available(), 'CUDA is not available'; print(torch.__version__, torch.cuda.get_device_name(0))"
     & $Python -c $SmokeCode
     if ($LASTEXITCODE -ne 0) { throw 'Installed runtime cannot use the NVIDIA GPU.' }
     Set-Content -LiteralPath $RuntimeMarker -Value $RuntimeVersion -Encoding ASCII
