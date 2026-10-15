@@ -10,7 +10,6 @@ $Root = $PSScriptRoot
 $Config = Get-Content -LiteralPath (Join-Path $Root 'config.json') -Raw | ConvertFrom-Json
 if ($Port -eq 0) { $Port = [int]$Config.port }
 if (-not $ApiKey) { $ApiKey = [string]$Config.api_key }
-if ($GpuIndex -lt 0) { $GpuIndex = [int]$Config.gpu_index }
 $Runtime = Join-Path $Root '_runtime'
 $Python = Join-Path $Runtime 'python\python.exe'
 $Downloads = Join-Path $Root '_download'
@@ -182,7 +181,8 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf) -or $InstalledVersion -
     Initialize-PortableEnvironment
 }
 
-$Arguments = @((Join-Path $Root 'app.py'),'--host',[string]$Config.host,'--port',$Port,'--api-key',$ApiKey,'--gpu-index',$GpuIndex)
+$Arguments = @((Join-Path $Root 'app.py'),'--host',[string]$Config.host,'--port',$Port,'--api-key',$ApiKey)
+if ($GpuIndex -ge 0) { $Arguments += @('--gpu-index',$GpuIndex) }
 $ArgumentLine = (($Arguments | ForEach-Object { Quote-Argument $_ }) -join ' ')
 $Process = $null
 try {
@@ -196,11 +196,13 @@ try {
         status = 'running'
         url = $Url
         edit_endpoint = "$Url/v1/images/edits"
+        batch_edit_endpoint = "$Url/v1/images/edits/batch"
         api_key = $ApiKey
-        gpu_index = $GpuIndex
+        gpu_indices = @($Health.devices | ForEach-Object { $_.gpu_index })
         model = [string]$Health.model
     } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Root 'connection.json') -Encoding UTF8
-    Write-Host "[READY] Image editor: $Url (GPU $GpuIndex, $($Health.device_name))" -ForegroundColor Green
+    $ActiveGpuIndices = @($Health.devices | ForEach-Object { $_.gpu_index }) -join ','
+    Write-Host "[READY] Image editor: $Url (GPU: $ActiveGpuIndices; $($Health.device_name))" -ForegroundColor Green
     Read-Host 'Press Enter to stop image editor' | Out-Null
 } finally {
     if ($Process -and -not $Process.HasExited) {

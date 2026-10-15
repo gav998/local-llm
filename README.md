@@ -228,12 +228,13 @@ Digitizer можно запускать без PaddleOCR и llama.cpp: ручн�
 ## image-editor
 
 Запустите `image-editor\start.bat`. На первом старте папка сама скачает portable Python,
-CUDA-сборку PyTorch, Stable Diffusion 1.5 Inpainting и IP-Adapter Plus Face. Сервис принимает
-исходный фрагмент, чёрно-белую маску и фотографию человека через
-`POST http://127.0.0.1:9410/v1/images/edits`; ключ по умолчанию —
-`local-image-editor`. Генерации выполняются последовательно, а progress каждого шага виден
-в консоли. Конфигурация рассчитана на одну GTX 1080 8 ГБ с CPU offload; номер карты можно
-сменить в `image-editor\config.json`. Подробности: [`image-editor/README.md`](image-editor/README.md).
+CUDA-сборку PyTorch, DreamShaper Inpainting, IP-Adapter FaceID Plus v2 и InsightFace. Сервис
+принимает исходный фрагмент, чёрно-белую маску и фотографию человека через одиночный endpoint
+`POST http://127.0.0.1:9410/v1/images/edits` или пакетный
+`POST http://127.0.0.1:9410/v1/images/edits/batch`; ключ по умолчанию —
+`local-image-editor`. Все совместимые NVIDIA GPU обнаруживаются автоматически: для каждой
+создаётся отдельный воркер, а слайды распределяются через общую очередь. Подробности:
+[`image-editor/README.md`](image-editor/README.md).
 
 ## webui
 

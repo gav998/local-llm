@@ -15,6 +15,8 @@ def test_launcher_keeps_runtime_portable_and_gpu_only():
     assert "onnxruntime" in script
     assert "faceid-plusv2" in script
     assert "-NoNewWindow" in script
+    assert "batch_edit_endpoint" in script
+    assert "gpu_indices" in script
 
 
 def test_faceid_runtime_dependencies_are_pinned():

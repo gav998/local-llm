@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import io
+import json
+import threading
+import zipfile
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,7 +39,9 @@ def settings() -> app.Settings:
 
 def test_health_and_authenticated_edit():
     client = TestClient(app.create_app(settings(), FakeService(), load_model=False))
-    assert client.get("/health").json()["status"] == "ready"
+    health = client.get("/health").json()
+    assert health["status"] == "ready"
+    assert health["gpu_count"] == 1
     files = {
         "image": ("image.png", png(), "image/png"),
         "mask": ("mask.png", png("L", 255), "image/png"),
@@ -75,6 +81,91 @@ def test_default_settings_use_faceid_plus_v2():
     assert configured.adapter_weight == "ip-adapter-faceid-plusv2_sd15.bin"
     assert configured.image_encoder_id == "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
     assert configured.default_strength < 0.98
+    assert configured.gpu_indices is None
+
+
+def test_auto_gpu_selection_uses_all_compatible_visible_devices():
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 3
+
+        @staticmethod
+        def get_device_properties(index):
+            return SimpleNamespace(major=(5, 6, 8)[index])
+
+    assert app._resolve_gpu_indices(SimpleNamespace(cuda=FakeCuda()), settings()) == (1, 2)
+
+
+def test_gpu_pool_dispatches_two_jobs_concurrently_to_two_workers():
+    configured = settings()
+    rendezvous = threading.Barrier(2)
+    seen = []
+
+    class FakeWorker:
+        def __init__(self, gpu_index):
+            self.settings = replace(configured, gpu_index=gpu_index, gpu_indices=(gpu_index,))
+            self.device_name = f"fake-{gpu_index}"
+            self.vram_bytes = 8 * 1024**3
+
+        def edit(self, *_arguments):
+            seen.append(self.settings.gpu_index)
+            rendezvous.wait(timeout=2)
+            return Image.new("RGB", (1, 1), (self.settings.gpu_index, 0, 0))
+
+    pool = app.ImageEditorPool(configured)
+    pool.workers = [FakeWorker(0), FakeWorker(1)]
+    pool._start_worker_threads()
+    arguments = (
+        Image.new("RGB", (1, 1)),
+        Image.new("L", (1, 1), 255),
+        Image.new("RGB", (1, 1)),
+        "prompt",
+        "negative",
+        1,
+        1.0,
+        0.8,
+        0.9,
+        1,
+    )
+    try:
+        futures = pool.submit_many(
+            [arguments + ("request-a",), arguments + ("request-b",)]
+        )
+        results = [future.result(timeout=3) for future in futures]
+        assert {result.getpixel((0, 0))[0] for result in results} == {0, 1}
+        assert set(seen) == {0, 1}
+        assert pool.describe()["queued_jobs"] == 0
+    finally:
+        pool.stop()
+
+
+def test_batch_edit_returns_pngs_and_manifest_in_zip():
+    client = TestClient(app.create_app(settings(), FakeService(), load_model=False))
+    files = []
+    for index in range(2):
+        files.append(("images", (f"slide-{index}.png", png(), "image/png")))
+        files.append(("masks", (f"mask-{index}.png", png("L", 255), "image/png")))
+    files.append(("reference_images", ("person.png", png(), "image/png")))
+
+    response = client.post(
+        "/v1/images/edits/batch",
+        files=files,
+        headers={"Authorization": "Bearer local-image-editor"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/zip"
+    assert response.headers["x-batch-successful"] == "2"
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["successful"] == 2
+        assert manifest["failed"] == 0
+        assert len([name for name in archive.namelist() if name.endswith(".png")]) == 2
 
 
 def test_mask_crop_enlarges_small_face_and_stays_inside_slide():
