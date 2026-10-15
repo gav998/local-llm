@@ -1,4 +1,4 @@
-"""Minimal, loopback-only PDF digitizer.
+"""Minimal PDF digitizer for a local workstation or a trusted LAN.
 
 The Markdown sidecar is the complete document database.  HTML comments bind each
 piece of Markdown to a rectangle in the source PDF; object/field types only add
@@ -251,18 +251,17 @@ def normalize_region(
             "y": y_cuts,
             "statuses": _status_matrix(raw_grid.get("statuses"), rows, columns),
         }
-        if "columnTypes" in raw_grid:
-            column_types = raw_grid.get("columnTypes")
-            if not isinstance(column_types, list) or len(column_types) != columns:
-                raise ValueError(
-                    "grid.columnTypes должен соответствовать числу столбцов"
-                )
-            normalized_column_types = [str(item or "") for item in column_types]
-            if any(
-                item and item not in COLUMN_TYPES for item in normalized_column_types
-            ):
-                raise ValueError("grid.columnTypes содержит неизвестный тип столбца")
-            region["grid"]["columnTypes"] = normalized_column_types
+        column_types = raw_grid.get("columnTypes", [""] * columns)
+        if not isinstance(column_types, list) or len(column_types) != columns:
+            raise ValueError(
+                "grid.columnTypes должен соответствовать числу столбцов"
+            )
+        normalized_column_types = [str(item or "") for item in column_types]
+        if any(
+            item and item not in COLUMN_TYPES for item in normalized_column_types
+        ):
+            raise ValueError("grid.columnTypes содержит неизвестный тип столбца")
+        region["grid"]["columnTypes"] = normalized_column_types
     return region
 
 
@@ -452,12 +451,12 @@ class DocumentStore:
 
 
 class SourceRegistry:
-    """Resolve local PDF paths and cache explicitly opened HTTP PDF sources."""
+    """Resolve local PDFs and store explicitly opened remote sources."""
 
     def __init__(self, data_root: Path) -> None:
-        self.data_root = data_root
+        self.data_root = data_root.expanduser().resolve()
         self.data_root.mkdir(parents=True, exist_ok=True)
-        self.index_path = data_root / "remote-sources.json"
+        self.index_path = self.data_root / "remote-sources.json"
         self._lock = threading.Lock()
         try:
             self.remote_index = json.loads(self.index_path.read_text(encoding="utf-8"))
@@ -511,6 +510,16 @@ class SourceRegistry:
                 json.dumps(self.remote_index, ensure_ascii=False, indent=2) + "\n",
             )
             return destination
+
+    def allocate_upload(self, name: str) -> Path:
+        """Allocate a private server-side path for a browser-uploaded PDF."""
+        leaf = re.split(r"[/\\]", unquote(str(name or "").strip()))[-1]
+        leaf = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", leaf).rstrip(". ")
+        if not leaf or Path(leaf).suffix.lower() != PDF_SUFFIX:
+            raise ValueError("Для загрузки нужен PDF-файл")
+        bucket = self.data_root / "uploads" / uuid.uuid4().hex
+        bucket.mkdir(parents=True)
+        return bucket / leaf
 
 
 def clean_ocr_markup(value: str) -> str:
@@ -766,7 +775,7 @@ def create_app(
     normalizer: GsmNormalizer | None = None,
     relationships: RelationshipStore | None = None,
 ):
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.responses import HTMLResponse, Response
 
     app = FastAPI(title="PDF Digitizer")
@@ -798,6 +807,36 @@ def create_app(
             return {"cancelled": selected is None, "source": selected}
         except Exception as exc:
             raise bad(exc) from exc
+
+    async def upload_pdf(request, name: str = Query(...)) -> dict[str, str]:
+        destination: Path | None = None
+        try:
+            destination = registry.allocate_upload(name)
+            total = 0
+            with destination.open("xb") as output:
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > MAX_PDF_BYTES:
+                        raise ValueError("Загружаемый PDF превышает 1 ГБ")
+                    output.write(chunk)
+            with destination.open("rb") as uploaded:
+                signature = uploaded.read(5)
+            if signature != b"%PDF-":
+                raise ValueError("Загруженный файл не является PDF")
+            return {"source": str(destination), "name": destination.name}
+        except Exception as exc:
+            if destination is not None:
+                destination.unlink(missing_ok=True)
+                try:
+                    destination.parent.rmdir()
+                except OSError:
+                    pass
+            raise bad(exc) from exc
+
+    # Request is imported lazily with FastAPI, so attach the concrete annotation
+    # before route registration (module annotations are otherwise postponed).
+    upload_pdf.__annotations__["request"] = Request
+    app.post("/api/upload")(upload_pdf)
 
     @app.get("/api/document")
     def get_document(source: str = Query(...)) -> dict[str, Any]:
@@ -901,7 +940,7 @@ def create_app(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9400)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--paddle-url", default="http://127.0.0.1:9399")
@@ -911,8 +950,6 @@ def main() -> int:
     parser.add_argument("--brands-csv", type=Path, required=True)
     parser.add_argument("--relations-csv", type=Path, required=True)
     args = parser.parse_args()
-    if args.host != "127.0.0.1":
-        raise SystemExit("Digitizer may bind only to 127.0.0.1")
     normalizer = GsmNormalizer(args.brands_csv)
     app = create_app(
         SourceRegistry(args.data_root),

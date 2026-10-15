@@ -8,7 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gsm_normalizer import GsmNormalizer, RelationshipStore, normalize_text
+from gsm_normalizer import (
+    RELATION_HEADERS,
+    GsmNormalizer,
+    RelationshipStore,
+    normalize_text,
+)
 
 
 class GsmNormalizerTests(unittest.TestCase):
@@ -45,6 +50,56 @@ class GsmNormalizerTests(unittest.TestCase):
         self.assertFalse(result["resolved"])
         self.assertEqual(result["items"][0]["source"], "Т-3 по ГОСТ 10227-86")
         self.assertGreaterEqual(len(result["items"][0]["candidates"]), 2)
+
+    def test_unresolved_value_survives_repeated_normalization(self) -> None:
+        source = "- по ГОСТ 10227-86; Jet A-1 по ASTM D1655"
+        result = self.normalizer.analyze(source)
+        self.assertEqual(result["text"], source)
+        self.assertEqual(len(result["items"]), 2)
+        self.assertFalse(result["resolved"])
+        self.assertEqual(
+            self.normalizer.normalize_text("- по -; - по ГОСТ 10227-86"),
+            "- по -; - по ГОСТ 10227-86",
+        )
+
+    def test_multiple_brands_and_documents_expand_to_individual_values(self) -> None:
+        result = self.normalizer.analyze(
+            "Т-1, Т-2 по ГОСТ 10227-86\n"
+            "Т-1 по ГОСТ 10227-86 и ТУ 38.1011025-85"
+        )
+        self.assertEqual(
+            result["text"],
+            "Т-1 по ГОСТ 10227-86; Т-2 по ГОСТ 10227-86; "
+            "Т-1 по ГОСТ 10227-86; Т-1 по ТУ 38.1011025-85",
+        )
+        self.assertTrue(result["resolved"])
+        self.assertEqual(
+            self.normalizer.normalize_text(
+                "Т-1 по ТУ 38.1011025-85 и ГОСТ 10227-86"
+            ),
+            "Т-1 по ТУ 38.1011025-85; Т-1 по ГОСТ 10227-86",
+        )
+
+    def test_unresolved_candidates_include_entire_sorted_catalog(self) -> None:
+        result = self.normalizer.analyze("Неизвестная по ASTM D1655")
+        candidates = result["items"][0]["candidates"]
+        self.assertEqual(len(candidates), 5)
+        self.assertEqual(candidates[0]["value"], "Jet A-1 по ASTM D1655")
+        self.assertEqual(
+            [item["value"] for item in candidates[1:]],
+            sorted(
+                [item["value"] for item in candidates[1:]],
+                key=str.casefold,
+            ),
+        )
+
+    def test_catalog_is_reloaded_after_external_edit(self) -> None:
+        self.assertEqual(self.normalizer.normalize_text("Новая"), "- по -")
+        with self.catalog.open("a", encoding="utf-8") as stream:
+            stream.write("Новая;СТО 99\n")
+        self.assertEqual(
+            self.normalizer.normalize_text("Новая"), "Новая по СТО 99"
+        )
 
     def test_brand_with_multiple_documents_requires_document_choice(self) -> None:
         result = self.normalizer.analyze("Т-1")
@@ -99,17 +154,32 @@ class RelationshipStoreTests(unittest.TestCase):
     def test_duplicate_and_reserve_creates_two_edges_and_deduplicates(self) -> None:
         rows = [["Основная по ГОСТ 1", "Дубль по ГОСТ 2"]]
         first = self.store.append(rows, ["primary", "duplicate_reserve"])
-        second = self.store.append(rows, ["primary", "duplicate_reserve"])
         self.assertEqual(first["added"], 2)
+        with self.path.open(encoding="utf-8-sig", newline="") as stream:
+            saved = list(csv.reader(stream, delimiter=";"))
+        saved[1][3] = "ручное примечание"
+        with self.path.open("w", encoding="utf-8-sig", newline="") as stream:
+            csv.writer(stream, delimiter=";", lineterminator="\n").writerows(saved)
+        second = self.store.append(rows, ["primary", "duplicate_reserve"])
         self.assertEqual(second["added"], 0)
         with self.path.open(encoding="utf-8-sig", newline="") as stream:
             saved = list(csv.reader(stream, delimiter=";"))
         self.assertEqual(
             saved,
             [
-                ["Первая марка", "Тип связи", "Вторая марка"],
-                ["Основная", "дублирующая", "Дубль"],
-                ["Основная", "резервная", "Дубль"],
+                ["Первая марка", "Тип связи", "Вторая марка", "Примечание"],
+                [
+                    "Основная по ГОСТ 1",
+                    "дублирующая",
+                    "Дубль по ГОСТ 2",
+                    "ручное примечание",
+                ],
+                [
+                    "Основная по ГОСТ 1",
+                    "резервная",
+                    "Дубль по ГОСТ 2",
+                    "",
+                ],
             ],
         )
 
@@ -119,6 +189,21 @@ class RelationshipStoreTests(unittest.TestCase):
                 [["Основная по ГОСТ 1", "Дубль"]],
                 ["primary", "duplicate"],
             )
+
+    def test_legacy_three_column_csv_gains_empty_notes_column(self) -> None:
+        self.path.write_text(
+            "Первая марка;Тип связи;Вторая марка\n"
+            "Старая;дублирующая;Запись\n",
+            encoding="utf-8",
+        )
+        self.store.append(
+            [["Основная по ГОСТ 1", "Резерв по ГОСТ 3"]],
+            ["primary", "reserve"],
+        )
+        with self.path.open(encoding="utf-8-sig", newline="") as stream:
+            saved = list(csv.reader(stream, delimiter=";"))
+        self.assertEqual(saved[0], [*RELATION_HEADERS])
+        self.assertEqual(saved[1], ["Старая", "дублирующая", "Запись", ""])
 
 
 if __name__ == "__main__":

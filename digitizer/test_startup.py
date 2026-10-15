@@ -52,7 +52,14 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("[Parameter(Mandatory=$true)]", script)
         self.assertIn("'--brands-csv',$BrandsCsv", script)
         self.assertIn("'--relations-csv',$RelationsCsv", script)
+        self.assertIn("'127.0.0.1'", script)
+        self.assertIn('http://${HealthHost}:$Port', script)
+        self.assertIn("From another computer", script)
         self.assertNotIn("Start-Process $Url", script)
+
+    def test_default_bind_address_allows_trusted_lan_access(self) -> None:
+        config = Path(__file__).with_name("config.json").read_text(encoding="utf-8")
+        self.assertIn('"host": "0.0.0.0"', config)
 
     def test_html_uses_dynamic_config_and_markdown_database(self) -> None:
         html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
@@ -69,6 +76,8 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("'/api/relationships'", html)
         self.assertIn("function columnTypeSelect", html)
         self.assertIn("function normalizationEditor", html)
+        self.assertIn('id="uploadFile"', html)
+        self.assertIn("/api/upload?name=", html)
         self.assertNotIn('id="save"', html)
         self.assertNotIn("assignDialog", html)
         self.assertNotIn("gridColumns", html)

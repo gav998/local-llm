@@ -95,6 +95,7 @@ class MarkdownModelTests(unittest.TestCase):
                             "x": [0, 0.5, 1],
                             "y": [0, 1],
                             "statuses": [["recognized", "modified"]],
+                            "columnTypes": ["", ""],
                         },
                         "text": "| 1 | 2 |\n| --- | --- |\n| A | B |",
                     }
@@ -160,6 +161,12 @@ class MarkdownModelTests(unittest.TestCase):
             parsed[1]["regions"][0]["grid"]["columnTypes"],
             ["primary", "duplicate_reserve"],
         )
+        self.assertIn('"columnTypes":["primary","duplicate_reserve"]', markdown)
+
+    def test_missing_column_types_are_added_to_service_comment(self) -> None:
+        del self.objects[1]["regions"][0]["grid"]["columnTypes"]
+        markdown = app.serialize_markdown(self.objects, page_count=2)
+        self.assertIn('"columnTypes":["",""]', markdown)
 
     def test_unknown_column_type_is_rejected(self) -> None:
         self.objects[1]["regions"][0]["grid"]["columnTypes"] = [
@@ -428,7 +435,32 @@ class StoreAndApiTests(unittest.TestCase):
         )
         self.assertEqual(corrected.json()["text"], "```raw model answer```")
         self.assertIn("очевидные ошибки OCR", llm.calls[0][0])
-        self.assertEqual(llm.calls[0][1], "raw OCR")
+        self.assertIn(
+            "Текст выбранного поля для исправления:\nraw OCR", llm.calls[0][1]
+        )
+
+    def test_browser_can_upload_pdf_to_server_data_directory(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("FastAPI test client is unavailable")
+        data_root = self.root / "data"
+        application = app.create_app(
+            app.SourceRegistry(data_root),
+            app.DocumentStore(),
+            FakePaddle(),
+            FakeLlm(),
+            Path(__file__).with_name("app.html"),
+        )
+        response = TestClient(application).post(
+            "/api/upload?name=remote.pdf",
+            content=b"%PDF- uploaded in browser",
+            headers={"Content-Type": "application/pdf"},
+        )
+        self.assertEqual(response.status_code, 200)
+        uploaded = Path(response.json()["source"])
+        self.assertTrue(uploaded.is_relative_to(data_root.resolve()))
+        self.assertEqual(uploaded.read_bytes(), b"%PDF- uploaded in browser")
 
 
 if __name__ == "__main__":

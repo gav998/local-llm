@@ -186,14 +186,22 @@ paddleocr\start.bat -Port 9399 -ApiKey local-ocr -Device auto -Profile digitizer
 ## digitizer
 
 Сначала запустите PaddleOCR, при необходимости — chat-модель llama.cpp, затем
-`digitizer\start.bat`. Embedded Python и зависимости установятся автоматически,
-после чего откроется `http://127.0.0.1:9400`.
+`digitizer\start.bat`, указав два CSV:
+
+```bat
+digitizer\start.bat -BrandsCsv "D:\data\gsm.csv" -RelationsCsv "D:\data\gsm-relations.csv"
+```
+
+Embedded Python и зависимости установятся автоматически,
+после чего приложение будет доступно локально по `http://127.0.0.1:9400` и с
+других компьютеров доверенной локальной сети по IPv4-адресу этого компьютера и
+порту 9400.
 
 Без аргументов URL и ключи читаются из соседних папок `paddleocr` и `llama`.
 Если папки находятся отдельно, укажите значения явно:
 
 ```bat
-digitizer\start.bat -PaddleUrl http://127.0.0.1:9399 -PaddleKey local-ocr -LlamaUrl http://127.0.0.1:6381/v1 -LlamaKey local-llm
+digitizer\start.bat -BrandsCsv "D:\data\gsm.csv" -RelationsCsv "D:\data\gsm-relations.csv" -PaddleUrl http://127.0.0.1:9399 -PaddleKey local-ocr -LlamaUrl http://127.0.0.1:6381/v1 -LlamaKey local-llm
 ```
 
 Llama используется только для выбранных пользователем операций исправления OCR;

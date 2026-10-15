@@ -212,9 +212,42 @@ Remove-Item -LiteralPath $OutLog,$ErrorLog -Force -ErrorAction SilentlyContinue
 $Process = $null
 try {
     $Process = Start-Process -FilePath $Python -ArgumentList $ArgumentLine -WorkingDirectory $Root -NoNewWindow -RedirectStandardOutput $OutLog -RedirectStandardError $ErrorLog -PassThru
-    $Url = "http://$($Config.host):$Port"
-    Wait-Healthy "$Url/health" $Process
-    Write-Host "[READY] Digitizer: $Url" -ForegroundColor Green
+    $HealthHost = if ([string]$Config.host -eq '0.0.0.0') {
+        '127.0.0.1'
+    } else {
+        [string]$Config.host
+    }
+    $HealthUrl = "http://${HealthHost}:$Port"
+    Wait-Healthy "$HealthUrl/health" $Process
+    Write-Host "[READY] Digitizer on this computer: $HealthUrl" -ForegroundColor Green
+    if ([string]$Config.host -eq '0.0.0.0') {
+        $LanAddresses = @()
+        try {
+            $LanAddresses = @(
+                [Net.Dns]::GetHostAddresses([Net.Dns]::GetHostName()) |
+                    Where-Object {
+                        $_.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork -and
+                        -not [Net.IPAddress]::IsLoopback($_)
+                    } |
+                    ForEach-Object { $_.IPAddressToString } |
+                    Sort-Object -Unique
+            )
+        } catch {
+            Write-Host "Could not determine LAN IPv4 automatically: $($_.Exception.Message)" `
+                -ForegroundColor Yellow
+        }
+        foreach ($Address in $LanAddresses) {
+            Write-Host "[READY] From another computer: http://${Address}:$Port" `
+                -ForegroundColor Green
+        }
+        if (-not $LanAddresses) {
+            Write-Host "Digitizer listens on all network adapters; use this computer's IPv4 address and port $Port." `
+                -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "[READY] Digitizer bind address: http://$($Config.host):$Port" `
+            -ForegroundColor Green
+    }
     Read-Host 'Press Enter to stop digitizer' | Out-Null
 } finally {
     if ($Process -and -not $Process.HasExited) {
