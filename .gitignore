@@ -12,6 +12,7 @@ llama/_src/
 llama/llama-cpp/
 llama/models/
 paddleocr/models/
+image-editor/models/
 __pycache__/
 *.py[cod]
 .pytest_cache/

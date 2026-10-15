@@ -1,0 +1,19 @@
+{
+  "host": "127.0.0.1",
+  "port": 9410,
+  "api_key": "local-image-editor",
+  "gpu_index": 0,
+  "resolution": 512,
+  "model_id": "stable-diffusion-v1-5/stable-diffusion-inpainting",
+  "model_revision": "main",
+  "adapter_id": "h94/IP-Adapter",
+  "adapter_subfolder": "models",
+  "adapter_weight": "ip-adapter-plus-face_sd15.safetensors",
+  "cpu_offload": true,
+  "default_steps": 28,
+  "default_guidance_scale": 7.5,
+  "default_ip_adapter_scale": 0.75,
+  "default_strength": 0.98,
+  "default_prompt": "a clean detailed friendly 3d cartoon portrait of the same person from the reference photo, matching the original illustration, natural recognizable face",
+  "default_negative_prompt": "different person, duplicate face, extra eyes, deformed face, distorted face, low quality, blurry, text, watermark"
+}

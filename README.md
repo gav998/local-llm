@@ -8,7 +8,7 @@
 - `gost-gsm-mcp` — отдельный HTTP MCP на `127.0.0.1:8765`;
 - `office-tools` — отдельный HTTP MCP для Word/Excel на `127.0.0.1:8766` и
   необязательный CLI;
-- `llama`, `paddleocr`, `digitizer`, `webui` — отдельные приложения со своими
+- `llama`, `paddleocr`, `digitizer`, `image-editor`, `webui` — отдельные приложения со своими
   launchers;
 - `vscode` — каталог для официального portable VS Code ZIP с готовым профилем,
   глобальными MCP и custom agents.
@@ -216,6 +216,16 @@ Digitizer можно запускать без PaddleOCR и llama.cpp: ручн�
 
 Закрытие соответствующего `start.bat` или нажатие Enter в нём останавливает
 запущенный из этого окна процесс.
+
+## image-editor
+
+Запустите `image-editor\start.bat`. На первом старте папка сама скачает portable Python,
+CUDA-сборку PyTorch, Stable Diffusion 1.5 Inpainting и IP-Adapter Plus Face. Сервис принимает
+исходный фрагмент, чёрно-белую маску и фотографию человека через
+`POST http://127.0.0.1:9410/v1/images/edits`; ключ по умолчанию —
+`local-image-editor`. Генерации выполняются последовательно, а progress каждого шага виден
+в консоли. Конфигурация рассчитана на одну GTX 1080 8 ГБ с CPU offload; номер карты можно
+сменить в `image-editor\config.json`. Подробности: [`image-editor/README.md`](image-editor/README.md).
 
 ## webui
 
