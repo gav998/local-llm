@@ -9,6 +9,7 @@ import os
 import secrets
 import threading
 import time
+import traceback
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -107,6 +108,37 @@ def _restore_from_model(image: Image.Image, box: tuple[int, int, int, int], size
     return image.crop((left, top, left + width, top + height)).resize(size, Image.Resampling.LANCZOS)
 
 
+def _ip_adapter_attention_processor_count(pipeline: Any) -> int:
+    processors = getattr(getattr(pipeline, "unet", None), "attn_processors", {})
+    return sum("IPAdapter" in type(processor).__name__ for processor in processors.values())
+
+
+def _configure_pipeline(pipeline: Any, settings: Settings) -> None:
+    """Load IP-Adapter without subsequently replacing its attention processors."""
+    pipeline.enable_vae_slicing()
+    print(f"[MODEL] Загрузка адаптера {settings.adapter_weight}...", flush=True)
+    pipeline.load_ip_adapter(
+        settings.adapter_id,
+        subfolder=settings.adapter_subfolder,
+        weight_name=settings.adapter_weight,
+        cache_dir=str(ROOT / "models" / "huggingface"),
+    )
+
+    # enable_attention_slicing() must not be called after load_ip_adapter(): it
+    # replaces IPAdapterAttnProcessor with a generic sliced processor. Diffusers
+    # then sends the IP-Adapter (text, image) tuple to code that expects a tensor
+    # and generation fails with: 'tuple' object has no attribute 'shape'.
+    processor_count = _ip_adapter_attention_processor_count(pipeline)
+    if processor_count == 0:
+        raise RuntimeError("IP-Adapter загружен без attention-процессоров")
+    print(f"[MODEL] Активно IP-Adapter attention-процессоров: {processor_count}", flush=True)
+
+    if settings.cpu_offload:
+        pipeline.enable_model_cpu_offload(gpu_id=settings.gpu_index)
+    else:
+        pipeline.to(f"cuda:{settings.gpu_index}")
+
+
 class ImageEditorService:
     """Owns one pipeline and serializes requests to keep VRAM use bounded."""
 
@@ -150,19 +182,7 @@ class ImageEditorService:
                 cache_dir=str(ROOT / "models" / "huggingface"),
                 use_safetensors=True,
             )
-            print(f"[MODEL] Загрузка адаптера {self.settings.adapter_weight}...", flush=True)
-            pipeline.load_ip_adapter(
-                self.settings.adapter_id,
-                subfolder=self.settings.adapter_subfolder,
-                weight_name=self.settings.adapter_weight,
-                cache_dir=str(ROOT / "models" / "huggingface"),
-            )
-            pipeline.enable_attention_slicing("max")
-            pipeline.enable_vae_slicing()
-            if self.settings.cpu_offload:
-                pipeline.enable_model_cpu_offload(gpu_id=self.settings.gpu_index)
-            else:
-                pipeline.to(f"cuda:{self.settings.gpu_index}")
+            _configure_pipeline(pipeline, self.settings)
             self.pipeline = pipeline
             self.torch = torch
             print("[MODEL] Модель готова.", flush=True)
@@ -329,6 +349,7 @@ def create_app(settings: Settings, service: ImageEditorService | None = None, lo
             raise HTTPException(422, str(exc)) from exc
         except Exception as exc:
             print(f"[GENERATE {request_id}] ошибка: {exc}", flush=True)
+            traceback.print_exc()
             raise HTTPException(500, f"ошибка генерации: {exc}") from exc
 
         output = io.BytesIO()

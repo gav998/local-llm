@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -66,3 +67,50 @@ def test_settings_reject_non_loopback(tmp_path):
         assert "loopback" in str(exc)
     else:
         raise AssertionError("non-loopback host was accepted")
+
+
+def test_pipeline_configuration_preserves_ip_adapter_attention_processors():
+    actions = []
+
+    class IPAdapterAttnProcessor2_0:
+        pass
+
+    class FakePipeline:
+        unet = SimpleNamespace(attn_processors={})
+
+        def enable_vae_slicing(self):
+            actions.append("vae_slicing")
+
+        def load_ip_adapter(self, *args, **kwargs):
+            actions.append("ip_adapter")
+            self.unet.attn_processors = {"down.attn2": IPAdapterAttnProcessor2_0()}
+
+        def enable_attention_slicing(self, *args, **kwargs):
+            raise AssertionError("attention slicing would replace IP-Adapter processors")
+
+        def enable_model_cpu_offload(self, *, gpu_id):
+            actions.append(("cpu_offload", gpu_id))
+
+    pipeline = FakePipeline()
+    app._configure_pipeline(pipeline, settings())
+
+    assert actions == ["vae_slicing", "ip_adapter", ("cpu_offload", 0)]
+    assert app._ip_adapter_attention_processor_count(pipeline) == 1
+
+
+def test_pipeline_configuration_rejects_missing_ip_adapter_processors():
+    class FakePipeline:
+        unet = SimpleNamespace(attn_processors={"down.attn2": object()})
+
+        def enable_vae_slicing(self):
+            pass
+
+        def load_ip_adapter(self, *args, **kwargs):
+            pass
+
+    try:
+        app._configure_pipeline(FakePipeline(), settings())
+    except RuntimeError as exc:
+        assert "attention-процессоров" in str(exc)
+    else:
+        raise AssertionError("pipeline without IP-Adapter processors was accepted")
