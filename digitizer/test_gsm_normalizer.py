@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gsm_normalizer import (
+    APPLICABILITY_HEADERS,
     RELATION_HEADERS,
     GsmNormalizer,
     RelationshipStore,
@@ -133,6 +134,23 @@ class GsmNormalizerTests(unittest.TestCase):
         )
         self.assertTrue(result["resolved"])
 
+    def test_exact_catalog_pair_is_not_parsed_after_semicolon_split(self) -> None:
+        catalog = self.root / "compound-brand.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\n"
+            "марка 1 и марка 2;ГОСТ 1234\n"
+            "Т-1;ГОСТ 10227-86\n",
+            encoding="utf-8",
+        )
+        result = GsmNormalizer(catalog).analyze(
+            "марка 1 и марка 2 по ГОСТ 1234; Т-1 по ГОСТ 10227-86"
+        )
+        self.assertEqual(
+            result["text"],
+            "марка 1 и марка 2 по ГОСТ 1234; Т-1 по ГОСТ 10227-86",
+        )
+        self.assertTrue(result["resolved"])
+
     def test_unresolved_candidates_include_entire_sorted_catalog(self) -> None:
         result = self.normalizer.analyze("Неизвестная по ASTM D1655")
         candidates = result["items"][0]["candidates"]
@@ -189,15 +207,15 @@ class RelationshipStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        catalog = self.root / "brands.csv"
-        catalog.write_text(
+        self.catalog = self.root / "brands.csv"
+        self.catalog.write_text(
             "Марка ГСМ,Нормативный документ\n"
             "Основная,ГОСТ 1\n"
             "Дубль,ГОСТ 2\n"
             "Резерв,ГОСТ 3\n",
             encoding="utf-8",
         )
-        self.normalizer = GsmNormalizer(catalog)
+        self.normalizer = GsmNormalizer(self.catalog)
         self.path = self.root / "relations.csv"
         self.store = RelationshipStore(self.path, self.normalizer)
 
@@ -208,6 +226,13 @@ class RelationshipStoreTests(unittest.TestCase):
         rows = [["Основная по ГОСТ 1", "Дубль по ГОСТ 2"]]
         first = self.store.append(rows, ["primary", "duplicate_reserve"])
         self.assertEqual(first["added"], 2)
+        with self.catalog.open(encoding="utf-8-sig", newline="") as stream:
+            catalog_rows = list(csv.reader(stream, delimiter=","))
+        self.assertEqual(
+            catalog_rows[0],
+            ["Марка ГСМ", "Нормативный документ", *APPLICABILITY_HEADERS],
+        )
+        self.assertEqual(catalog_rows[1][2:], ["", "", ""])
         with self.path.open(encoding="utf-8-sig", newline="") as stream:
             saved = list(csv.reader(stream, delimiter=";"))
         saved[1][3] = "ручное примечание"
@@ -276,6 +301,47 @@ class RelationshipStoreTests(unittest.TestCase):
             saved = list(csv.reader(stream, delimiter=";"))
         self.assertEqual(saved[0], [*RELATION_HEADERS])
         self.assertEqual(saved[1], ["Старая", "дублирующая", "Запись", ""])
+
+    def test_applicability_flags_extend_and_update_brands_csv(self) -> None:
+        result = self.store.append(
+            [["Основная по ГОСТ 1", "+", "-", "+"]],
+            [
+                "primary",
+                "applicable_ground",
+                "applicable_air",
+                "applicable_marine",
+            ],
+        )
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["applicabilityUpdated"], 3)
+        self.assertFalse(self.path.exists())
+        with self.catalog.open(encoding="utf-8-sig", newline="") as stream:
+            saved = list(csv.reader(stream, delimiter=","))
+        self.assertEqual(
+            saved[0],
+            ["Марка ГСМ", "Нормативный документ", *APPLICABILITY_HEADERS],
+        )
+        self.assertEqual(saved[1], ["Основная", "ГОСТ 1", "+", "-", "+"])
+        self.assertEqual(saved[2], ["Дубль", "ГОСТ 2", "", "", ""])
+        self.assertEqual(
+            self.store.status_matrix(
+                [["Основная по ГОСТ 1", "+", "-", "+"]],
+                [
+                    "primary",
+                    "applicable_ground",
+                    "applicable_air",
+                    "applicable_marine",
+                ],
+            ),
+            [["linked", "linked", "linked", "linked"]],
+        )
+
+    def test_applicability_rejects_values_other_than_plus_or_minus(self) -> None:
+        with self.assertRaisesRegex(ValueError, "допустимы только \\+ или -"):
+            self.store.append(
+                [["Основная по ГОСТ 1", "да"]],
+                ["primary", "applicable_ground"],
+            )
 
 
 if __name__ == "__main__":

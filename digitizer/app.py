@@ -27,7 +27,12 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
-from gsm_normalizer import COLUMN_TYPES, GsmNormalizer, RelationshipStore
+from gsm_normalizer import (
+    APPLICABILITY_TYPES,
+    COLUMN_TYPES,
+    GsmNormalizer,
+    RelationshipStore,
+)
 
 PDF_SUFFIX = ".pdf"
 MAX_PDF_BYTES = 1 << 30
@@ -807,6 +812,7 @@ def create_app(
         result["normalization"] = {
             "enabled": normalizer is not None,
             "columnTypes": COLUMN_TYPES,
+            "applicabilityTypes": APPLICABILITY_TYPES,
         }
         return result
 
