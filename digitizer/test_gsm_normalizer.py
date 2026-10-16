@@ -115,6 +115,24 @@ class GsmNormalizerTests(unittest.TestCase):
             "Т-1 по ТУ 38.1011025-85; Т-1 по ГОСТ 10227-86",
         )
 
+    def test_parenthetical_conjunction_is_not_a_brand_separator(self) -> None:
+        catalog = self.root / "qualified-brands.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\n"
+            "марка 1 (классов А и В);ГОСТ 1234\n"
+            "марка 2 (классов А и В);ГОСТ 1234\n",
+            encoding="utf-8",
+        )
+        result = GsmNormalizer(catalog).analyze(
+            "марка 1 и марка 2 (классов А и В) по ГОСТ 1234;"
+        )
+        self.assertEqual(
+            result["text"],
+            "марка 1 (классов А и В) по ГОСТ 1234; "
+            "марка 2 (классов А и В) по ГОСТ 1234",
+        )
+        self.assertTrue(result["resolved"])
+
     def test_unresolved_candidates_include_entire_sorted_catalog(self) -> None:
         result = self.normalizer.analyze("Неизвестная по ASTM D1655")
         candidates = result["items"][0]["candidates"]
@@ -224,6 +242,25 @@ class RelationshipStoreTests(unittest.TestCase):
                 [["Основная по ГОСТ 1", "Дубль"]],
                 ["primary", "duplicate"],
             )
+
+    def test_status_matrix_distinguishes_catalog_and_relation_misses(self) -> None:
+        rows = [
+            ["Основная по ГОСТ 1", "Дубль по ГОСТ 2"],
+            ["Основная по ГОСТ 1", "Неизвестная по ГОСТ 9"],
+        ]
+        column_types = ["primary", "duplicate"]
+        self.assertEqual(
+            self.store.status_matrix(rows, column_types),
+            [
+                ["relation-missing", "relation-missing"],
+                ["relation-missing", "brand-missing"],
+            ],
+        )
+        self.store.append([rows[0]], column_types)
+        self.assertEqual(
+            self.store.status_matrix([rows[0]], column_types),
+            [["linked", "linked"]],
+        )
 
     def test_legacy_three_column_csv_gains_empty_notes_column(self) -> None:
         self.path.write_text(

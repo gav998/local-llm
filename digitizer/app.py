@@ -38,6 +38,10 @@ MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+CELL_OCR_COMMENT_RE = re.compile(
+    r"\s*<!--\s*digitizer:ocr\s+(?:\"(?:\\.|[^\"\\])*\"|.*?)\s*-->",
+    re.IGNORECASE,
+)
 VARIABLE_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.-]*)\}")
 
 
@@ -310,7 +314,9 @@ def parse_markdown(
             metadata, marker_kind, current["type"], config, page_count
         )
         region["kind"] = marker_kind
-        region["text"] = content
+        region["text"] = (
+            CELL_OCR_COMMENT_RE.sub("", content) if marker_kind == "table" else content
+        )
         current["regions"].append(region)
     return objects
 
@@ -349,6 +355,8 @@ def serialize_markdown(
                 + " -->"
             )
             text = str(raw_region.get("text") or "").strip("\r\n")
+            if marker_kind == "table":
+                text = CELL_OCR_COMMENT_RE.sub("", text)
             if text:
                 lines.append(text)
         chunks.append("\n".join(lines))
@@ -437,6 +445,8 @@ class DocumentStore:
                 markdown = ""
             objects = parse_markdown(markdown, self.config, count)
             normalized = serialize_markdown(objects, self.config, count)
+            if normalized != markdown:
+                atomic_text(sidecar_path(source), normalized)
             return {"markdown": normalized, "objects": objects, "pageCount": count}
 
     def save(self, source: Path, markdown: str) -> dict[str, Any]:
@@ -869,6 +879,28 @@ def create_app(
         except Exception as exc:
             raise bad(exc) from exc
 
+    @app.get("/api/pdf/crop")
+    def pdf_crop(
+        source: str = Query(...),
+        page: int = Query(...),
+        x: float = Query(...),
+        y: float = Query(...),
+        width: float = Query(...),
+        height: float = Query(...),
+        rotation: int = Query(0),
+    ) -> Response:
+        try:
+            path = registry.resolve(source)
+            image = render_crop(
+                path,
+                page,
+                validate_rect([x, y, width, height]),
+                normalize_rotation(rotation),
+            )
+            return Response(image, media_type="image/png")
+        except Exception as exc:
+            raise bad(exc) from exc
+
     @app.post("/api/ocr")
     def run_ocr(payload: dict[str, Any]) -> dict[str, str]:
         try:
@@ -944,6 +976,23 @@ def create_app(
             if not isinstance(column_types, list):
                 raise ValueError("Для связей нужны типы столбцов")
             return relationships.append(rows, column_types)
+        except Exception as exc:
+            raise bad(exc) from exc
+
+    @app.post("/api/relationship-statuses")
+    def relationship_statuses(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if relationships is None:
+                raise RuntimeError("CSV связей марок ГСМ не настроен")
+            rows = payload.get("rows")
+            column_types = payload.get("columnTypes")
+            if not isinstance(rows, list) or not all(
+                isinstance(row, list) for row in rows
+            ):
+                raise ValueError("Для статусов нужен массив строк таблицы")
+            if not isinstance(column_types, list):
+                raise ValueError("Для статусов нужны типы столбцов")
+            return {"statuses": relationships.status_matrix(rows, column_types)}
         except Exception as exc:
             raise bad(exc) from exc
 

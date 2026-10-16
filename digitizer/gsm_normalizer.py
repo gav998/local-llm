@@ -41,11 +41,6 @@ RELATION_TYPES = {
     "duplicate_reserve": ("дублирующая", "резервная"),
 }
 
-_GROUP_SPLIT_RE = re.compile(r"[;\r\n]+")
-_BRAND_SPLIT_RE = re.compile(r"\s*(?:,|\bи\b)\s*", re.IGNORECASE)
-_PAIRED_SPLIT_RE = re.compile(
-    r"\s*(?:,|\bи\b)\s*(?=[^,;\r\n]*?\s+по\s+)", re.IGNORECASE
-)
 _PO_RE = re.compile(r"\s+по\s+", re.IGNORECASE)
 _UNRESOLVED_RE = re.compile(r"^\s*-\s+по\s+(.+?)\s*$", re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
@@ -77,6 +72,92 @@ _CONFUSABLES = str.maketrans(
         "|": "1",
     }
 )
+
+
+def _separator_spans(value: str) -> list[tuple[int, int]]:
+    """Return comma/newline/``и`` separators outside parentheses."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and char == ",":
+            spans.append((index, index + 1))
+        elif depth == 0 and char in "\r\n":
+            end = index + 1
+            while end < len(value) and value[end] in "\r\n":
+                end += 1
+            spans.append((index, end))
+            index = end - 1
+        elif depth == 0 and char.casefold() == "и":
+            previous = value[index - 1] if index else " "
+            following = value[index + 1] if index + 1 < len(value) else " "
+            if not previous.isalnum() and not following.isalnum():
+                spans.append((index, index + 1))
+        index += 1
+    return spans
+
+
+def _split_outside_parentheses(value: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    for left, right in _separator_spans(value):
+        part = value[start:left].strip()
+        if part:
+            parts.append(part)
+        start = right
+    tail = value[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _split_paired_clauses(value: str) -> list[str]:
+    """Split ``A по X и B по Y`` without touching parenthetical и."""
+    spans = _separator_spans(value)
+    selected: list[tuple[int, int]] = []
+    clause_start = 0
+    for position, span in enumerate(spans):
+        next_left = spans[position + 1][0] if position + 1 < len(spans) else len(value)
+        if _PO_RE.search(value[clause_start : span[0]]) and _PO_RE.search(
+            value[span[1] : next_left]
+        ):
+            selected.append(span)
+            clause_start = span[1]
+    if not selected:
+        return [value]
+    parts: list[str] = []
+    start = 0
+    for left, right in selected:
+        part = value[start:left].strip()
+        if part:
+            parts.append(part)
+        start = right
+    tail = value[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _apply_shared_parenthetical_suffix(brands: list[str]) -> list[str]:
+    """Copy a trailing qualifier from the last listed brand to earlier brands."""
+    if len(brands) < 2:
+        return brands
+    last = brands[-1]
+    suffix_at = last.find("(")
+    if suffix_at <= 0:
+        return brands
+    suffix = last[suffix_at:].strip()
+    if not suffix:
+        return brands
+    return [
+        brand if "(" in brand else f"{brand} {suffix}".strip()
+        for brand in brands
+    ]
 
 
 @dataclass(frozen=True)
@@ -379,10 +460,12 @@ class GsmNormalizer:
         self, raw: str, global_documents: list[str]
     ) -> list[str]:
         fragments: list[str] = []
-        groups = [part.strip() for part in _GROUP_SPLIT_RE.split(raw) if part.strip()]
+        # A semicolon always starts a new logical group.  Only after that hard
+        # boundary do commas/newlines/conjunctions participate in expansion.
+        groups = [part.strip() for part in raw.split(";") if part.strip()]
         for group in groups:
             clauses = (
-                [part for part in _PAIRED_SPLIT_RE.split(group) if part.strip()]
+                _split_paired_clauses(group)
                 if len(_PO_RE.findall(group)) > 1
                 else [group]
             )
@@ -395,11 +478,13 @@ class GsmNormalizer:
                 ]
                 documents = local_documents or global_documents
                 brand_part = self._brand_part(clause, documents)
-                brands = [
-                    part.strip(" -")
-                    for part in _BRAND_SPLIT_RE.split(brand_part)
-                    if part.strip(" -")
-                ]
+                brands = _apply_shared_parenthetical_suffix(
+                    [
+                        part.strip(" -")
+                        for part in _split_outside_parentheses(brand_part)
+                        if part.strip(" -")
+                    ]
+                )
                 if not brands:
                     fragments.append(clause.strip())
                 elif documents:
@@ -418,11 +503,13 @@ class GsmNormalizer:
                             else []
                         )
                     if len(explicit) == 2 and all(part.strip() for part in explicit):
-                        raw_brands = [
-                            part.strip(" -")
-                            for part in _BRAND_SPLIT_RE.split(explicit[0])
-                            if part.strip(" -")
-                        ]
+                        raw_brands = _apply_shared_parenthetical_suffix(
+                            [
+                                part.strip(" -")
+                                for part in _split_outside_parentheses(explicit[0])
+                                if part.strip(" -")
+                            ]
+                        )
                         fragments.extend(
                             f"{brand} по {explicit[1].strip()}"
                             for brand in raw_brands
@@ -601,6 +688,89 @@ class RelationshipStore:
             if any(values) or notes:
                 result.append((*values, notes))
         return result
+
+    @staticmethod
+    def _relation_key(
+        first: str, relation_type: str, second: str
+    ) -> tuple[str, str, str]:
+        return (
+            _match_text(first),
+            _match_text(relation_type),
+            _match_text(second),
+        )
+
+    def status_matrix(
+        self, rows: list[list[str]], column_types: list[str]
+    ) -> list[list[str]]:
+        """Classify typed cells against the brand and relationship CSV files."""
+        if not isinstance(rows, list) or not all(
+            isinstance(row, list) for row in rows
+        ):
+            raise ValueError("Для статусов нужен массив строк таблицы")
+        if not isinstance(column_types, list) or any(
+            value and value not in COLUMN_TYPES for value in column_types
+        ):
+            raise ValueError("Типы столбцов повреждены")
+        if any(len(row) != len(column_types) for row in rows):
+            raise ValueError("Число ячеек не равно числу типов столбцов")
+
+        parsed: list[list[list[CatalogEntry] | None]] = []
+        statuses = [["" for _ in column_types] for _ in rows]
+        for row_index, row in enumerate(rows):
+            parsed_row: list[list[CatalogEntry] | None] = []
+            for column_index, value in enumerate(row):
+                if not column_types[column_index] or not str(value).strip():
+                    parsed_row.append([])
+                    continue
+                try:
+                    entries = self.normalizer.parse_strict(str(value))
+                except ValueError:
+                    parsed_row.append(None)
+                    statuses[row_index][column_index] = "brand-missing"
+                else:
+                    parsed_row.append(entries)
+                    statuses[row_index][column_index] = "linked"
+            parsed.append(parsed_row)
+
+        existing = {
+            self._relation_key(first, relation_type, second)
+            for first, relation_type, second, _ in self._existing()
+        }
+        primary_indexes = [
+            index for index, value in enumerate(column_types) if value == "primary"
+        ]
+        relation_indexes = [
+            index for index, value in enumerate(column_types) if value in RELATION_TYPES
+        ]
+
+        for row_index, row in enumerate(parsed):
+            linked_related: list[bool] = []
+            primary_entries = (
+                row[primary_indexes[0]] if len(primary_indexes) == 1 else None
+            )
+            for column_index in relation_indexes:
+                related_entries = row[column_index]
+                if not related_entries:
+                    continue
+                linked = bool(primary_entries) and all(
+                    self._relation_key(first.value, relation_type, second.value)
+                    in existing
+                    for first in primary_entries or []
+                    for second in related_entries
+                    for relation_type in RELATION_TYPES[column_types[column_index]]
+                )
+                statuses[row_index][column_index] = (
+                    "linked" if linked else "relation-missing"
+                )
+                linked_related.append(linked)
+            for primary_index in primary_indexes:
+                if row[primary_index]:
+                    statuses[row_index][primary_index] = (
+                        "linked"
+                        if linked_related and all(linked_related)
+                        else "relation-missing"
+                    )
+        return statuses
 
     def build(
         self, rows: list[list[str]], column_types: list[str]

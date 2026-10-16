@@ -75,10 +75,14 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("'/api/normalize'", html)
         self.assertIn("'/api/catalog'", html)
         self.assertIn("'/api/relationships'", html)
+        self.assertIn("'/api/relationship-statuses'", html)
+        self.assertIn("/api/pdf/crop?", html)
         self.assertIn("function columnTypeSelect", html)
         self.assertIn("function normalizationEditor", html)
-        self.assertIn("function withCellOcr", html)
+        self.assertNotIn("function withCellOcr", html)
         self.assertIn("digitizer:ocr", html)
+        self.assertIn("autoNormalizeLoadedTables", html)
+        self.assertIn("cell-photo", html)
         self.assertIn("Удалить эту марку и нормативный документ", html)
         self.assertIn("Добавить в список CSV", html)
         self.assertIn('id="uploadFile"', html)
@@ -96,7 +100,7 @@ class DigitizerStartupTests(unittest.TestCase):
             "const corrected=normalizeCellText(await requestCorrection"
         )
         assignment = html.index(
-            "region._cells[row][column]=withCellOcr(corrected,ocr)"
+            "region._cells[row][column]=corrected"
         )
         self.assertLess(correction, assignment)
         self.assertNotIn(

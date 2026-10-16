@@ -163,7 +163,7 @@ class MarkdownModelTests(unittest.TestCase):
         )
         self.assertIn('"columnTypes":["primary","duplicate_reserve"]', markdown)
 
-    def test_table_cell_ocr_comment_survives_markdown_round_trip(self) -> None:
+    def test_legacy_table_cell_ocr_comment_is_removed_from_markdown(self) -> None:
         self.objects[1]["regions"][0]["text"] = (
             "| 1 | 2 |\n"
             "| --- | --- |\n"
@@ -171,10 +171,8 @@ class MarkdownModelTests(unittest.TestCase):
         )
         markdown = app.serialize_markdown(self.objects, page_count=2)
         parsed = app.parse_markdown(markdown, page_count=2)
-        self.assertIn(
-            '<!-- digitizer:ocr "Исходный OCR" -->',
-            parsed[1]["regions"][0]["text"],
-        )
+        self.assertNotIn("digitizer:ocr", markdown)
+        self.assertIn("| Норма | B |", parsed[1]["regions"][0]["text"])
 
     def test_missing_column_types_are_added_to_service_comment(self) -> None:
         del self.objects[1]["regions"][0]["grid"]["columnTypes"]
@@ -391,6 +389,40 @@ class StoreAndApiTests(unittest.TestCase):
         with mock.patch.object(store, "page_count", return_value=2):
             self.assertEqual(store.load(self.pdf)["markdown"], markdown)
 
+    def test_store_removes_legacy_ocr_comments_while_loading(self) -> None:
+        store = app.DocumentStore()
+        markdown = app.serialize_markdown(
+            [
+                {
+                    "type": "table",
+                    "regions": [
+                        {
+                            "kind": "table",
+                            "field": "body",
+                            "page": 1,
+                            "rect": [0, 0, 0.5, 0.5],
+                            "rotation": 0,
+                            "status": "recognized",
+                            "grid": {
+                                "x": [0, 1],
+                                "y": [0, 1],
+                                "statuses": [["recognized"]],
+                                "columnTypes": [""],
+                            },
+                            "text": "| 1 |\n| --- |\n| Марка |",
+                        }
+                    ],
+                }
+            ],
+            page_count=1,
+        ).replace("Марка", 'Марка <!-- digitizer:ocr "OCR" -->')
+        sidecar = app.sidecar_path(self.pdf)
+        sidecar.write_text(markdown, encoding="utf-8")
+        with mock.patch.object(store, "page_count", return_value=1):
+            loaded = store.load(self.pdf)
+        self.assertNotIn("digitizer:ocr", loaded["markdown"])
+        self.assertNotIn("digitizer:ocr", sidecar.read_text(encoding="utf-8"))
+
     def test_api_ocr_is_universal_and_ai_result_is_verbatim(self) -> None:
         try:
             from fastapi.testclient import TestClient
@@ -451,6 +483,39 @@ class StoreAndApiTests(unittest.TestCase):
         self.assertIn(
             "Текст выбранного поля для исправления:\nraw OCR", llm.calls[0][1]
         )
+
+    def test_api_serves_a_cell_crop_without_running_ocr(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("FastAPI test client is unavailable")
+        paddle = FakePaddle()
+        application = app.create_app(
+            app.SourceRegistry(self.root / "data"),
+            app.DocumentStore(),
+            paddle,
+            FakeLlm(),
+            Path(__file__).with_name("app.html"),
+        )
+        with mock.patch.object(app, "render_crop", return_value=b"cell png") as crop:
+            response = TestClient(application).get(
+                "/api/pdf/crop",
+                params={
+                    "source": str(self.pdf),
+                    "page": 1,
+                    "x": 0.1,
+                    "y": 0.2,
+                    "width": 0.3,
+                    "height": 0.4,
+                    "rotation": 90,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"cell png")
+        crop.assert_called_once_with(
+            self.pdf.resolve(), 1, [0.1, 0.2, 0.3, 0.4], 90
+        )
+        self.assertEqual(paddle.images, [])
 
     def test_api_can_append_missing_catalog_entry(self) -> None:
         try:
