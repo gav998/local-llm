@@ -163,6 +163,19 @@ class MarkdownModelTests(unittest.TestCase):
         )
         self.assertIn('"columnTypes":["primary","duplicate_reserve"]', markdown)
 
+    def test_table_cell_ocr_comment_survives_markdown_round_trip(self) -> None:
+        self.objects[1]["regions"][0]["text"] = (
+            "| 1 | 2 |\n"
+            "| --- | --- |\n"
+            '| Норма <!-- digitizer:ocr "Исходный OCR" --> | B |'
+        )
+        markdown = app.serialize_markdown(self.objects, page_count=2)
+        parsed = app.parse_markdown(markdown, page_count=2)
+        self.assertIn(
+            '<!-- digitizer:ocr "Исходный OCR" -->',
+            parsed[1]["regions"][0]["text"],
+        )
+
     def test_missing_column_types_are_added_to_service_comment(self) -> None:
         del self.objects[1]["regions"][0]["grid"]["columnTypes"]
         markdown = app.serialize_markdown(self.objects, page_count=2)
@@ -438,6 +451,34 @@ class StoreAndApiTests(unittest.TestCase):
         self.assertIn(
             "Текст выбранного поля для исправления:\nraw OCR", llm.calls[0][1]
         )
+
+    def test_api_can_append_missing_catalog_entry(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("FastAPI test client is unavailable")
+        catalog = self.root / "brands.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\nТ-1;ГОСТ 1\n",
+            encoding="utf-8",
+        )
+        application = app.create_app(
+            app.SourceRegistry(self.root / "data"),
+            app.DocumentStore(),
+            FakePaddle(),
+            FakeLlm(),
+            Path(__file__).with_name("app.html"),
+            app.GsmNormalizer(catalog),
+        )
+        client = TestClient(application)
+        response = client.post(
+            "/api/catalog",
+            json={"brand": "Т-2", "document": "ГОСТ 2"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["added"])
+        normalized = client.post("/api/normalize", json={"text": "Т-2 по ГОСТ 2"})
+        self.assertTrue(normalized.json()["resolved"])
 
     def test_browser_can_upload_pdf_to_server_data_directory(self) -> None:
         try:

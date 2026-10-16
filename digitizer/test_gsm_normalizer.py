@@ -49,7 +49,42 @@ class GsmNormalizerTests(unittest.TestCase):
         self.assertEqual(result["text"], "- по ГОСТ 10227-86")
         self.assertFalse(result["resolved"])
         self.assertEqual(result["items"][0]["source"], "Т-3 по ГОСТ 10227-86")
+        self.assertTrue(result["items"][0]["catalogMissing"])
+        self.assertEqual(
+            result["items"][0]["proposal"],
+            {
+                "brand": "Т-3",
+                "document": "ГОСТ 10227-86",
+                "value": "Т-3 по ГОСТ 10227-86",
+            },
+        )
         self.assertGreaterEqual(len(result["items"][0]["candidates"]), 2)
+
+    def test_user_can_append_missing_pair_to_catalog(self) -> None:
+        saved = self.normalizer.append_entry("Т-3", "ГОСТ 10227-86")
+        self.assertTrue(saved["added"])
+        self.assertEqual(saved["total"], 6)
+        result = self.normalizer.analyze("Т-3 по ГОСТ 10227-86")
+        self.assertTrue(result["resolved"])
+        self.assertEqual(result["text"], "Т-3 по ГОСТ 10227-86")
+        self.assertFalse(
+            self.normalizer.append_entry("т-3", "ГОСТ 10227-86")["added"]
+        )
+
+    def test_unknown_document_is_offered_for_catalog_append(self) -> None:
+        result = self.normalizer.analyze("Новая-1, Новая-2 по СТО 999")
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(
+            [item["proposal"]["value"] for item in result["items"]],
+            ["Новая-1 по СТО 999", "Новая-2 по СТО 999"],
+        )
+        self.assertTrue(all(item["catalogMissing"] for item in result["items"]))
+
+    def test_strict_parser_ignores_cell_ocr_comment(self) -> None:
+        parsed = self.normalizer.parse_strict(
+            'Т-1 по ГОСТ 10227-86 <!-- digitizer:ocr "Т-1 ГОСТ" -->'
+        )
+        self.assertEqual([entry.value for entry in parsed], ["Т-1 по ГОСТ 10227-86"])
 
     def test_unresolved_value_survives_repeated_normalization(self) -> None:
         source = "- по ГОСТ 10227-86; Jet A-1 по ASTM D1655"

@@ -918,6 +918,18 @@ def create_app(
         except Exception as exc:
             raise bad(exc) from exc
 
+    @app.post("/api/catalog")
+    def append_catalog_entry(payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            if normalizer is None:
+                raise RuntimeError("Справочник марок ГСМ не настроен")
+            return normalizer.append_entry(
+                str(payload.get("brand") or ""),
+                str(payload.get("document") or ""),
+            )
+        except Exception as exc:
+            raise bad(exc) from exc
+
     @app.post("/api/relationships")
     def append_relationships(payload: dict[str, Any]) -> dict[str, Any]:
         try:

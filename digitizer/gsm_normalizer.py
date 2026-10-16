@@ -53,6 +53,11 @@ _NON_WORD_RE = re.compile(r"[^0-9A-ZА-Я]+")
 _DOCUMENT_START_RE = re.compile(
     r"(?:^|\s)(?:ГОСТ|ОСТ|ТУ|СТО|ASTM|ISO|DIN|SAE|API)(?:\s|$)"
 )
+_RAW_DOCUMENT_START_RE = re.compile(
+    r"(?:^|\s)(?:ГОСТ|ОСТ|ТУ|СТО|ASTM|ISO|DIN|SAE|API)(?:\s|$)",
+    re.IGNORECASE,
+)
+_HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 _CONFUSABLES = str.maketrans(
     {
         "A": "А",
@@ -267,6 +272,33 @@ class GsmNormalizer:
             ),
         )
 
+    def _missing_proposal(
+        self, fragment: str, documents: Iterable[str]
+    ) -> CatalogEntry | None:
+        """Extract an explicit brand/document pair which is absent from CSV."""
+        raw = str(fragment or "").strip()
+        known_documents = list(documents)
+        brand = ""
+        document = ""
+        paired = _PO_RE.split(raw, maxsplit=1)
+        if len(paired) == 2:
+            brand, document = paired
+        elif len(known_documents) == 1:
+            document = known_documents[0]
+            match = re.search(re.escape(document), raw, re.IGNORECASE)
+            brand = raw[: match.start()] if match else raw
+        else:
+            match = _RAW_DOCUMENT_START_RE.search(raw)
+            if match:
+                brand, document = raw[: match.start()], raw[match.start() :]
+        brand = re.sub(r"\s+по\s*$", "", brand, flags=re.IGNORECASE).strip(" ,;-")
+        document = document.strip(" ,;-")
+        if not brand or not document or brand == "-" or document == "-":
+            return None
+        proposal = CatalogEntry(brand, document)
+        identity = (_match_text(proposal.brand), _match_text(proposal.document))
+        return None if identity in self._pairs else proposal
+
     @staticmethod
     def _brand_part(fragment: str, documents: Iterable[str]) -> str:
         value = _match_text(fragment)
@@ -330,7 +362,7 @@ class GsmNormalizer:
             document = documents[0] if len(documents) == 1 else "-"
             value = f"- по {document}"
         candidates = self._candidates(documents, brand_part)
-        return {
+        result = {
             "source": fragment.strip(),
             "brand": selected.brand if selected else "-",
             "document": document,
@@ -338,6 +370,10 @@ class GsmNormalizer:
             "resolved": bool(selected),
             "candidates": [entry.public() for entry in candidates],
         }
+        if not selected and (proposal := self._missing_proposal(fragment, documents)):
+            result["catalogMissing"] = True
+            result["proposal"] = proposal.public()
+        return result
 
     def _expanded_fragments(
         self, raw: str, global_documents: list[str]
@@ -373,7 +409,26 @@ class GsmNormalizer:
                         for document in documents
                     )
                 else:
-                    fragments.extend(brands)
+                    explicit = _PO_RE.split(clause, maxsplit=1)
+                    if len(explicit) != 2:
+                        marker = _RAW_DOCUMENT_START_RE.search(clause)
+                        explicit = (
+                            [clause[: marker.start()], clause[marker.start() :]]
+                            if marker
+                            else []
+                        )
+                    if len(explicit) == 2 and all(part.strip() for part in explicit):
+                        raw_brands = [
+                            part.strip(" -")
+                            for part in _BRAND_SPLIT_RE.split(explicit[0])
+                            if part.strip(" -")
+                        ]
+                        fragments.extend(
+                            f"{brand} по {explicit[1].strip()}"
+                            for brand in raw_brands
+                        )
+                    else:
+                        fragments.extend(brands)
         return fragments
 
     def analyze(self, value: str) -> dict[str, Any]:
@@ -426,7 +481,7 @@ class GsmNormalizer:
 
     def parse_strict(self, value: str) -> list[CatalogEntry]:
         """Validate a normalized cell and return its canonical catalog entries."""
-        text = str(value or "").strip()
+        text = _HTML_COMMENT_RE.sub("", str(value or "")).strip()
         if not text:
             return []
         self._reload_if_changed()
@@ -445,6 +500,71 @@ class GsmNormalizer:
                     raise ValueError(f"нет в справочнике: «{part}»")
                 result.append(entry)
             return result
+
+    def append_entry(self, brand: str, document: str) -> dict[str, Any]:
+        """Atomically append one user-confirmed pair to the source catalog."""
+        entry = CatalogEntry(str(brand or "").strip(), str(document or "").strip())
+        if not entry.brand or not entry.document:
+            raise ValueError("Для добавления нужны марка и нормативный документ")
+        if "\n" in entry.brand or "\r" in entry.brand:
+            raise ValueError("Марка должна быть записана в одну строку")
+        if "\n" in entry.document or "\r" in entry.document:
+            raise ValueError("Нормативный документ должен быть записан в одну строку")
+        identity = (_match_text(entry.brand), _match_text(entry.document))
+        with self._lock:
+            self._reload_if_changed()
+            if identity in self._pairs:
+                existing = self._pairs[identity]
+                return {
+                    "added": False,
+                    "entry": existing.public(),
+                    "total": len(self.entries),
+                    "path": str(self.catalog_path),
+                }
+            text = _read_text(self.catalog_path)
+            try:
+                delimiter = csv.Sniffer().sniff(
+                    text[:8192], delimiters=";,\t,"
+                ).delimiter
+            except csv.Error:
+                delimiter = ";"
+            rows = list(csv.reader(io.StringIO(text), delimiter=delimiter))
+            if not rows:
+                raise ValueError(f"Справочник марок пуст: {self.catalog_path}")
+            headers = {
+                value.strip().casefold(): index
+                for index, value in enumerate(rows[0])
+            }
+            brand_index = headers.get(BRAND_HEADER.casefold())
+            document_index = headers.get(DOCUMENT_HEADER.casefold())
+            if brand_index is None or document_index is None:
+                raise ValueError(
+                    f"{self.catalog_path}: нужны столбцы «{BRAND_HEADER}» "
+                    f"и «{DOCUMENT_HEADER}»"
+                )
+            new_row = [""] * len(rows[0])
+            new_row[brand_index] = entry.brand
+            new_row[document_index] = entry.document
+            rows.append(new_row)
+            output = io.StringIO(newline="")
+            writer = csv.writer(output, delimiter=delimiter, lineterminator="\n")
+            writer.writerows(rows)
+            temporary = self.catalog_path.with_name(
+                f".{self.catalog_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                temporary.write_text("\ufeff" + output.getvalue(), encoding="utf-8")
+                os.replace(temporary, self.catalog_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+            self._catalog_state = None
+            self._reload_if_changed()
+        return {
+            "added": True,
+            "entry": entry.public(),
+            "total": len(self.entries),
+            "path": str(self.catalog_path),
+        }
 
 
 class RelationshipStore:
