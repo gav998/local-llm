@@ -151,6 +151,50 @@ class GsmNormalizerTests(unittest.TestCase):
         )
         self.assertTrue(result["resolved"])
 
+    def test_catalog_pair_with_comma_and_conjunction_stays_one_item(self) -> None:
+        catalog = self.root / "literal-separators.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\n"
+            '"марка 1, марка 2 (классов А и В)";ГОСТ 1234\n'
+            "Т-1;ГОСТ 10227-86\n",
+            encoding="utf-8",
+        )
+        result = GsmNormalizer(catalog).analyze(
+            "марка 1, марка 2 (классов А и В) по ГОСТ 1234; "
+            "Т-1 по ГОСТ 10227-86"
+        )
+        self.assertEqual(
+            [item["value"] for item in result["items"]],
+            [
+                "марка 1, марка 2 (классов А и В) по ГОСТ 1234",
+                "Т-1 по ГОСТ 10227-86",
+            ],
+        )
+        self.assertTrue(result["resolved"])
+
+    def test_parenthetical_semicolon_is_not_a_group_separator(self) -> None:
+        catalog = self.root / "parenthetical-semicolon.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\n"
+            '"марка 1 (класс А; класс Б)";ГОСТ 1234\n',
+            encoding="utf-8",
+        )
+        result = GsmNormalizer(catalog).analyze(
+            "марка 1 (класс А; класс Б) по ГОСТ 1234"
+        )
+        self.assertEqual(
+            result["text"], "марка 1 (класс А; класс Б) по ГОСТ 1234"
+        )
+        self.assertEqual(len(result["items"]), 1)
+        self.assertTrue(result["resolved"])
+        self.assertEqual(
+            [
+                entry.value
+                for entry in GsmNormalizer(catalog).parse_strict(result["text"])
+            ],
+            ["марка 1 (класс А; класс Б) по ГОСТ 1234"],
+        )
+
     def test_unresolved_candidates_include_entire_sorted_catalog(self) -> None:
         result = self.normalizer.analyze("Неизвестная по ASTM D1655")
         candidates = result["items"][0]["candidates"]
@@ -342,6 +386,15 @@ class RelationshipStoreTests(unittest.TestCase):
                 [["Основная по ГОСТ 1", "да"]],
                 ["primary", "applicable_ground"],
             )
+
+    def test_invalid_applicability_has_its_own_red_status(self) -> None:
+        self.assertEqual(
+            self.store.status_matrix(
+                [["Основная по ГОСТ 1", "- по -"]],
+                ["primary", "applicable_ground"],
+            ),
+            [["relation-missing", "applicability-invalid"]],
+        )
 
 
 if __name__ == "__main__":

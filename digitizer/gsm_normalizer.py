@@ -125,6 +125,27 @@ def _split_outside_parentheses(value: str) -> list[str]:
     return parts
 
 
+def _split_semicolon_groups(value: str) -> list[str]:
+    """Apply the hard ``;`` boundary without parsing parenthetical text."""
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, char in enumerate(value):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif char == ";" and depth == 0:
+            part = value[start:index].strip()
+            if part:
+                parts.append(part)
+            start = index + 1
+    tail = value[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
 def _split_paired_clauses(value: str) -> list[str]:
     """Split ``A по X и B по Y`` without touching parenthetical и."""
     spans = _separator_spans(value)
@@ -493,9 +514,9 @@ class GsmNormalizer:
         self, raw: str, global_documents: list[str]
     ) -> list[str]:
         fragments: list[str] = []
-        # A semicolon always starts a new logical group.  Only after that hard
-        # boundary do commas/newlines/conjunctions participate in expansion.
-        groups = [part.strip() for part in raw.split(";") if part.strip()]
+        # A semicolon outside parentheses starts a new logical group.  Only
+        # after that hard boundary do commas/newlines/conjunctions expand it.
+        groups = _split_semicolon_groups(raw)
         for group in groups:
             # A complete catalog pair is already normalized.  In particular,
             # conjunctions inside its brand/document must not split it again.
@@ -613,7 +634,7 @@ class GsmNormalizer:
         self._reload_if_changed()
         with self._lock:
             result: list[CatalogEntry] = []
-            for part in (item.strip() for item in text.split(";") if item.strip()):
+            for part in _split_semicolon_groups(text):
                 pieces = re.split(
                     r"\s+по\s+", part, maxsplit=1, flags=re.IGNORECASE
                 )
@@ -864,7 +885,9 @@ class RelationshipStore:
                 if column_type in APPLICABILITY_TYPES:
                     parsed_row.append([])
                     statuses[row_index][column_index] = (
-                        "linked" if cell in {"+", "-"} else "brand-missing"
+                        "linked"
+                        if cell in {"+", "-"}
+                        else "applicability-invalid"
                     )
                     continue
                 try:
