@@ -122,6 +122,24 @@ class DigitizerStartupTests(unittest.TestCase):
         self.assertIn("ocrQueue:Promise.resolve()", html)
         self.assertIn("state.ocrQueue.then(()=>performOcr", html)
 
+    def test_each_table_cell_has_ocr_action_for_its_own_crop(self) -> None:
+        html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
+        table_editor = html.split("function tableEditor", 1)[1].split(
+            "function addGridCut", 1
+        )[0]
+        cell_ocr = html.split("async function performCellOcr", 1)[1].split(
+            "function runOcr", 1
+        )[0]
+        self.assertIn(
+            "smallButton('OCR',()=>runCellOcr(obj,region,r,c)", table_editor
+        )
+        self.assertIn("if(applicability)ocr.classList.add('only-action')", table_editor)
+        self.assertIn(
+            "await recognize(region.page,cellRect(region,row,column),region.rotation)",
+            cell_ocr,
+        )
+        self.assertNotIn("performOcr(obj,region)", cell_ocr)
+
     def test_region_hover_actions_and_viewport_fitted_menus_are_present(self) -> None:
         html = Path(__file__).with_name("app.html").read_text(encoding="utf-8")
         self.assertIn("region-tools", html)
