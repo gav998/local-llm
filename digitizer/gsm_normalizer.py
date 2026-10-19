@@ -350,6 +350,35 @@ class GsmNormalizer:
             (_match_text(pieces[0].strip()), _match_text(pieces[1].strip()))
         )
 
+    def _exact_item(self, value: str) -> dict[str, Any] | None:
+        """Describe a catalog pair without rewriting the user's cell text."""
+        source = str(value or "").strip()
+        entry = self._exact_entry(source)
+        if entry is None:
+            return None
+        brand, document = (
+            part.strip() for part in _PO_RE.split(source, maxsplit=1)
+        )
+        identity = (_match_text(entry.brand), _match_text(entry.document))
+        candidates = []
+        for candidate in self._candidates([entry.document], entry.brand):
+            public = candidate.public()
+            candidate_identity = (
+                _match_text(candidate.brand),
+                _match_text(candidate.document),
+            )
+            if candidate_identity == identity:
+                public = {"brand": brand, "document": document, "value": source}
+            candidates.append(public)
+        return {
+            "source": source,
+            "brand": brand,
+            "document": document,
+            "value": source,
+            "resolved": True,
+            "candidates": candidates,
+        }
+
     def _documents_in(self, text: str) -> list[tuple[str, float]]:
         normalized_text = _match_text(text)
         exact: list[tuple[int, str]] = []
@@ -512,8 +541,8 @@ class GsmNormalizer:
 
     def _expanded_fragments(
         self, raw: str, global_documents: list[str]
-    ) -> list[str]:
-        fragments: list[str] = []
+    ) -> list[tuple[str, bool]]:
+        fragments: list[tuple[str, bool]] = []
         # A semicolon outside parentheses starts a new logical group.  Only
         # after that hard boundary do commas/newlines/conjunctions expand it.
         groups = _split_semicolon_groups(raw)
@@ -522,7 +551,7 @@ class GsmNormalizer:
             # conjunctions inside its brand/document must not split it again.
             exact = self._exact_entry(group)
             if exact is not None:
-                fragments.append(exact.value)
+                fragments.append((group.strip(), True))
                 continue
             clauses = (
                 _split_paired_clauses(group)
@@ -531,7 +560,7 @@ class GsmNormalizer:
             )
             for clause in clauses:
                 if _UNRESOLVED_RE.match(clause):
-                    fragments.append(clause.strip())
+                    fragments.append((clause.strip(), False))
                     continue
                 local_documents = [
                     item[0] for item in self._documents_in(clause)
@@ -546,10 +575,10 @@ class GsmNormalizer:
                     ]
                 )
                 if not brands:
-                    fragments.append(clause.strip())
+                    fragments.append((clause.strip(), False))
                 elif documents:
                     fragments.extend(
-                        f"{brand} по {document}"
+                        (f"{brand} по {document}", False)
                         for brand in brands
                         for document in documents
                     )
@@ -571,11 +600,11 @@ class GsmNormalizer:
                             ]
                         )
                         fragments.extend(
-                            f"{brand} по {explicit[1].strip()}"
+                            (f"{brand} по {explicit[1].strip()}", False)
                             for brand in raw_brands
                         )
                     else:
-                        fragments.extend(brands)
+                        fragments.extend((brand, False) for brand in brands)
         return fragments
 
     def analyze(self, value: str) -> dict[str, Any]:
@@ -592,9 +621,13 @@ class GsmNormalizer:
             fragments = self._expanded_fragments(raw, global_documents)
             items = [
                 item
-                for fragment in fragments
+                for fragment, preserve in fragments
                 if (
-                    item := self._analyze_fragment(fragment, global_documents)
+                    item := (
+                        self._exact_item(fragment)
+                        if preserve
+                        else self._analyze_fragment(fragment, global_documents)
+                    )
                 )
                 is not None
             ]
@@ -616,8 +649,18 @@ class GsmNormalizer:
                         ],
                     }
                 ]
+            exact_groups = _split_semicolon_groups(raw)
+            text = (
+                raw
+                if exact_groups
+                and len(items) == len(exact_groups)
+                and all(
+                    self._exact_entry(group) is not None for group in exact_groups
+                )
+                else "; ".join(item["value"] for item in items)
+            )
             return {
-                "text": "; ".join(item["value"] for item in items),
+                "text": text,
                 "items": items,
                 "resolved": all(item["resolved"] for item in items),
             }

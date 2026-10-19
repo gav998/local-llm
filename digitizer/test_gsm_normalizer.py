@@ -151,6 +151,20 @@ class GsmNormalizerTests(unittest.TestCase):
         )
         self.assertTrue(result["resolved"])
 
+    def test_exact_catalog_pairs_keep_cell_text_exactly_as_written(self) -> None:
+        source = "т-1 по гост 10227-86;Jet A-1 по ASTM D1655"
+        result = self.normalizer.analyze(source)
+        self.assertEqual(result["text"], source)
+        self.assertEqual(
+            [item["value"] for item in result["items"]],
+            ["т-1 по гост 10227-86", "Jet A-1 по ASTM D1655"],
+        )
+        self.assertEqual(
+            result["items"][0]["candidates"][0]["value"],
+            "т-1 по гост 10227-86",
+        )
+        self.assertTrue(result["resolved"])
+
     def test_catalog_pair_with_comma_and_conjunction_stays_one_item(self) -> None:
         catalog = self.root / "literal-separators.csv"
         catalog.write_text(
