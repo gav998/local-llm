@@ -30,6 +30,7 @@ import yaml
 from gsm_normalizer import (
     APPLICABILITY_TYPES,
     COLUMN_TYPES,
+    TEXT_COLUMN_TYPES,
     GsmNormalizer,
     RelationshipStore,
 )
@@ -813,6 +814,7 @@ def create_app(
             "enabled": normalizer is not None,
             "columnTypes": COLUMN_TYPES,
             "applicabilityTypes": APPLICABILITY_TYPES,
+            "textColumnTypes": TEXT_COLUMN_TYPES,
         }
         return result
 

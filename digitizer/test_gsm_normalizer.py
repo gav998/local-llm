@@ -9,7 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gsm_normalizer import (
-    APPLICABILITY_HEADERS,
+    CATALOG_HEADERS,
+    TEXT_COLUMN_TYPES,
     RELATION_HEADERS,
     GsmNormalizer,
     RelationshipStore,
@@ -288,9 +289,9 @@ class RelationshipStoreTests(unittest.TestCase):
             catalog_rows = list(csv.reader(stream, delimiter=","))
         self.assertEqual(
             catalog_rows[0],
-            ["Марка ГСМ", "Нормативный документ", *APPLICABILITY_HEADERS],
+            ["Марка ГСМ", "Нормативный документ", *CATALOG_HEADERS],
         )
-        self.assertEqual(catalog_rows[1][2:], ["", "", ""])
+        self.assertEqual(catalog_rows[1][2:], [""] * len(CATALOG_HEADERS))
         with self.path.open(encoding="utf-8-sig", newline="") as stream:
             saved = list(csv.reader(stream, delimiter=";"))
         saved[1][3] = "ручное примечание"
@@ -377,10 +378,10 @@ class RelationshipStoreTests(unittest.TestCase):
             saved = list(csv.reader(stream, delimiter=","))
         self.assertEqual(
             saved[0],
-            ["Марка ГСМ", "Нормативный документ", *APPLICABILITY_HEADERS],
+            ["Марка ГСМ", "Нормативный документ", *CATALOG_HEADERS],
         )
-        self.assertEqual(saved[1], ["Основная", "ГОСТ 1", "+", "-", "+"])
-        self.assertEqual(saved[2], ["Дубль", "ГОСТ 2", "", "", ""])
+        self.assertEqual(saved[1], ["Основная", "ГОСТ 1", "+", "-", "+", "", ""])
+        self.assertEqual(saved[2], ["Дубль", "ГОСТ 2", "", "", "", "", ""])
         self.assertEqual(
             self.store.status_matrix(
                 [["Основная по ГОСТ 1", "+", "-", "+"]],
@@ -393,6 +394,52 @@ class RelationshipStoreTests(unittest.TestCase):
             ),
             [["linked", "linked", "linked", "linked"]],
         )
+
+    def test_text_attributes_are_saved_for_each_primary_and_preserved_on_blank(self) -> None:
+        conditions = 'Применять при -40 °C; по инструкции «А»'
+        rows = [["Основная по ГОСТ 1; Резерв по ГОСТ 3", conditions, "F-34"]]
+        types = ["primary", *TEXT_COLUMN_TYPES]
+        self.assertEqual(
+            self.store.status_matrix(rows, types),
+            [["relation-missing", "catalog-missing", "catalog-missing"]],
+        )
+        result = self.store.append(rows, types)
+        self.assertEqual(result["attributesUpdated"], 4)
+        self.assertEqual(result["applicabilityUpdated"], 0)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.store.status_matrix(rows, types), [["linked"] * 3])
+        self.assertEqual(self.store.append(rows, types)["attributesUpdated"], 0)
+        self.store.append(
+            [["Основная по ГОСТ 1", "", "F-35"]], types
+        )
+        with self.catalog.open(encoding="utf-8-sig", newline="") as stream:
+            saved = list(csv.DictReader(stream))
+        self.assertEqual(saved[0][TEXT_COLUMN_TYPES["assignment_conditions"]], conditions)
+        self.assertEqual(saved[0][TEXT_COLUMN_TYPES["nato_index"]], "F-35")
+        self.assertEqual(saved[1][TEXT_COLUMN_TYPES["nato_index"]], "")
+        self.assertEqual(saved[2][TEXT_COLUMN_TYPES["nato_index"]], "F-34")
+        reloaded = RelationshipStore(self.path, GsmNormalizer(self.catalog))
+        self.assertEqual(
+            reloaded.status_matrix(rows, types),
+            [["relation-missing", "linked", "catalog-missing"]],
+        )
+
+    def test_conflicting_attributes_do_not_modify_csv(self) -> None:
+        before = self.catalog.read_bytes()
+        with self.assertRaisesRegex(ValueError, "разные значения"):
+            self.store.append(
+                [["Основная по ГОСТ 1", "F-34"], ["Основная по ГОСТ 1", "F-35"]],
+                ["primary", "nato_index"],
+            )
+        self.assertEqual(self.catalog.read_bytes(), before)
+        self.assertFalse(self.path.exists())
+
+    def test_duplicate_text_columns_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "только один раз"):
+            self.store.append(
+                [["Основная по ГОСТ 1", "F-34", "F-35"]],
+                ["primary", "nato_index", "nato_index"],
+            )
 
     def test_applicability_rejects_values_other_than_plus_or_minus(self) -> None:
         with self.assertRaisesRegex(ValueError, "допустимы только \\+ или -"):

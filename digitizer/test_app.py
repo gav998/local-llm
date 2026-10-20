@@ -163,6 +163,13 @@ class MarkdownModelTests(unittest.TestCase):
         )
         self.assertIn('"columnTypes":["primary","duplicate_reserve"]', markdown)
 
+    def test_text_column_types_survive_markdown_round_trip(self) -> None:
+        types = ["assignment_conditions", "nato_index"]
+        self.objects[1]["regions"][0]["grid"]["columnTypes"] = types
+        markdown = app.serialize_markdown(self.objects, page_count=2)
+        parsed = app.parse_markdown(markdown, page_count=2)
+        self.assertEqual(parsed[1]["regions"][0]["grid"]["columnTypes"], types)
+
     def test_legacy_table_cell_ocr_comment_is_removed_from_markdown(self) -> None:
         self.objects[1]["regions"][0]["text"] = (
             "| 1 | 2 |\n"

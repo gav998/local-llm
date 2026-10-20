@@ -29,6 +29,12 @@ APPLICABILITY_TYPES = {
     "applicable_marine": "Применимо для морской техники",
 }
 APPLICABILITY_HEADERS = tuple(APPLICABILITY_TYPES.values())
+TEXT_COLUMN_TYPES = {
+    "assignment_conditions": "Порядок назначения и условия применения",
+    "nato_index": "Индекс НАТО",
+}
+CATALOG_COLUMN_TYPES = {**APPLICABILITY_TYPES, **TEXT_COLUMN_TYPES}
+CATALOG_HEADERS = tuple(CATALOG_COLUMN_TYPES.values())
 RELATION_KEY_HEADERS = ("Первая марка", "Тип связи", "Вторая марка")
 NOTES_HEADER = "Примечание"
 RELATION_HEADERS = (*RELATION_KEY_HEADERS, NOTES_HEADER)
@@ -42,6 +48,7 @@ COLUMN_TYPES = {
     "applicable_ground": "применимо для наземной техники",
     "applicable_air": "применимо для авиа техники",
     "applicable_marine": "применимо для морской техники",
+    **TEXT_COLUMN_TYPES,
 }
 RELATION_TYPES = {
     "duplicate": ("дублирующая",),
@@ -265,7 +272,7 @@ class GsmNormalizer:
         self.entries: tuple[CatalogEntry, ...] = ()
         self.documents: tuple[str, ...] = ()
         self._pairs: dict[tuple[str, str], CatalogEntry] = {}
-        self._applicability: dict[tuple[str, str], dict[str, str]] = {}
+        self._catalog_values: dict[tuple[str, str], dict[str, str]] = {}
         self._reload_if_changed()
 
     def _file_state(self) -> tuple[int, int]:
@@ -285,7 +292,7 @@ class GsmNormalizer:
         with self._lock:
             if state == self._catalog_state:
                 return
-            entries, applicability = self._read_entries()
+            entries, catalog_values = self._read_entries()
             self.entries = tuple(entries)
             self.documents = tuple(
                 dict.fromkeys(entry.document for entry in entries)
@@ -294,7 +301,7 @@ class GsmNormalizer:
                 (_match_text(entry.brand), _match_text(entry.document)): entry
                 for entry in entries
             }
-            self._applicability = applicability
+            self._catalog_values = catalog_values
             # Read the state again so a concurrent file replacement is noticed by
             # the following request rather than being treated as already loaded.
             self._catalog_state = self._file_state()
@@ -304,7 +311,7 @@ class GsmNormalizer:
     ) -> tuple[list[CatalogEntry], dict[tuple[str, str], dict[str, str]]]:
         rows = _dict_rows(self.catalog_path)
         entries: list[CatalogEntry] = []
-        applicability: dict[tuple[str, str], dict[str, str]] = {}
+        catalog_values: dict[tuple[str, str], dict[str, str]] = {}
         seen: set[tuple[str, str]] = set()
         for row_number, row in enumerate(rows, 2):
             keys = {str(key).strip().casefold(): key for key in row}
@@ -325,10 +332,10 @@ class GsmNormalizer:
                 )
             identity = (_match_text(brand), _match_text(document))
             flags: dict[str, str] = {}
-            for column_type, header in APPLICABILITY_TYPES.items():
+            for column_type, header in CATALOG_COLUMN_TYPES.items():
                 flag_key = keys.get(header.casefold())
                 flag = str(row.get(flag_key) or "").strip() if flag_key else ""
-                if flag not in {"", "+", "-"}:
+                if column_type in APPLICABILITY_TYPES and flag not in {"", "+", "-"}:
                     raise ValueError(
                         f"{self.catalog_path}: в столбце «{header}» строки "
                         f"{row_number} допустимы только +, - или пустая ячейка"
@@ -337,10 +344,10 @@ class GsmNormalizer:
             if identity not in seen:
                 seen.add(identity)
                 entries.append(CatalogEntry(brand, document))
-                applicability[identity] = flags
+                catalog_values[identity] = flags
         if not entries:
             raise ValueError(f"Справочник марок пуст: {self.catalog_path}")
-        return entries, applicability
+        return entries, catalog_values
 
     def _exact_entry(self, value: str) -> CatalogEntry | None:
         pieces = _PO_RE.split(str(value or "").strip(), maxsplit=1)
@@ -756,30 +763,30 @@ class GsmNormalizer:
             "path": str(self.catalog_path),
         }
 
-    def applicability_value(self, entry: CatalogEntry, column_type: str) -> str:
-        """Return a saved applicability flag, including empty legacy values."""
-        if column_type not in APPLICABILITY_TYPES:
-            raise ValueError("Неизвестный тип применимости")
+    def catalog_value(self, entry: CatalogEntry, column_type: str) -> str:
+        """Return a saved catalog attribute, including empty legacy values."""
+        if column_type not in CATALOG_COLUMN_TYPES:
+            raise ValueError("Неизвестный тип атрибута марки")
         self._reload_if_changed()
         identity = (_match_text(entry.brand), _match_text(entry.document))
         with self._lock:
-            return self._applicability.get(identity, {}).get(column_type, "")
+            return self._catalog_values.get(identity, {}).get(column_type, "")
 
-    def update_applicability(
+    def update_catalog_values(
         self,
         updates: Iterable[tuple[CatalogEntry, dict[str, str]]],
         ensure_columns: bool = False,
     ) -> dict[str, Any]:
-        """Atomically add/update the three optional applicability columns."""
+        """Atomically add/update optional catalog columns for primary brands."""
         merged: dict[tuple[str, str], dict[str, str]] = {}
         for entry, raw_flags in updates:
             identity = (_match_text(entry.brand), _match_text(entry.document))
             flags = merged.setdefault(identity, {})
             for column_type, raw_value in raw_flags.items():
-                if column_type not in APPLICABILITY_TYPES:
-                    raise ValueError("Неизвестный тип применимости")
+                if column_type not in CATALOG_COLUMN_TYPES:
+                    raise ValueError("Неизвестный тип атрибута марки")
                 value = str(raw_value or "").strip()
-                if value not in {"+", "-"}:
+                if column_type in APPLICABILITY_TYPES and value not in {"+", "-"}:
                     raise ValueError(
                         f"Для «{COLUMN_TYPES[column_type]}» допустимы только + или -"
                     )
@@ -790,7 +797,11 @@ class GsmNormalizer:
                     )
                 flags[column_type] = value
         if not merged and not ensure_columns:
-            return {"updated": 0, "path": str(self.catalog_path)}
+            return {
+                "updated": 0,
+                "updatedByType": dict.fromkeys(CATALOG_COLUMN_TYPES, 0),
+                "path": str(self.catalog_path),
+            }
 
         with self._lock:
             self._reload_if_changed()
@@ -814,12 +825,13 @@ class GsmNormalizer:
                     f"{self.catalog_path}: нужны столбцы «{BRAND_HEADER}» "
                     f"и «{DOCUMENT_HEADER}»"
                 )
-            for header in APPLICABILITY_HEADERS:
+            for header in CATALOG_HEADERS:
                 if header.casefold() not in headers:
                     headers[header.casefold()] = len(rows[0])
                     rows[0].append(header)
             width = len(rows[0])
             updated = 0
+            updated_by_type = dict.fromkeys(CATALOG_COLUMN_TYPES, 0)
             found: set[tuple[str, str]] = set()
             for row in rows[1:]:
                 row.extend([""] * (width - len(row)))
@@ -832,10 +844,11 @@ class GsmNormalizer:
                     continue
                 found.add(identity)
                 for column_type, value in flags.items():
-                    flag_index = headers[APPLICABILITY_TYPES[column_type].casefold()]
+                    flag_index = headers[CATALOG_COLUMN_TYPES[column_type].casefold()]
                     if row[flag_index].strip() != value:
                         row[flag_index] = value
                         updated += 1
+                        updated_by_type[column_type] += 1
             missing = set(merged) - found
             if missing:
                 raise ValueError("Основная марка не найдена в справочнике")
@@ -852,7 +865,11 @@ class GsmNormalizer:
                 temporary.unlink(missing_ok=True)
             self._catalog_state = None
             self._reload_if_changed()
-        return {"updated": updated, "path": str(self.catalog_path)}
+        return {
+            "updated": updated,
+            "updatedByType": updated_by_type,
+            "path": str(self.catalog_path),
+        }
 
 
 class RelationshipStore:
@@ -925,6 +942,9 @@ class RelationshipStore:
                 if not column_type or column_type == "other" or not cell:
                     parsed_row.append([])
                     continue
+                if column_type in TEXT_COLUMN_TYPES:
+                    parsed_row.append([])
+                    continue
                 if column_type in APPLICABILITY_TYPES:
                     parsed_row.append([])
                     statuses[row_index][column_index] = (
@@ -974,27 +994,30 @@ class RelationshipStore:
                     "linked" if linked else "relation-missing"
                 )
                 linked_related.append(linked)
-            linked_applicability: list[bool] = []
+            linked_catalog_values: list[bool] = []
             for column_index, column_type in enumerate(column_types):
-                if column_type not in APPLICABILITY_TYPES:
+                if column_type not in CATALOG_COLUMN_TYPES:
                     continue
                 flag = str(rows[row_index][column_index]).strip()
                 if not flag:
                     continue
-                if flag not in {"+", "-"}:
-                    linked_applicability.append(False)
+                if column_type in APPLICABILITY_TYPES and flag not in {"+", "-"}:
+                    linked_catalog_values.append(False)
                     continue
                 linked = bool(primary_entries) and all(
-                    self.normalizer.applicability_value(first, column_type) == flag
+                    self.normalizer.catalog_value(first, column_type) == flag
                     for first in primary_entries or []
                 )
                 statuses[row_index][column_index] = (
-                    "linked" if linked else "applicability-missing"
+                    "linked" if linked else (
+                        "catalog-missing" if column_type in TEXT_COLUMN_TYPES
+                        else "applicability-missing"
+                    )
                 )
-                linked_applicability.append(linked)
+                linked_catalog_values.append(linked)
             for primary_index in primary_indexes:
                 if row[primary_index]:
-                    linked_items = linked_related + linked_applicability
+                    linked_items = linked_related + linked_catalog_values
                     statuses[row_index][primary_index] = (
                         "linked"
                         if linked_items and all(linked_items)
@@ -1022,21 +1045,21 @@ class RelationshipStore:
         relation_indexes = [
             i for i, value in enumerate(column_types) if value in RELATION_TYPES
         ]
-        applicability_indexes = [
-            i for i, value in enumerate(column_types) if value in APPLICABILITY_TYPES
+        attribute_indexes = [
+            i for i, value in enumerate(column_types) if value in CATALOG_COLUMN_TYPES
         ]
-        for column_type in APPLICABILITY_TYPES:
+        for column_type in CATALOG_COLUMN_TYPES:
             if column_types.count(column_type) > 1:
                 raise ValueError(
                     f"Тип «{COLUMN_TYPES[column_type]}» можно выбрать только один раз"
                 )
-        if not relation_indexes and not applicability_indexes:
+        if not relation_indexes and not attribute_indexes:
             raise ValueError(
-                "Нужен минимум один столбец связанных марок или применимости"
+                "Нужен минимум один столбец связанных марок или атрибутов марки"
             )
         primary_index = primary_indexes[0]
         relations: list[tuple[str, str, str, str]] = []
-        applicability: list[tuple[CatalogEntry, dict[str, str]]] = []
+        attributes: list[tuple[CatalogEntry, dict[str, str]]] = []
         for row_index, row in enumerate(rows, 1):
             if len(row) != len(column_types):
                 raise ValueError(
@@ -1053,18 +1076,21 @@ class RelationshipStore:
             if not primary:
                 continue
             flags: dict[str, str] = {}
-            for column_index in applicability_indexes:
+            for column_index in attribute_indexes:
                 value = str(row[column_index]).strip()
                 if not value:
                     continue
-                if value not in {"+", "-"}:
+                if (
+                    column_types[column_index] in APPLICABILITY_TYPES
+                    and value not in {"+", "-"}
+                ):
                     raise ValueError(
                         f"Строка {row_index}, столбец {column_index + 1}: "
                         "допустимы только + или -"
                     )
                 flags[column_types[column_index]] = value
             if flags:
-                applicability.extend((entry, flags.copy()) for entry in primary)
+                attributes.extend((entry, flags.copy()) for entry in primary)
             for column_index in relation_indexes:
                 if not str(row[column_index]).strip():
                     continue
@@ -1080,9 +1106,9 @@ class RelationshipStore:
                             relations.append(
                                 (first.value, relation_type, second.value, "")
                             )
-        if not relations and not applicability:
-            raise ValueError("В блоке нет заполненных связей или признаков применимости")
-        return list(dict.fromkeys(relations)), applicability
+        if not relations and not attributes:
+            raise ValueError("В блоке нет заполненных связей или атрибутов марки")
+        return list(dict.fromkeys(relations)), attributes
 
     def build(
         self, rows: list[list[str]], column_types: list[str]
@@ -1091,14 +1117,14 @@ class RelationshipStore:
         return relations
 
     def append(self, rows: list[list[str]], column_types: list[str]) -> dict[str, Any]:
-        additions, applicability = self._build_export(rows, column_types)
+        additions, attributes = self._build_export(rows, column_types)
         with self._lock:
             existing = self._existing()
             known = {row[:3] for row in existing}
             new_rows = [row for row in additions if row[:3] not in known]
             combined = existing + new_rows
-            catalog_result = self.normalizer.update_applicability(
-                applicability, ensure_columns=True
+            catalog_result = self.normalizer.update_catalog_values(
+                attributes, ensure_columns=True
             )
             if additions:
                 output = io.StringIO(newline="")
@@ -1120,7 +1146,12 @@ class RelationshipStore:
             "total": len(combined),
             "path": str(self.path),
             "rows": [list(row) for row in additions],
-            "applicabilityUpdated": catalog_result["updated"],
+            "applicabilityUpdated": sum(
+                catalog_result["updatedByType"][key] for key in APPLICABILITY_TYPES
+            ),
+            "attributesUpdated": sum(
+                catalog_result["updatedByType"][key] for key in TEXT_COLUMN_TYPES
+            ),
             "catalogPath": catalog_result["path"],
         }
 
