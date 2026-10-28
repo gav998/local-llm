@@ -170,6 +170,13 @@ class MarkdownModelTests(unittest.TestCase):
         parsed = app.parse_markdown(markdown, page_count=2)
         self.assertEqual(parsed[1]["regions"][0]["grid"]["columnTypes"], types)
 
+    def test_replacement_column_types_survive_markdown_round_trip(self) -> None:
+        types = ["obsolete", "prospective"]
+        self.objects[1]["regions"][0]["grid"]["columnTypes"] = types
+        markdown = app.serialize_markdown(self.objects, page_count=2)
+        parsed = app.parse_markdown(markdown, page_count=2)
+        self.assertEqual(parsed[1]["regions"][0]["grid"]["columnTypes"], types)
+
     def test_legacy_table_cell_ocr_comment_is_removed_from_markdown(self) -> None:
         self.objects[1]["regions"][0]["text"] = (
             "| 1 | 2 |\n"
@@ -523,6 +530,47 @@ class StoreAndApiTests(unittest.TestCase):
             self.pdf.resolve(), 1, [0.1, 0.2, 0.3, 0.4], 90
         )
         self.assertEqual(paddle.images, [])
+
+    def test_api_exposes_and_exports_replacement_columns(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:
+            self.skipTest("FastAPI test client is unavailable")
+        catalog = self.root / "brands.csv"
+        catalog.write_text(
+            "Марка ГСМ;Нормативный документ\nСтарая;ГОСТ 1\nНовая;ГОСТ 2\n",
+            encoding="utf-8",
+        )
+        normalizer = app.GsmNormalizer(catalog)
+        application = app.create_app(
+            app.SourceRegistry(self.root / "data"),
+            app.DocumentStore(),
+            FakePaddle(),
+            FakeLlm(),
+            Path(__file__).with_name("app.html"),
+            normalizer,
+            app.RelationshipStore(self.root / "relations.csv", normalizer),
+        )
+        client = TestClient(application)
+        types = client.get("/api/config").json()["normalization"]["columnTypes"]
+        self.assertEqual(types["obsolete"], "Устаревшая марка")
+        self.assertEqual(types["prospective"], "Перспективная марка")
+        payload = {
+            "rows": [["Старая по ГОСТ 1", "Новая по ГОСТ 2"]],
+            "columnTypes": ["obsolete", "prospective"],
+        }
+        before = client.post("/api/relationship-statuses", json=payload)
+        self.assertEqual(before.json()["statuses"], [["relation-missing"] * 2])
+        response = client.post("/api/relationships", json=payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["rows"], [[
+            "Старая по ГОСТ 1",
+            "рекомендуется заменить устаревшую на перспективную",
+            "Новая по ГОСТ 2",
+            "",
+        ]])
+        after = client.post("/api/relationship-statuses", json=payload)
+        self.assertEqual(after.json()["statuses"], [["linked"] * 2])
 
     def test_api_can_append_missing_catalog_entry(self) -> None:
         try:

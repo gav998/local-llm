@@ -327,6 +327,114 @@ class RelationshipStoreTests(unittest.TestCase):
                 ["primary", "duplicate"],
             )
 
+    def test_replacement_pair_exports_in_semantic_order_without_primary(self) -> None:
+        types = ["prospective", "other", "obsolete"]
+        rows = [["Резерв по ГОСТ 3", "Комментарий", "Дубль по ГОСТ 2"]]
+        self.assertEqual(
+            self.store.status_matrix(rows, types),
+            [["relation-missing", "", "relation-missing"]],
+        )
+        result = self.store.append(rows, types)
+        self.assertEqual(result["added"], 1)
+        with self.path.open(encoding="utf-8-sig", newline="") as stream:
+            saved = list(csv.reader(stream, delimiter=";"))
+        self.assertEqual(saved, [
+            list(RELATION_HEADERS),
+            [
+                "Дубль по ГОСТ 2",
+                "рекомендуется заменить устаревшую на перспективную",
+                "Резерв по ГОСТ 3",
+                "",
+            ],
+        ])
+        saved[1][3] = "Примечание к замене"
+        with self.path.open("w", encoding="utf-8-sig", newline="") as stream:
+            csv.writer(stream, delimiter=";", lineterminator="\n").writerows(saved)
+        self.assertEqual(self.store.append(rows, types)["added"], 0)
+        with self.path.open(encoding="utf-8-sig", newline="") as stream:
+            self.assertEqual(list(csv.reader(stream, delimiter=";")), saved)
+        reloaded = RelationshipStore(self.path, GsmNormalizer(self.catalog))
+        self.assertEqual(reloaded.status_matrix(rows, types), [["linked", "", "linked"]])
+
+    def test_replacement_is_independent_of_primary_relations_and_attributes(self) -> None:
+        result = self.store.append(
+            [["Основная по ГОСТ 1", "Дубль по ГОСТ 2", "Резерв по ГОСТ 3",
+              "Дубль по ГОСТ 2", "+"]],
+            ["primary", "obsolete", "prospective", "duplicate", "applicable_air"],
+        )
+        self.assertEqual(result["added"], 2)
+        self.assertCountEqual(result["rows"], [
+            ["Основная по ГОСТ 1", "дублирующая", "Дубль по ГОСТ 2", ""],
+            ["Дубль по ГОСТ 2", "рекомендуется заменить устаревшую на перспективную",
+             "Резерв по ГОСТ 3", ""],
+        ])
+        self.assertEqual(result["applicabilityUpdated"], 1)
+        self.assertEqual(
+            self.normalizer.catalog_value(
+                self.normalizer.parse_strict("Основная по ГОСТ 1")[0], "applicable_air"
+            ),
+            "+",
+        )
+
+    def test_replacement_checks_all_pairs_and_keeps_rows_separate(self) -> None:
+        types = ["obsolete", "prospective"]
+        self.store.append([["Основная по ГОСТ 1", "Резерв по ГОСТ 3"]], types)
+        rows = [
+            ["Основная по ГОСТ 1; Дубль по ГОСТ 2", "Резерв по ГОСТ 3; Дубль по ГОСТ 2"],
+            ["Резерв по ГОСТ 3", "Основная по ГОСТ 1"],
+            ["", ""],
+        ]
+        self.assertEqual(self.store.status_matrix(rows, types), [
+            ["relation-missing", "relation-missing"],
+            ["relation-missing", "relation-missing"],
+            ["", ""],
+        ])
+        result = self.store.append(rows, types)
+        self.assertEqual(result["added"], 4)
+        self.assertEqual(result["total"], 5)
+        self.assertEqual(self.store.status_matrix(rows, types), [
+            ["linked", "linked"], ["linked", "linked"], ["", ""],
+        ])
+
+    def test_invalid_replacement_does_not_modify_either_csv(self) -> None:
+        types = ["obsolete", "prospective"]
+        valid = ["Дубль по ГОСТ 2", "Резерв по ГОСТ 3"]
+        self.store.append([valid], types)
+        catalog_before = self.catalog.read_text(encoding="utf-8-sig")
+        relations_before = self.path.read_text(encoding="utf-8-sig")
+        for invalid in ("Неизвестная по ГОСТ 9", "Дубль", "- по ГОСТ 2", ""):
+            for column in (0, 1):
+                with self.subTest(invalid=invalid, column=column):
+                    row = valid.copy()
+                    row[column] = invalid
+                    statuses = ["relation-missing", "relation-missing"]
+                    statuses[column] = "brand-missing" if invalid else ""
+                    self.assertEqual(self.store.status_matrix([row], types), [statuses])
+                    with self.assertRaisesRegex(ValueError, "Строка 2"):
+                        self.store.append([[valid[1], valid[0]], row], types)
+                    self.assertEqual(self.catalog.read_text(encoding="utf-8-sig"), catalog_before)
+                    self.assertEqual(self.path.read_text(encoding="utf-8-sig"), relations_before)
+
+    def test_replacement_requires_one_column_of_each_type(self) -> None:
+        for types in (["obsolete"], ["prospective"],
+                      ["obsolete", "prospective", "obsolete"],
+                      ["obsolete", "prospective", "prospective"]):
+            with self.subTest(types=types):
+                with self.assertRaisesRegex(ValueError, "парные столбцы"):
+                    self.store.append([["Дубль по ГОСТ 2"] * len(types)], types)
+        self.assertEqual(
+            self.store.status_matrix([["Дубль по ГОСТ 2", ""]], ["obsolete", ""]),
+            [["relation-missing", ""]],
+        )
+
+    def test_primary_is_still_required_for_primary_relations_and_attributes(self) -> None:
+        for types in (["duplicate"], ["applicable_air"],
+                      ["obsolete", "prospective", "duplicate"],
+                      ["obsolete", "prospective", "nato_index"]):
+            with self.subTest(types=types):
+                with self.assertRaisesRegex(ValueError, "основная марка"):
+                    self.store.build([[""] * len(types)], types)
+
     def test_status_matrix_distinguishes_catalog_and_relation_misses(self) -> None:
         rows = [
             ["Основная по ГОСТ 1", "Дубль по ГОСТ 2"],

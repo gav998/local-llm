@@ -38,6 +38,11 @@ CATALOG_HEADERS = tuple(CATALOG_COLUMN_TYPES.values())
 RELATION_KEY_HEADERS = ("Первая марка", "Тип связи", "Вторая марка")
 NOTES_HEADER = "Примечание"
 RELATION_HEADERS = (*RELATION_KEY_HEADERS, NOTES_HEADER)
+REPLACEMENT_COLUMN_TYPES = {
+    "obsolete": "Устаревшая марка",
+    "prospective": "Перспективная марка",
+}
+REPLACEMENT_RELATION_TYPE = "рекомендуется заменить устаревшую на перспективную"
 COLUMN_TYPES = {
     "other": "другой",
     "primary": "основная марка ГСМ",
@@ -45,6 +50,7 @@ COLUMN_TYPES = {
     "reserve": "резервная марка ГСМ",
     "foreign": "зарубежная марка ГСМ",
     "duplicate_reserve": "дублирующая и резервная одновременно",
+    **REPLACEMENT_COLUMN_TYPES,
     "applicable_ground": "применимо для наземной техники",
     "applicable_air": "применимо для авиа техники",
     "applicable_marine": "применимо для морской техники",
@@ -973,8 +979,34 @@ class RelationshipStore:
         relation_indexes = [
             index for index, value in enumerate(column_types) if value in RELATION_TYPES
         ]
+        replacement_indexes = {
+            column_type: [
+                index for index, value in enumerate(column_types) if value == column_type
+            ]
+            for column_type in REPLACEMENT_COLUMN_TYPES
+        }
 
         for row_index, row in enumerate(parsed):
+            obsolete = (
+                row[replacement_indexes["obsolete"][0]]
+                if len(replacement_indexes["obsolete"]) == 1 else None
+            )
+            prospective = (
+                row[replacement_indexes["prospective"][0]]
+                if len(replacement_indexes["prospective"]) == 1 else None
+            )
+            replacement_linked = bool(obsolete and prospective) and all(
+                self._relation_key(first.value, REPLACEMENT_RELATION_TYPE, second.value)
+                in existing
+                for first in obsolete or []
+                for second in prospective or []
+            )
+            for indexes in replacement_indexes.values():
+                for column_index in indexes:
+                    if row[column_index]:
+                        statuses[row_index][column_index] = (
+                            "linked" if replacement_linked else "relation-missing"
+                        )
             linked_related: list[bool] = []
             primary_entries = (
                 row[primary_indexes[0]] if len(primary_indexes) == 1 else None
@@ -1040,24 +1072,42 @@ class RelationshipStore:
         primary_indexes = [
             i for i, value in enumerate(column_types) if value == "primary"
         ]
-        if len(primary_indexes) != 1:
-            raise ValueError("Нужен ровно один столбец «основная марка ГСМ»")
         relation_indexes = [
             i for i, value in enumerate(column_types) if value in RELATION_TYPES
         ]
         attribute_indexes = [
             i for i, value in enumerate(column_types) if value in CATALOG_COLUMN_TYPES
         ]
+        has_replacement = any(
+            value in REPLACEMENT_COLUMN_TYPES for value in column_types
+        )
+        if has_replacement and any(
+            column_types.count(column_type) != 1
+            for column_type in REPLACEMENT_COLUMN_TYPES
+        ):
+            raise ValueError(
+                "Нужны парные столбцы «Устаревшая марка» и «Перспективная марка» "
+                "ровно по одному"
+            )
+        primary_required = bool(
+            relation_indexes or attribute_indexes or not has_replacement
+        )
+        if len(primary_indexes) > 1 or (primary_required and not primary_indexes):
+            raise ValueError("Нужен ровно один столбец «основная марка ГСМ»")
         for column_type in CATALOG_COLUMN_TYPES:
             if column_types.count(column_type) > 1:
                 raise ValueError(
                     f"Тип «{COLUMN_TYPES[column_type]}» можно выбрать только один раз"
                 )
-        if not relation_indexes and not attribute_indexes:
+        if not relation_indexes and not attribute_indexes and not has_replacement:
             raise ValueError(
                 "Нужен минимум один столбец связанных марок или атрибутов марки"
             )
-        primary_index = primary_indexes[0]
+        primary_index = primary_indexes[0] if primary_indexes else None
+        replacement_indexes = (
+            [column_types.index(column_type) for column_type in REPLACEMENT_COLUMN_TYPES]
+            if has_replacement else []
+        )
         relations: list[tuple[str, str, str, str]] = []
         attributes: list[tuple[CatalogEntry, dict[str, str]]] = []
         for row_index, row in enumerate(rows, 1):
@@ -1066,15 +1116,43 @@ class RelationshipStore:
                     f"Строка {row_index}: число ячеек не равно числу типов"
                 )
             try:
-                primary = self.normalizer.parse_strict(row[primary_index])
+                primary = (
+                    self.normalizer.parse_strict(row[primary_index])
+                    if primary_index is not None else []
+                )
             except ValueError as exc:
                 raise ValueError(
                     f"Строка {row_index}, основная марка: {exc}"
                 ) from exc
-            if not primary and any(str(cell).strip() for cell in row):
+            if (
+                primary_index is not None and not primary
+                and any(str(cell).strip() for cell in row)
+            ):
                 raise ValueError(f"Строка {row_index}: нет основной марки")
-            if not primary:
+            if not any(str(cell).strip() for cell in row):
                 continue
+            if has_replacement:
+                replacement_entries: list[list[CatalogEntry]] = []
+                for column_index in replacement_indexes:
+                    try:
+                        replacement_entries.append(
+                            self.normalizer.parse_strict(row[column_index])
+                        )
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Строка {row_index}, столбец {column_index + 1}: {exc}"
+                        ) from exc
+                obsolete, prospective = replacement_entries
+                if bool(obsolete) != bool(prospective):
+                    raise ValueError(
+                        f"Строка {row_index}: заполните обе марки — "
+                        "устаревшую и перспективную"
+                    )
+                relations.extend(
+                    (first.value, REPLACEMENT_RELATION_TYPE, second.value, "")
+                    for first in obsolete
+                    for second in prospective
+                )
             flags: dict[str, str] = {}
             for column_index in attribute_indexes:
                 value = str(row[column_index]).strip()
